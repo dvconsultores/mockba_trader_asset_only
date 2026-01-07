@@ -242,13 +242,19 @@ def analyze_with_llm(signal_dict: dict) -> dict:
             {response_format_mixed}"""
     else:
         market_context_simple = (
-            f"Activo: {signal_dict['asset']}\n"
+             f"Activo: {signal_dict['asset']}\n"
             f"Precio de cierre de la última vela: {latest_close:.6f}\n"
+            f"Precio en vivo (último trade): {live_price:.6f}\n"
+            f"Diferencia intra-candle: {price_delta_pct:+.3f}%\n"
             f"Saldo disponible: {balance:.2f} USDC\n"
             f"Apalancamiento: {leverage}x\n"
             f"Nivel de riesgo: {risk_level}%\n"
-            f"HISTORIAL DE VELAS (30 de {len(df)} filas):\n{csv_content}"
+            f"Tasa de funding actual: {current_funding:.6f}\n"
+            f"Liquidaciones cercanas (±2%): {nearby_liquidations}\n\n"
+            f"LIBRO DE ÓRDENES (top 20):\n{orderbook_content}\n\n"
+            f"HISTORIAL DE VELAS (30 de {len(df)} filas):\n{csv_content}"          
         )
+        
         prompt = f"""{user_prompt}
 
         {market_context_simple}
