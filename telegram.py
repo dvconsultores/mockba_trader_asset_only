@@ -749,8 +749,11 @@ def ListSettings(m):
                          value += "\n   └ ⚠️ No assets selected"
             elif key == "show_prompt":
                 value = "✅ YES" if str(value).lower() == "true" else "❌ NO"
-            elif key == "prompt_text" and len(value) > 25:
-                value = value[:25] + "..."
+            elif key == "prompt_text":
+                # Only truncate if show_prompt is not 'true'
+                show_full_prompt = str(settings.get('show_prompt', 'false')).lower() == 'true'
+                if not show_full_prompt and len(value) > 25:
+                    value = value[:25] + "..."
             message += f"{emoji} <b>{label}:</b> <code>{value}</code>\n"
     
     # Add timestamp
