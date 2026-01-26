@@ -173,7 +173,7 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         {response_format}"""    
 
     if get_setting("show_prompt") == "True":
-        send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📝 Prompt ({len(prompt)} chars):\n{prompt[:500]}...")
+        send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📝 Prompt ({len(prompt)} chars):\n{prompt}...")
 
     # === Call LLM ===
     response = None
