@@ -750,8 +750,9 @@ def ListSettings(m):
             elif key == "show_prompt":
                 value = "✅ YES" if str(value).lower() == "true" else "❌ NO"
             elif key == "prompt_text":
-                # Always show the full prompt
-                pass
+                # Always show the full prompt, but escape HTML special characters
+                import html
+                value = html.escape(str(value))
             message += f"{emoji} <b>{label}:</b> <code>{value}</code>\n"
     
     # Add timestamp
