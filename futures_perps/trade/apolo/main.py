@@ -124,92 +124,26 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     orderbook_threshold = float(get_setting("order_book_threshold") or 1.6)
 
     # === Build prompt ===
-    user_prompt = get_setting("prompt_text") or ""
-    
-    hard_rules_note = f"""
-        🔴🔴🔴 REGLAS ESTRUCTURALES CRÍTICAS - DEBES VERIFICAR ANTES DE APROBAR 🔴🔴🔴
-
-        PARA SEÑAL DE COMPRA (BUY) - TODAS deben cumplirse:
-        1. ✅ ESTRUCTURA ALCISTA: Últimos 3 mínimos ASCENDENTES consecutivos
-        2. ✅ ORDENBOOK FUERTE: Bids total ≥ {orderbook_threshold}x Asks total (top 15 niveles)
-        3. ✅ RSI NO EN EXTREMO PELIGROSO: RSI < 80 (NO sobrecomprado extremo)
-        4. ✅ PRECIO VIVO: Precio actual NO debe caer >0.1% vs cierre
-
-        PARA SEÑAL DE VENTA (SELL) - TODAS deben cumplirse:
-        1. ✅ ESTRUCTURA BAJISTA: Últimos 3 máximos DESCENDENTES consecutivos
-        2. ✅ ORDENBOOK FUERTE: Asks total ≥ {orderbook_threshold}x Bids total (top 15 niveles)
-        3. ✅ RSI NO EN EXTREMO PELIGROSO: RSI > 20 (NO sobrevendido extremo)
-        4. ✅ PRECIO VIVO: Precio actual NO debe subir >0.1% vs cierre
-
-        ⚠️ IMPORTANTE SOBRE RSI:
-        - RSI 70-80: Advertencia (sobrecomprado moderado) - evaluar contexto
-        - RSI 20-30: Advertencia (sobrevendido moderado) - evaluar contexto  
-        - RSI >80 o <20: VETO (extremo peligroso) - rechazar señal
-        - Busca DIVERGENCIAS RSI-precio (señal más fuerte que nivel absoluto)
-
-        ⚠️ NO apruebes si falta ALGUNA de estas condiciones estructurales.
-        ⚠️ Los indicadores técnicos (EMA, MACD, etc.) son SECUNDARIOS.
-        """
-
-    structural_context = f"""
-        📊 DATOS ESTRUCTURALES ACTUALES (REQUISITOS CRÍTICOS):
-
-        ESTRUCTURA DE PRECIO:
-        • Mínimos últimos 3 velas: {last_3_lows[0]:.6f}, {last_3_lows[1]:.6f}, {last_3_lows[2]:.6f}
-        • ¿Mínimos ascendentes? (requisito BUY): {'✅ SÍ' if is_buy_structure else '❌ NO'}
-        • Máximos últimos 3 velas: {last_3_highs[0]:.6f}, {last_3_highs[1]:.6f}, {last_3_highs[2]:.6f}
-        • ¿Máximos descendentes? (requisito SELL): {'✅ SÍ' if is_sell_structure else '❌ NO'}
-
-        ORDENBOOK (top 15 niveles):
-        • Total Bids: {bids:.2f}
-        • Total Asks: {asks:.2f}
-        • Ratio Bids/Asks: {bid_imbalance:.2f}x (requisito: ≥{orderbook_threshold}x para BUY)
-        • Ratio Asks/Bids: {ask_imbalance:.2f}x (requisito: ≥{orderbook_threshold}x para SELL)
-
-        INDICADORES DE MOMENTO:
-        • RSI actual: {latest_rsi if latest_rsi else 'N/A'} 
-        - BUY: VETO si >80, Advertencia si 70-80, Óptimo si <70
-        - SELL: VETO si <20, Advertencia si 20-30, Óptimo si >30
-        • Alineación precio vivo: {price_delta_pct:+.3f}% (BUY: ≥-0.1%, SELL: ≤+0.1%)
-        """
+    user_prompt = get_setting("prompt_text") or ""   
 
     market_context_full = (
+        f"\n\n 📊 CONTEXTO DE MERCADO PARA ANÁLISIS DE SEÑAL 📊"
         f"Activo: {signal_dict['asset']}\n"
+        f"Intérvalo: {signal_dict['interval']}\n"
         f"Precio de cierre de la última vela: {latest_close:.6f}\n"
         f"Precio en vivo (último trade): {live_price:.6f}\n"
         f"Diferencia intra-candle: {price_delta_pct:+.3f}%\n"
         f"Saldo disponible: {balance:.2f} USDC\n"
         f"Apalancamiento: {leverage}x\n"
         f"Nivel de riesgo: {risk_level}%\n"
+        f"Valor Stop Loss: {min_sl_pct*100:.2f}%\n"
+        f"Valor Take Profit: {min_tp_pct*100:.2f}%\n"
         f"Tasa de funding actual: {current_funding:.6f}\n"
         f"Liquidaciones cercanas (±2%): {nearby_liquidations}\n\n"
         f"LIBRO DE ÓRDENES (top 20):\n{orderbook_content}\n\n"
+        f"Threshold de imbalance requerido: {orderbook_threshold}x\n\n"
         f"HISTORIAL DE VELAS (30 de {len(df)} filas):\n{csv_content}"
     )
-
-    response_format_mixed = """{
-        "side": "BUY" or "SELL" or "NONE",
-        "approved": true or false,
-        "entry": 0.0,
-        "take_profit": 0.0,
-        "stop_loss": 0.0,
-        "resume_of_analysis":\\n\\n
-        1. Requisitos estructurales:\\n
-        ❌ estructura alcista (mínimos no ascendentes)\\n
-        ❌ estructura bajista (máximos no descendentes)\\n
-        ✅ ordenbook fuerte (1.72x)\\n
-        ✅ rsi no extremo (52.50)\\n
-        ✅ precio vivo alineado (+1.171%)\\n\\n
-        2. Análisis técnico: [breve explicación]\\n\\n
-        3. RSI: [valor y contexto]\\n\\n
-        4. Otros riesgos: [funding, volumen, liquidaciones]\\n\\n
-        5. Conclusión: [razón final]\\n\\n
-        Reglas:\\n
-        - Usa SIEMPRE \\n\\n entre secciones (ej. después de '1.', '2.', etc.).\\n
-        - Cada ítem en la sección 1 va en su propia línea, con ✅ o ❌.\\n
-        - Nada en mayúsculas innecesarias.\\n
-        - Tono neutral, sin dramatismo."
-        }"""
     
     response_format = """{
         "side": "BUY" or "SELL" or "NONE",
@@ -225,39 +159,12 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     if prompt_mode == "mixed":
         prompt = f"""{user_prompt}
 
-        {hard_rules_note}
-
-        {structural_context}
-
         {market_context_full}
 
-            📋 INSTRUCCIÓN FINAL:
-            1. Analiza primero los REQUISITOS ESTRUCTURALES arriba. 
-            2. SOLO aprueba si TODOS los requisitos críticos para BUY o SELL se cumplen.
-            3. Para RSI: VETO absoluto si >80 (BUY) o <20 (SELL). Entre 70-80 o 20-30 es advertencia, no veto.
-            4. Busca divergencias RSI-precio en los datos históricos.
-            5. Usa análisis técnico para reforzar tu decisión.
-
-            Responde EXCLUSIVAMENTE en este formato JSON:
-            {response_format_mixed}"""
-    else:
-        market_context_simple = (
-             f"Activo: {signal_dict['asset']}\n"
-            f"Precio de cierre de la última vela: {latest_close:.6f}\n"
-            f"Precio en vivo (último trade): {live_price:.6f}\n"
-            f"Diferencia intra-candle: {price_delta_pct:+.3f}%\n"
-            f"Saldo disponible: {balance:.2f} USDC\n"
-            f"Apalancamiento: {leverage}x\n"
-            f"Nivel de riesgo: {risk_level}%\n"
-            f"Tasa de funding actual: {current_funding:.6f}\n"
-            f"Liquidaciones cercanas (±2%): {nearby_liquidations}\n\n"
-            f"LIBRO DE ÓRDENES (top 20):\n{orderbook_content}\n\n"
-            f"HISTORIAL DE VELAS (30 de {len(df)} filas):\n{csv_content}"          
-        )
-        
+        Responde EXCLUSIVAMENTE en este formato JSON:
+        {response_format}"""    
+    else:        
         prompt = f"""{user_prompt}
-
-        {market_context_simple}
 
         📋 INSTRUCCIÓN FINAL:
         Analiza la señal basándote en los datos de mercado proporcionados.
@@ -284,7 +191,7 @@ def analyze_with_llm(signal_dict: dict) -> dict:
                 "model": model_name,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
-                "max_tokens": 1000,
+                "max_tokens": 3000,
                 "stream": False
             },
             timeout=timeout_sec
