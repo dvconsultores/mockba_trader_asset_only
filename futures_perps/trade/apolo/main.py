@@ -135,7 +135,7 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         f"Diferencia intra-candle: {price_delta_pct:+.3f}%\n"
         f"Saldo disponible: {balance:.2f} USDC\n"
         f"Apalancamiento: {leverage}x\n"
-        f"Nivel de riesgo: {risk_level}%\n"
+        f"Porcentaje de capital a arriesgar: {risk_level}%\n"
         f"Valor Stop Loss: {min_sl_pct*100:.2f}%\n"
         f"Valor Take Profit: {min_tp_pct*100:.2f}%\n"
         f"Tasa de funding actual: {current_funding:.6f}\n"
