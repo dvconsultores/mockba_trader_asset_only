@@ -74,23 +74,12 @@ def analyze_with_llm(signal_dict: dict) -> dict:
 
     latest_close = float(df['close'].iloc[-1])
     
-    # === Trim CSV to avoid LLM timeout ===
-    csv_content = df.to_csv(index=False)
-    csv_lines = csv_content.split('\n')
-    if len(csv_lines) > 30:
-        csv_content = '\n'.join(csv_lines[:20] + ["... (middle truncated) ..."] + csv_lines[-10:])
+    # === Only last 30 rows of df as CSV (including header) ===
+    csv_content = df.tail(30).to_csv(index=False)
 
 
-    # get the last 15 rows of five_min_df as csv
-    csv_5min_content = five_min_df.to_csv(index=False)
-    csv_5min_lines = csv_5min_content.split('\n')
-    if len(csv_5min_lines) > 16:  # 1 header + 15 data rows
-        csv_5min_content = '\n'.join(
-            csv_5min_lines[:1] +  # header
-            csv_5min_lines[1:6] +  # first 5 data rows
-            ["... (middle truncated) ..."] +
-            csv_5min_lines[-10:]   # last 10 data rows
-        )
+    # get only the last 5 rows of five_min_df as csv (including header)
+    csv_5min_content = five_min_df.tail(5).to_csv(index=False)
 
 
     # === Live price ===
@@ -156,8 +145,8 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         f"Liquidaciones cercanas (±2%): {nearby_liquidations}\n\n"
         f"LIBRO DE ÓRDENES (top 20):\n{orderbook_content}\n\n"
         f"Threshold de imbalance requerido: {orderbook_threshold}x\n\n"
-        f"📉 ÚLTIMAS 15 VELAS (5m) — PARA CONFIRMACIÓN DE AGOTAMIENTO:(15 de {len(df)} filas):\n{csv_5min_content}\n\n"
-        f"HISTORIAL DE VELAS (30 de {len(df)} filas):\n{csv_content}"
+        f"📉 ÚLTIMAS 5 VELAS (5m) — PARA CONFIRMACIÓN DE AGOTAMIENTO:\n{csv_5min_content}\n\n"
+        f"📉 ÚLTIMAS 5 VELAS (1h) :\n{csv_content}"
     )
     
     response_format = """{
