@@ -49,6 +49,15 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         limit=80,
         strategy=signal_dict.get('indicator')
     )
+
+    # ALWAYS fetch 5m for exhaustion confirmation (critical for your edge)
+    five_min_df = get_historical_data_limit_apolo(
+        symbol=signal_dict['asset'],
+        interval="5m",
+        limit=15,  # last 15 candles = 75 mins of 5m data
+        strategy=signal_dict.get('indicator')
+    )
+
     if df is None or len(df) < 20:
         return {
             "approved": False,
@@ -142,6 +151,7 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         f"Liquidaciones cercanas (±2%): {nearby_liquidations}\n\n"
         f"LIBRO DE ÓRDENES (top 20):\n{orderbook_content}\n\n"
         f"Threshold de imbalance requerido: {orderbook_threshold}x\n\n"
+        f"📉 ÚLTIMAS 15 VELAS (5m) — PARA CONFIRMACIÓN DE AGOTAMIENTO:\n{five_min_df.tail(15).to_csv(index=False, columns=['open','high','low','close','volume'])}\n\n"
         f"HISTORIAL DE VELAS (30 de {len(df)} filas):\n{csv_content}"
     )
     
