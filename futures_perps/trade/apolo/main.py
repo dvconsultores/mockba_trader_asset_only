@@ -151,8 +151,8 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         "entry": 0.0,
         "take_profit": 0.0,
         "stop_loss": 0.0,
-        "resume_of_analysis": "Resumen del análisis"
-    }"""    
+        "resume_of_analysis": "Resumen del análisis. Format this field EXCLUSIVELY for Telegram with:\\n• Emojis (✅❌🚨⚡💎🛡️💰📊)\\n• Short lines (<40 chars)\\n• \\n line breaks between sections\\n• NO markdown, NO asterisks\\n\\nExample rejected trade:\\n❌ RECHAZADO — Fase 1: Consolidación\\n\\n💰 Precio: $1.3998\\n📊 Rango: $1.3978 – $1.4511\\n\\n🔍 Análisis:\\n• Precio atrapado en rango\\n• Libro de órdenes simétrico (1.1x)\\n• Sin breakout confirmado\\n\\n⚠️ TRAMPA: Liquidez débil bajo $1.3932\\n⏳ Esperar cierre bajo $1.3978 + desbalance >3:1"
+    }"""
 
     prompt_mode = get_setting("prompt_mode") or "user_only"
     
