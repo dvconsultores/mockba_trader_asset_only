@@ -54,7 +54,7 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     five_min_df = get_historical_data_limit_apolo(
         symbol=signal_dict['asset'],
         interval="5m",
-        limit=15,  # last 15 candles = 75 mins of 5m data
+        limit=80,  # last 15 candles = 75 mins of 5m data
         strategy=signal_dict.get('indicator')
     )
 
@@ -63,6 +63,13 @@ def analyze_with_llm(signal_dict: dict) -> dict:
             "approved": False,
             "analysis": "Insufficient historical data",
             "explanation_for_user": "❌ No se pudieron cargar suficientes datos históricos para analizar la señal."
+        }
+    
+    if five_min_df is None or len(five_min_df) < 10:
+        return {
+            "approved": False,
+            "analysis": "Insufficient 5m data for exhaustion confirmation",
+            "explanation_for_user": "❌ No se pudieron cargar suficientes datos de 5m para confirmar agotamiento."
         }
 
     latest_close = float(df['close'].iloc[-1])
@@ -73,16 +80,18 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     if len(csv_lines) > 30:
         csv_content = '\n'.join(csv_lines[:20] + ["... (middle truncated) ..."] + csv_lines[-10:])
 
-    # === Structural data (for mixed mode or logging) ===
-    last_3_lows = df['low'].tail(3).astype(float).tolist()
-    last_3_highs = df['high'].tail(3).astype(float).tolist()
-    is_buy_structure = last_3_lows[0] <= last_3_lows[1] <= last_3_lows[2]
-    is_sell_structure = last_3_highs[0] >= last_3_highs[1] >= last_3_highs[2]
-    
-    # Get RSI
-    latest_rsi = None
-    if 'rsi_14' in df.columns:
-        latest_rsi = float(df['rsi_14'].iloc[-1])
+
+    # get the last 15 rows of five_min_df as csv
+    csv_5min_content = five_min_df.to_csv(index=False)
+    csv_5min_lines = csv_5min_content.split('\n')
+    if len(csv_5min_lines) > 16:  # 1 header + 15 data rows
+        csv_5min_content = '\n'.join(
+            csv_5min_lines[:1] +  # header
+            csv_5min_lines[1:6] +  # first 5 data rows
+            ["... (middle truncated) ..."] +
+            csv_5min_lines[-10:]   # last 10 data rows
+        )
+
 
     # === Live price ===
     live_price = get_close_price(ORDERLY_ACCOUNT_ID, signal_dict['asset'])
@@ -94,10 +103,6 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     # === Orderbook ===
     orderbook = get_orderbook(signal_dict['asset'], limit=20)
     orderbook_content = format_orderbook_as_text(orderbook)
-    bids = sum(float(qty) for _, qty in orderbook.get('bids', [])[:15])
-    asks = sum(float(qty) for _, qty in orderbook.get('asks', [])[:15])
-    bid_imbalance = bids / asks if asks > 0 else 0
-    ask_imbalance = asks / bids if bids > 0 else 0
 
     # === Balance & funding ===
     balance = get_available_balance(ORDERLY_SECRET, ORDERLY_ACCOUNT_ID, ORDERLY_PUBLIC_KEY)
@@ -151,7 +156,7 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         f"Liquidaciones cercanas (±2%): {nearby_liquidations}\n\n"
         f"LIBRO DE ÓRDENES (top 20):\n{orderbook_content}\n\n"
         f"Threshold de imbalance requerido: {orderbook_threshold}x\n\n"
-        f"📉 ÚLTIMAS 15 VELAS (5m) — PARA CONFIRMACIÓN DE AGOTAMIENTO:\n{five_min_df.tail(15).to_csv(index=False, columns=['open','high','low','close','volume'])}\n\n"
+        f"📉 ÚLTIMAS 15 VELAS (5m) — PARA CONFIRMACIÓN DE AGOTAMIENTO:(15 de {len(df)} filas):\n{csv_5min_content}\n\n"
         f"HISTORIAL DE VELAS (30 de {len(df)} filas):\n{csv_content}"
     )
     
@@ -261,78 +266,17 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     explanation_for_user = ""
     rejection_reasons = []
 
-    if prompt_mode == "mixed":
-        # === STRICT MODE: enforce all structural rules ===
-        min_imbalance = float(get_setting("order_book_threshold") or 1.6)
-        rsi_rejection = False
-        if latest_rsi:
-            if llm_side == "BUY" and latest_rsi > 80:
-                rsi_rejection = True
-            elif llm_side == "SELL" and latest_rsi < 20:
-                rsi_rejection = True
-
-        if llm_side == "BUY" and llm_approved:
-            valid = (is_buy_structure and 
-                     bid_imbalance >= min_imbalance and 
-                     not rsi_rejection and 
-                     price_delta_pct >= -0.1)
-            if valid:
-                swing_low = min(last_3_lows)
-                sl_dist = entry * min_sl_pct
-                stop_loss = min(swing_low * 0.999, entry - sl_dist)
-                tp_dist = entry * min_tp_pct
-                take_profit = entry + max(3 * (entry - stop_loss), tp_dist)
-                final_approved, final_side = True, "BUY"
-            else:
-                if not is_buy_structure: rejection_reasons.append("Estructura NO alcista")
-                if bid_imbalance < min_imbalance: rejection_reasons.append("Bids insuficientes")
-                if rsi_rejection: rejection_reasons.append(f"RSI >80: {latest_rsi}")
-                if price_delta_pct < -0.1: rejection_reasons.append("Precio cayendo")
-
-        elif llm_side == "SELL" and llm_approved:
-            valid = (is_sell_structure and 
-                     ask_imbalance >= min_imbalance and 
-                     not rsi_rejection and 
-                     price_delta_pct <= 0.1)
-            if valid:
-                swing_high = max(last_3_highs)
-                sl_dist = entry * min_sl_pct
-                stop_loss = max(swing_high * 1.001, entry + sl_dist)
-                tp_dist = entry * min_tp_pct
-                take_profit = entry - max(3 * (stop_loss - entry), tp_dist)
-                final_approved, final_side = True, "SELL"
-            else:
-                if not is_sell_structure: rejection_reasons.append("Estructura NO bajista")
-                if ask_imbalance < min_imbalance: rejection_reasons.append("Asks insuficientes")
-                if rsi_rejection: rejection_reasons.append(f"RSI <20: {latest_rsi}")
-                if price_delta_pct > 0.1: rejection_reasons.append("Precio subiendo")
-
-        explanation_for_user = (
-            f"✅ APROBADA ({final_side})" if final_approved else
-            f"❌ RECHAZADA (mixed)\n• " + "\n• ".join(rejection_reasons[:3] or ["Sin motivos claros"])
-        )
-
-    else:
-        # === USER_ONLY MODE: TRUST LLM COMPLETELY ===
-        if llm_side in ("BUY", "SELL") and llm_approved:
-            final_approved = True
-            final_side = llm_side
-            # Try to use LLM-provided prices; fallback to simple risk levels
-            try:
-                entry = float(llm_result.get("entry", latest_close))
-                take_profit = float(llm_result.get("take_profit", 0))
-                stop_loss = float(llm_result.get("stop_loss", 0))
-                # If LLM gave invalid TP/SL, compute defaults
-                if take_profit == 0 or stop_loss == 0:
-                    sl_dist = entry * min_sl_pct
-                    tp_dist = entry * min_tp_pct
-                    if llm_side == "BUY":
-                        stop_loss = entry - sl_dist
-                        take_profit = entry + tp_dist
-                    else:
-                        stop_loss = entry + sl_dist
-                        take_profit = entry - tp_dist
-            except:
+    # === USER_ONLY MODE: TRUST LLM COMPLETELY ===
+    if llm_side in ("BUY", "SELL") and llm_approved:
+        final_approved = True
+        final_side = llm_side
+        # Try to use LLM-provided prices; fallback to simple risk levels
+        try:
+            entry = float(llm_result.get("entry", latest_close))
+            take_profit = float(llm_result.get("take_profit", 0))
+            stop_loss = float(llm_result.get("stop_loss", 0))
+            # If LLM gave invalid TP/SL, compute defaults
+            if take_profit == 0 or stop_loss == 0:
                 sl_dist = entry * min_sl_pct
                 tp_dist = entry * min_tp_pct
                 if llm_side == "BUY":
@@ -341,34 +285,22 @@ def analyze_with_llm(signal_dict: dict) -> dict:
                 else:
                     stop_loss = entry + sl_dist
                     take_profit = entry - tp_dist
+        except:
+            sl_dist = entry * min_sl_pct
+            tp_dist = entry * min_tp_pct
+            if llm_side == "BUY":
+                stop_loss = entry - sl_dist
+                take_profit = entry + tp_dist
+            else:
+                stop_loss = entry + sl_dist
+                take_profit = entry - tp_dist
 
-            explanation_for_user = f"✅ APROBADA ({final_side}) — modo user_only (confianza total en LLM)"
-        else:
-            explanation_for_user = "❌ RECHAZADA — LLM no aprobó (modo user_only)"
+        explanation_for_user = f"✅ APROBADA ({final_side}) — modo user_only (confianza total en LLM)"
+    else:
+        explanation_for_user = "❌ RECHAZADA — LLM no aprobó (modo user_only)"
 
-    # === Alignment score (for logging only) ===
-    structural_alignment = 0
-    if prompt_mode == "mixed":
-        if llm_side == "BUY":
-            if is_buy_structure: structural_alignment += 25
-            if bid_imbalance >= min_imbalance: structural_alignment += 25
-            if not (latest_rsi and latest_rsi > 80): structural_alignment += 25
-            if price_delta_pct >= -0.1: structural_alignment += 25
-        elif llm_side == "SELL":
-            if is_sell_structure: structural_alignment += 25
-            if ask_imbalance >= min_imbalance: structural_alignment += 25
-            if not (latest_rsi and latest_rsi < 20): structural_alignment += 25
-            if price_delta_pct <= 0.1: structural_alignment += 25
 
     logger.info(f"Prompt mode: {prompt_mode} | Approved: {final_approved}, Side: {final_side}")
-
-    # Before your return statement, transform the side
-    # if final_side == "SELL":
-    #     final_side_display = "🔴 SHORT"
-    # elif final_side == "BUY":
-    #     final_side_display = "🟢 LONG"
-    # else:
-    #     final_side_display = final_side
 
     return {
         "approved": final_approved,
@@ -381,20 +313,8 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         "analysis": content[:1000] + "..." if len(content) > 1000 else content,
         "explanation_for_user": explanation_for_user,
         "llm_model_used": used_model,
-        "structural_alignment": structural_alignment,
         "rejection_reasons": rejection_reasons if not final_approved else [],
-        "warning_reasons": [],
-        "rsi_status": "N/A",
-        "structural_data": {
-            "is_buy_structure": is_buy_structure,
-            "is_sell_structure": is_sell_structure,
-            "bid_imbalance": bid_imbalance,
-            "ask_imbalance": ask_imbalance,
-            "latest_rsi": latest_rsi,
-            "price_delta_pct": price_delta_pct,
-            "rsi_warning": False,
-            "rsi_rejection": False
-        }
+        "warning_reasons": []
     }
 
 
@@ -549,3 +469,17 @@ def autotrade():
             logger.error(f"Error in autotrade loop: {e}")
             time.sleep(60)        
             
+# if __name__ == "__main__":
+#     asset = "PERP_BTC_USDC"
+#     five_min_df = get_historical_data_limit_apolo(
+#         symbol=asset,
+#         interval="5m",
+#         limit=50,  # last 15 candles = 75 mins of 5m data
+#         strategy="Trend-Following"
+#     )
+#     # check len before printing
+#     if five_min_df is None: 
+#         print("No data returned")
+#     else:
+#         # print last 5 rows of dataframe
+#         print(len(five_min_df))
