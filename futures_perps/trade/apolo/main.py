@@ -43,10 +43,13 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     from logs.log_config import apolo_trader_logger as logger
 
     # === 1. Fetch market data (80 candles) ===
+    # Map interval to limit
+    interval = signal_dict['interval']
+    limit = 200 if interval == '5m' else 80
     df = get_historical_data_limit_apolo(
         symbol=signal_dict['asset'],
-        interval=signal_dict['interval'],
-        limit=80,
+        interval=interval,
+        limit=limit,
         strategy=signal_dict.get('indicator')
     )
 
@@ -59,11 +62,9 @@ def analyze_with_llm(signal_dict: dict) -> dict:
 
     latest_close = float(df['close'].iloc[-1])
     
-    # === Trim CSV to avoid LLM timeout ===
-    csv_content = df.to_csv(index=False)
-    csv_lines = csv_content.split('\n')
-    if len(csv_lines) > 30:
-        csv_content = '\n'.join(csv_lines[:20] + ["... (middle truncated) ..."] + csv_lines[-10:])  
+    # === Get last 30 rows from newest to oldest ===
+    last_30_df = df.tail(30)
+    csv_content = last_30_df.to_csv(index=False)
 
 
     # === Live price ===
@@ -441,3 +442,16 @@ def autotrade():
             logger.error(f"Error in autotrade loop: {e}")
             time.sleep(60)        
             
+
+if __name__ == "__main__":
+    asset = "PERP_NEAR_USDC"
+    limit = 80
+    interval = "15m"
+    strategy = "Trend-Following"
+    df = get_historical_data_limit_apolo(
+        symbol=asset,
+        interval=interval,
+        limit=limit,
+        strategy=strategy
+    )
+    print(len(df))
