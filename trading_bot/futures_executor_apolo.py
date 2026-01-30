@@ -14,6 +14,7 @@ from base58 import b58decode
 from base64 import urlsafe_b64encode
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from db.db_ops import get_setting
+import asyncio
 
 
 from logs.log_config import apolo_trader_logger as logger
@@ -75,36 +76,41 @@ def get_confidence_level(confidence: float) -> str:
     else:
         return "⚠️ WEAK"
 
-def get_close_price(wallet_address: str, symbol: str = "PERP_NEAR_USDC") -> float:
+def get_close_price(wallet_address: str, symbol: str = "PERP_NEAR_USDC", interval: str = "5m") -> float:
     """Get current price from Orderly WebSocket - simplified version"""
-    import asyncio
-    
     async def get_price():
         url = f"wss://ws-evm.orderly.org/ws/stream/{wallet_address}"
-        topic = f"{symbol}@ticker"
+        topic = f"{symbol}@kline_{interval}"
         
         try:
             # Use async context manager
             async with websockets.connect(url, ping_interval=15) as ws:
                 # Subscribe to ticker topic
                 await ws.send(json.dumps({
-                    "id": "clientID_price",
+                    "id": "clientID6",
                     "topic": topic,
                     "event": "subscribe"
                 }))
 
                 # Wait for response with timeout
-                for _ in range(10):  # Try up to 10 messages
+                for _ in range(20):  # Try up to 20 messages (longer wait)
                     try:
-                        raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                        raw = await asyncio.wait_for(ws.recv(), timeout=10.0) # 10s timeout
                         msg = json.loads(raw)
+
+                        # Ignore ping events
+                        if msg.get("event") == "ping":
+                            continue
+                        
+                        # print(json.dumps(msg, indent=4))
 
                         if msg.get("topic") == topic and "data" in msg:
                             close_price = msg["data"].get("close")
                             if close_price is not None:
                                 return float(close_price)
                     except asyncio.TimeoutError:
-                        break
+                        logger.info("WebSocket receive timed out, trying again...")
+                        continue # Continue loop on timeout
                        
         except Exception as e:
             logger.error(f"WebSocket error: {e}")

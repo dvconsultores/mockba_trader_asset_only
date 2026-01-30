@@ -68,7 +68,7 @@ def analyze_with_llm(signal_dict: dict) -> dict:
 
 
     # === Live price ===
-    live_price = get_close_price(ORDERLY_ACCOUNT_ID, signal_dict['asset'])
+    live_price = get_close_price(ORDERLY_ACCOUNT_ID, signal_dict['asset'], signal_dict['interval'])
     if live_price is None:
         live_price = latest_close
         logger.warning("Falling back to candle close price (WebSocket failed)")
@@ -443,15 +443,6 @@ def autotrade():
             time.sleep(60)        
             
 
-if __name__ == "__main__":
-    asset = "PERP_NEAR_USDC"
-    limit = 80
-    interval = "15m"
-    strategy = "Trend-Following"
-    df = get_historical_data_limit_apolo(
-        symbol=asset,
-        interval=interval,
-        limit=limit,
-        strategy=strategy
-    )
-    print(len(df))
+# if __name__ == "__main__":
+#     live_price = get_close_price(ORDERLY_ACCOUNT_ID, "PERP_NEAR_USDC")
+#     print(live_price)
