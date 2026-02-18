@@ -22,8 +22,14 @@ ORDERLY_ACCOUNT_ID = os.getenv("ORDERLY_ACCOUNT_ID")
 ORDERLY_SECRET = os.getenv("ORDERLY_SECRET")
 ORDERLY_PUBLIC_KEY = os.getenv("ORDERLY_PUBLIC_KEY")
 
+if not BASE_URL:
+    raise ValueError("❌ ORDERLY_BASE_URL environment variable is not set!")
+if not ORDERLY_ACCOUNT_ID:
+    raise ValueError("❌ ORDERLY_ACCOUNT_ID environment variable is not set!")
 if not ORDERLY_SECRET or not ORDERLY_PUBLIC_KEY:
     raise ValueError("❌ ORDERLY_SECRET or ORDERLY_PUBLIC_KEY environment variables are not set!")
+
+logger.info(f"✅ Orderly API initialized: BASE_URL={BASE_URL}, ACCOUNT_ID={ORDERLY_ACCOUNT_ID[:10]}...")
 
 # ✅ Remove "ed25519:" prefix if present in private key
 if ORDERLY_SECRET.startswith("ed25519:"):
@@ -336,14 +342,19 @@ def get_historical_data_limit_apolo(symbol, interval, limit, strategy):
     }
 
     url = f"{BASE_URL}{path}{query}"
-    response = requests.get(url, headers=headers)
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+    except requests.exceptions.RequestException as e:
+        logger.error(f"❌ Network error fetching {symbol} {interval}: {e}")
+        return None
 
     if response.status_code != 200:
-        print(f"❌ Error fetching data for {symbol} {interval}: {response.json()}")
+        logger.error(f"❌ API error for {symbol} {interval}: Status {response.status_code}, Response: {response.text[:200]}")
         return None
 
     data = response.json().get("data", {})
     if not data or "rows" not in data:
+        logger.error(f"❌ No data/rows for {symbol} {interval}. Response: {response.json()}")
         return None
 
     df = pd.DataFrame(data["rows"])
