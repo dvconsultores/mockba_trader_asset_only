@@ -42,10 +42,17 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     """LLM analyzes full candle context; Python enforces rules ONLY if prompt_mode == 'mixed'."""
     from logs.log_config import apolo_trader_logger as logger
 
-    # === 1. Fetch market data (80 candles) ===
-    # Map interval to limit
+    # === 1. Fetch market data (with extra for indicator warm-up) ===
+    # Map interval to limit (increased to account for indicator dropna)
     interval = signal_dict['interval']
-    limit = 200 if interval == '5m' else 80
+    limit_map = {
+        '5m': 500,   # Need extra due to ADX/MACD warm-up
+        '15m': 300,
+        '30m': 300,
+        '1h': 200,
+        '4h': 150
+    }
+    limit = limit_map.get(interval, 200)
     
     logger.info(f"📡 Requesting {limit} candles for {signal_dict['asset']} {interval}")
     df = get_historical_data_limit_apolo(
