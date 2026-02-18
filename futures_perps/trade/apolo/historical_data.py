@@ -325,6 +325,7 @@ def get_features_for_strategy(interval, strategy):
 
 # ✅ Fetch historical Orderly data with global rate limiting
 def get_historical_data_limit_apolo(symbol, interval, limit, strategy):
+    logger.info(f"📥 Fetching historical data: {symbol} {interval} (limit={limit}, strategy={strategy})")
     rate_limiter()  # ✅ Apply global rate limit
 
     timestamp = str(int(time.time() * 1000))
@@ -342,6 +343,8 @@ def get_historical_data_limit_apolo(symbol, interval, limit, strategy):
     }
 
     url = f"{BASE_URL}{path}{query}"
+    logger.debug(f"Request URL: {url}")
+    
     try:
         response = requests.get(url, headers=headers, timeout=10)
     except requests.exceptions.RequestException as e:
@@ -349,45 +352,53 @@ def get_historical_data_limit_apolo(symbol, interval, limit, strategy):
         return None
 
     if response.status_code != 200:
-        logger.error(f"❌ API error for {symbol} {interval}: Status {response.status_code}, Response: {response.text[:200]}")
+        logger.error(f"❌ API error for {symbol} {interval}: Status {response.status_code}, Response: {response.text[:400]}")
         return None
 
     data = response.json().get("data", {})
     if not data or "rows" not in data:
-        logger.error(f"❌ No data/rows for {symbol} {interval}. Response: {response.json()}")
+        logger.error(f"❌ No data/rows for {symbol} {interval}. Full response: {response.json()}")
         return None
 
+    rows_count = len(data["rows"])
+    logger.info(f"✅ Received {rows_count} rows from API for {symbol} {interval}")
+    
     df = pd.DataFrame(data["rows"])
     required_columns = ["start_timestamp", "open", "high", "low", "close", "volume"]
-    if set(required_columns).issubset(df.columns):
-        # Convert start_timestamp from ms to datetime
-        df["start_time"] = df["start_timestamp"]  # keep raw ms
-        df["start_timestamp"] = pd.to_datetime(df["start_timestamp"], unit="ms", utc=True)
+    
+    if not set(required_columns).issubset(df.columns):
+        logger.error(f"❌ Missing required columns for {symbol} {interval}. Found: {df.columns.tolist()}, Required: {required_columns}")
+        return None
         
+    # Convert start_timestamp from ms to datetime
+    df["start_time"] = df["start_timestamp"]  # keep raw ms
+    df["start_timestamp"] = pd.to_datetime(df["start_timestamp"], unit="ms", utc=True)
+    
+    # Optional: set index but still keep the columns
+    df = df.set_index("start_timestamp", drop=False)
 
-        # Optional: set index but still keep the columns
-        df = df.set_index("start_timestamp", drop=False)
+    # Remove duplicates
+    df = df[~df.index.duplicated(keep="first")]
 
-        # Remove duplicates
-        df = df[~df.index.duplicated(keep="first")]
+    # Keep column order nice
+    df = df[["start_time", "start_timestamp", "open", "high", "low", "close", "volume"]]
 
-        # Keep column order nice
-        df = df[["start_time", "start_timestamp", "open", "high", "low", "close", "volume"]]
+    # ✅ SORT CHRONOLOGICALLY (OLDEST → NEWEST)
+    df = df.reset_index(drop=True).sort_values('start_timestamp').reset_index(drop=True)
+    logger.info(f"📊 DataFrame prepared: {len(df)} rows after deduplication for {symbol} {interval}")
 
-        # ✅ SORT CHRONOLOGICALLY (OLDEST → NEWEST)
-        df = df.reset_index(drop=True).sort_values('start_timestamp').reset_index(drop=True)
-
-        features_dict = get_features_for_strategy(interval, strategy)
-        features = features_dict["features"]
-        
-        if not features:
-            print(f"⚠️ Warning: No features defined for interval: {interval} and strategy: {strategy}")
-            raise ValueError(f"No features defined for interval: {interval} and strategy: {strategy}")
-        
-        df = add_indicators(df, features)
-
-        return df
-    return None
+    features_dict = get_features_for_strategy(interval, strategy)
+    features = features_dict["features"]
+    
+    if not features:
+        logger.error(f"⚠️ No features defined for interval: {interval} and strategy: {strategy}")
+        raise ValueError(f"No features defined for interval: {interval} and strategy: {strategy}")
+    
+    logger.debug(f"Adding indicators: {features}")
+    df = add_indicators(df, features)
+    
+    logger.info(f"✅ Final DataFrame: {len(df)} rows with indicators for {symbol} {interval}")
+    return df
 
 
 

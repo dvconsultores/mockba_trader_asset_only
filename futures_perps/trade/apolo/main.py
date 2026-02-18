@@ -46,6 +46,8 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     # Map interval to limit
     interval = signal_dict['interval']
     limit = 200 if interval == '5m' else 80
+    
+    logger.info(f"📡 Requesting {limit} candles for {signal_dict['asset']} {interval}")
     df = get_historical_data_limit_apolo(
         symbol=signal_dict['asset'],
         interval=interval,
@@ -53,10 +55,19 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         strategy=signal_dict.get('indicator')
     )
 
-    if df is None or len(df) < 20:
+    if df is None:
+        logger.error(f"❌ get_historical_data_limit_apolo returned None for {signal_dict['asset']} {interval}")
         return {
             "approved": False,
-            "analysis": "Insufficient historical data",
+            "analysis": "Insufficient historical data - API returned no data",
+            "explanation_for_user": "❌ No se pudieron cargar suficientes datos históricos para analizar la señal."
+        }
+    
+    if len(df) < 20:
+        logger.error(f"❌ Insufficient data: Only {len(df)} rows received (minimum 20 required) for {signal_dict['asset']} {interval}")
+        return {
+            "approved": False,
+            "analysis": f"Insufficient historical data - only {len(df)} rows",
             "explanation_for_user": "❌ No se pudieron cargar suficientes datos históricos para analizar la señal."
         }
 
