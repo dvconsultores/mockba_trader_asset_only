@@ -181,7 +181,7 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         {response_format}"""    
 
     # debuging: log the prompt (first 1000 chars)
-    logger.info(f"Generated prompt for LLM (first 1000 chars):\n{prompt[:1000]}{'...' if len(prompt) > 1000 else ''}")
+    # logger.info(f"Generated prompt for LLM (first 1000 chars):\n{prompt[:1000]}{'...' if len(prompt) > 1000 else ''}")
 
     if get_setting("show_prompt") == "True":
         send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📝 Prompt ({len(prompt)} chars):\n{prompt}...")
