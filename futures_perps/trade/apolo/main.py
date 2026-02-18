@@ -149,7 +149,8 @@ def analyze_with_llm(signal_dict: dict) -> dict:
 
         {market_context_full}
 
-        Responde EXCLUSIVAMENTE en este formato JSON:
+        IMPORTANTE: Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes o después.
+        El formato JSON debe ser exactamente:
         {response_format}"""    
     else:        
         prompt = f"""{user_prompt}
@@ -157,8 +158,12 @@ def analyze_with_llm(signal_dict: dict) -> dict:
         📋 INSTRUCCIÓN FINAL:
         Analiza la señal basándote en los datos de mercado proporcionados.
 
-        Responde EXCLUSIVAMENTE en este formato JSON:
+        IMPORTANTE: Responde ÚNICAMENTE con un objeto JSON válido, sin texto adicional antes o después.
+        El formato JSON debe ser exactamente:
         {response_format}"""    
+
+    # debuging: log the prompt (first 1000 chars)
+    # logger.info(f"Generated prompt for LLM (first 1000 chars):\n{prompt[:1000]}{'...' if len(prompt) > 1000 else ''}")
 
     if get_setting("show_prompt") == "True":
         send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📝 Prompt ({len(prompt)} chars):\n{prompt}...")
@@ -180,7 +185,8 @@ def analyze_with_llm(signal_dict: dict) -> dict:
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.1,
                 "max_tokens": 3000,
-                "stream": False
+                "stream": False,
+                "response_format": {"type": "json_object"}
             },
             timeout=timeout_sec
         )
@@ -203,6 +209,8 @@ def analyze_with_llm(signal_dict: dict) -> dict:
     # === Parse LLM response ===
     try:
         content = response.json()['choices'][0]['message']['content']
+        logger.info(f"LLM raw response (first 500 chars): {content[:500]}")
+        
         json_start = content.find('{')
         json_end = content.rfind('}') + 1
         if json_start == -1 or json_end == 0:
@@ -216,13 +224,19 @@ def analyze_with_llm(signal_dict: dict) -> dict:
                 raise ValueError(f"Missing field: {field}")
     except Exception as e:
         logger.error(f"LLM parse failed: {e}")
+        logger.error(f"Problematic content: {content[:200]}")
         content_lower = content.lower()
-        if "buy" in content_lower and ("approved" in content_lower or "true" in content_lower):
-            llm_result = {"side": "BUY", "approved": True, "resume_of_analysis": "Fallback: BUY approved"}
-        elif "sell" in content_lower and ("approved" in content_lower or "true" in content_lower):
-            llm_result = {"side": "SELL", "approved": True, "resume_of_analysis": "Fallback: SELL approved"}
+        # Check for both English and Spanish keywords
+        has_buy = "buy" in content_lower or "compra" in content_lower or "long" in content_lower
+        has_sell = "sell" in content_lower or "venta" in content_lower or "short" in content_lower or "bajista" in content_lower
+        has_approval = "approved" in content_lower or "true" in content_lower or "aprobado" in content_lower or "aprobar" in content_lower
+        
+        if has_buy and has_approval:
+            llm_result = {"side": "BUY", "approved": True, "resume_of_analysis": content}
+        elif has_sell and has_approval:
+            llm_result = {"side": "SELL", "approved": True, "resume_of_analysis": content}
         else:
-            llm_result = {"side": "NONE", "approved": False, "resume_of_analysis": "Fallback: rejected"}
+            llm_result = {"side": "NONE", "approved": False, "resume_of_analysis": content}
 
     llm_side = llm_result.get("side", "NONE")
     llm_approved = bool(llm_result.get("approved", False))
@@ -444,5 +458,9 @@ def autotrade():
             
 
 # if __name__ == "__main__":
-#     live_price = get_close_price(ORDERLY_ACCOUNT_ID, "PERP_NEAR_USDC")
-#     print(live_price)
+#     # live_price = get_close_price(ORDERLY_ACCOUNT_ID, "PERP_NEAR_USDC")
+#     # print(live_price)
+#     # Process a single signal (for testing)
+#     asset = "PERP_NEAR_USDC"
+#     result = process_signal(asset_override=asset)
+#     print(result)
