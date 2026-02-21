@@ -212,8 +212,8 @@ def settings(m):
         "set_asset": "💰 Asset",
         "set_risk": "⚠️ Risk Level",
         "set_interval": "⏱️ Interval",
-        "set_min_tp": "📈  Take Profit %",
-        "set_min_sl": "📉  Min Stop Loss %",
+        "set_min_tp": "📈  Take Profit",
+        "set_min_sl": "📉  Stop Loss",
         "set_auto_trade": "🤖 Auto Trade",
         "set_indicator": "📊 Indicator",
         "set_leverage": "⚖️ Leverage",
@@ -255,7 +255,7 @@ def upsert_assets(m):
             valid, error_msg = False, "Risk must be a positive number (e.g., 1.5)"
     elif gp1 in ("min_tp", "min_sl"):
         if not is_float(valor) or float(valor) <= 0:
-            valid, error_msg = False, f"Min {'TP' if 'tp' in gp1 else 'SL'} must be positive"
+            valid, error_msg = False, f"{'TP' if 'tp' in gp1 else 'SL'} must be positive"
     elif gp1 == "leverage":
         if not is_integer(valor) or not (1 <= int(valor) <= 50):
             valid, error_msg = False, "Leverage must be integer 1–50"
@@ -410,7 +410,7 @@ def set_interval(m):
         markup.add(*buttons[i:i+3])
     
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Min TP ➡️", cid), callback_data="set_min_tp"))
+               InlineKeyboardButton(translate("Next: TP ➡️", cid), callback_data="set_min_tp"))
         
     bot.send_message(cid, translate("Select Interval:", cid), reply_markup=markup)
 
@@ -422,7 +422,7 @@ def set_min_tp(m):
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Min SL ➡️", cid), callback_data="set_min_sl"))
+               InlineKeyboardButton(translate("Next: SL ➡️", cid), callback_data="set_min_sl"))
                
     bot.send_message(cid, translate("Enter min TP % (e.g., 1.0)", cid), reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
