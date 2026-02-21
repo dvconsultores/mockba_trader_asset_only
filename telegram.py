@@ -4,6 +4,7 @@ import sys
 import time
 import threading
 import re
+import html
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'machine_learning')))
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
@@ -26,6 +27,7 @@ initialize_database_tables()
 API_TOKEN = os.getenv("API_TOKEN")
 bot = telebot.TeleBot(API_TOKEN)
 gp1 = ""  # global setting key
+TELEGRAM_MAX_MESSAGE_LEN = 4096
 
 
 def is_float(value):
@@ -51,6 +53,58 @@ def translate(text, chat_id):
     except Exception as e:
         print(f"Translation error: {e}")
         return text
+
+
+def send_html_message_chunked(chat_id, message, max_len=TELEGRAM_MAX_MESSAGE_LEN):
+    if not message:
+        return
+
+    lines = message.splitlines(keepends=True)
+    current_chunk = ""
+
+    for line in lines:
+        if len(current_chunk) + len(line) > max_len:
+            if current_chunk:
+                bot.send_message(chat_id, current_chunk, parse_mode='HTML')
+                current_chunk = ""
+
+        if len(line) > max_len:
+            start = 0
+            while start < len(line):
+                chunk = line[start:start + max_len]
+                bot.send_message(chat_id, chunk, parse_mode='HTML')
+                start += max_len
+        else:
+            current_chunk += line
+
+    if current_chunk:
+        bot.send_message(chat_id, current_chunk, parse_mode='HTML')
+
+
+def send_text_message_chunked(chat_id, message, max_len=TELEGRAM_MAX_MESSAGE_LEN):
+    if not message:
+        return
+
+    lines = message.splitlines(keepends=True)
+    current_chunk = ""
+
+    for line in lines:
+        if len(current_chunk) + len(line) > max_len:
+            if current_chunk:
+                bot.send_message(chat_id, current_chunk)
+                current_chunk = ""
+
+        if len(line) > max_len:
+            start = 0
+            while start < len(line):
+                chunk = line[start:start + max_len]
+                bot.send_message(chat_id, chunk)
+                start += max_len
+        else:
+            current_chunk += line
+
+    if current_chunk:
+        bot.send_message(chat_id, current_chunk)
 
 
 # === Message Handlers ===
@@ -212,8 +266,8 @@ def settings(m):
         "set_asset": "💰 Asset",
         "set_risk": "⚠️ Risk Level",
         "set_interval": "⏱️ Interval",
-        "set_min_tp": "📈  Take Profit %",
-        "set_min_sl": "📉  Min Stop Loss %",
+        "set_min_tp": "📈  Profit",
+        "set_min_sl": "📉  Stop Loss",
         "set_auto_trade": "🤖 Auto Trade",
         "set_indicator": "📊 Indicator",
         "set_leverage": "⚖️ Leverage",
@@ -665,14 +719,12 @@ def execute_signal(m, asset=None):
     except Exception as e:
         result = f"Error: {str(e)}"
 
-    # SIMPLE FIX: Just send as plain text without any parse mode
+    # Send plain text result using Telegram-safe chunking (no truncation)
     try:
         result_str = str(result)
-        # Truncate if too long
-        if len(result_str) > 4000:
-            result_str = result_str[:4000] + "..."
-        
-        bot.send_message(cid, translate(f"Signal processed for {asset}. Result:\n\n{result_str}", cid))
+        header = translate(f"Signal processed for {asset}. Result:", cid)
+        full_message = f"{header}\n\n{result_str}"
+        send_text_message_chunked(cid, full_message)
     except Exception as e:
         bot.send_message(cid, translate(f"Signal processed but error displaying result: {str(e)}", cid))
 
@@ -702,11 +754,12 @@ def ListSettings(m):
         return
     
     # Build compact message
-    message = "<b>⚙️ BOT SETTINGS</b>\n"
-    message += "═══════════════════\n\n"
+    message_lines = []
+    message_lines.append("<b>⚙️ BOT SETTINGS</b>\n")
+    message_lines.append("═══════════════════\n\n")
     
     # Trading settings section
-    message += "<b>📈 Trading:</b>\n"
+    message_lines.append("<b>📈 Trading:</b>\n")
     trading_keys = [
         ("💰", "asset", "Asset"),
         ("⏱️", "interval", "Interval"),
@@ -726,9 +779,9 @@ def ListSettings(m):
                 value = f"{value}%"
             elif key == "leverage":
                 value = f"{value}x"
-            message += f"{emoji} <b>{label}:</b> <code>{value}</code>\n"
+            message_lines.append(f"{emoji} <b>{label}:</b> <code>{value}</code>\n")
     
-    message += "\n<b>⚙️ Configuration:</b>\n"
+    message_lines.append("\n<b>⚙️ Configuration:</b>\n")
     config_keys = [
         ("🤖", "auto_trade", "Auto Trade"),
         ("💬", "prompt_text", "Prompt"),
@@ -750,17 +803,27 @@ def ListSettings(m):
             elif key == "show_prompt":
                 value = "✅ YES" if str(value).lower() == "true" else "❌ NO"
             elif key == "prompt_text":
-                # Always show the full prompt, but escape HTML special characters
-                import html
-                value = html.escape(str(value))
-            message += f"{emoji} <b>{label}:</b> <code>{value}</code>\n"
+                escaped_prompt = html.escape(str(value))
+                chunk_size = 3000
+                prompt_chunks = [escaped_prompt[i:i + chunk_size] for i in range(0, len(escaped_prompt), chunk_size)] or [""]
+
+                if len(prompt_chunks) == 1:
+                    message_lines.append(f"{emoji} <b>{label}:</b> <code>{prompt_chunks[0]}</code>\n")
+                else:
+                    for index, prompt_chunk in enumerate(prompt_chunks, start=1):
+                        message_lines.append(
+                            f"{emoji} <b>{label} ({index}/{len(prompt_chunks)}):</b> <code>{prompt_chunk}</code>\n"
+                        )
+                continue
+            message_lines.append(f"{emoji} <b>{label}:</b> <code>{value}</code>\n")
     
     # Add timestamp
     from datetime import datetime
     timestamp = datetime.now().strftime("%H:%M:%S")
-    message += f"\n⏰ <i>Updated: {timestamp} | Total: {len(settings)} settings</i>"
+    message_lines.append(f"\n⏰ <i>Updated: {timestamp} | Total: {len(settings)} settings</i>")
     
-    bot.send_message(cid, message, parse_mode='HTML')
+    message = "".join(message_lines)
+    send_html_message_chunked(cid, message)
 
 
 
