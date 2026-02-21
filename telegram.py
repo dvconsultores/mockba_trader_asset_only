@@ -750,16 +750,16 @@ def ListSettings(m):
         settings['prompt_mode'] = os.getenv('PROMPT_MODE', 'mixed')
     
     if not settings:
-        bot.send_message(cid, "❌ No settings configured", parse_mode='HTML')
+        bot.send_message(cid, "❌ No settings configured")
         return
     
-    # Build compact message
+    # Build plain text message (safe for long content + chunking)
     message_lines = []
-    message_lines.append("<b>⚙️ BOT SETTINGS</b>\n")
+    message_lines.append("⚙️ BOT SETTINGS\n")
     message_lines.append("═══════════════════\n\n")
     
     # Trading settings section
-    message_lines.append("<b>📈 Trading:</b>\n")
+    message_lines.append("📈 Trading:\n")
     trading_keys = [
         ("💰", "asset", "Asset"),
         ("⏱️", "interval", "Interval"),
@@ -779,9 +779,9 @@ def ListSettings(m):
                 value = f"{value}%"
             elif key == "leverage":
                 value = f"{value}x"
-            message_lines.append(f"{emoji} <b>{label}:</b> <code>{value}</code>\n")
+            message_lines.append(f"{emoji} {label}: {value}\n")
     
-    message_lines.append("\n<b>⚙️ Configuration:</b>\n")
+    message_lines.append("\n⚙️ Configuration:\n")
     config_keys = [
         ("🤖", "auto_trade", "Auto Trade"),
         ("💬", "prompt_text", "Prompt"),
@@ -803,27 +803,27 @@ def ListSettings(m):
             elif key == "show_prompt":
                 value = "✅ YES" if str(value).lower() == "true" else "❌ NO"
             elif key == "prompt_text":
-                escaped_prompt = html.escape(str(value))
+                prompt_text = str(value)
                 chunk_size = 3000
-                prompt_chunks = [escaped_prompt[i:i + chunk_size] for i in range(0, len(escaped_prompt), chunk_size)] or [""]
+                prompt_chunks = [prompt_text[i:i + chunk_size] for i in range(0, len(prompt_text), chunk_size)] or [""]
 
                 if len(prompt_chunks) == 1:
-                    message_lines.append(f"{emoji} <b>{label}:</b> <code>{prompt_chunks[0]}</code>\n")
+                    message_lines.append(f"{emoji} {label}:\n{prompt_chunks[0]}\n")
                 else:
                     for index, prompt_chunk in enumerate(prompt_chunks, start=1):
                         message_lines.append(
-                            f"{emoji} <b>{label} ({index}/{len(prompt_chunks)}):</b> <code>{prompt_chunk}</code>\n"
+                            f"{emoji} {label} ({index}/{len(prompt_chunks)}):\n{prompt_chunk}\n"
                         )
                 continue
-            message_lines.append(f"{emoji} <b>{label}:</b> <code>{value}</code>\n")
+            message_lines.append(f"{emoji} {label}: {value}\n")
     
     # Add timestamp
     from datetime import datetime
     timestamp = datetime.now().strftime("%H:%M:%S")
-    message_lines.append(f"\n⏰ <i>Updated: {timestamp} | Total: {len(settings)} settings</i>")
+    message_lines.append(f"\n⏰ Updated: {timestamp} | Total: {len(settings)} settings")
     
     message = "".join(message_lines)
-    send_html_message_chunked(cid, message)
+    send_text_message_chunked(cid, message)
 
 
 
