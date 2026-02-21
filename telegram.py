@@ -294,7 +294,7 @@ def upsert_assets(m):
         next_label = "Next: Interval ➡️"
     elif gp1 == "min_tp": 
         next_step = "set_min_sl"
-        next_label = "Next: Min SL ➡️"
+        next_label = "Next: SL ➡️"
     elif gp1 == "min_sl": 
         next_step = "set_auto_trade"
         next_label = "Next: Auto Trade ➡️"
@@ -424,7 +424,7 @@ def set_min_tp(m):
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Next: SL ➡️", cid), callback_data="set_min_sl"))
                
-    bot.send_message(cid, translate("Enter min TP % (e.g., 1.0)", cid), reply_markup=markup)
+    bot.send_message(cid, translate("Enter TP % (e.g., 1.0)", cid), reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
 
 def set_min_sl(m):
@@ -713,8 +713,8 @@ def ListSettings(m):
         ("📊", "indicator", "Strategy"),
         ("⚖️", "leverage", "Leverage"),
         ("⚠️", "risk_level", "Risk"),
-        ("🎯", "min_tp", "Min TP"),
-        ("🎯", "min_sl", "Min SL")
+        ("🎯", "min_tp", "TP"),
+        ("🎯", "min_sl", "SL")
         # order book threshold
         ,("📚", "order_book_threshold", "Order Book Threshold")
     ]
