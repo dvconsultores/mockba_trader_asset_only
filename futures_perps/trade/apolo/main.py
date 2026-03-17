@@ -452,12 +452,12 @@ class ReversalScalper:
             c0, c1, c2 = closes[-3], closes[-2], closes[-1]
             h2, l2 = highs[-1], lows[-1]
 
-            # Always compute the minimum correction entry when direction is clear.
-            # This helps show exactly where CORRECTION_PCT would trigger an entry.
-            if c1 > c0 and c2 > c1:
+            # Compute a minimum correction entry from latest candle direction.
+            # This keeps a concrete "enter at" value visible in all cases.
+            if c2 > c1:
                 min_correction_entry = h2 * (1 - self.CORRECTION_PCT)
                 min_correction_label = "pullback"
-            elif c1 < c0 and c2 < c1:
+            elif c2 < c1:
                 min_correction_entry = l2 * (1 + self.CORRECTION_PCT)
                 min_correction_label = "bounce"
             
@@ -540,7 +540,7 @@ class ReversalScalper:
             lines.append(f"• Suggested entry: {live_price:.6f}")
             if min_correction_entry is not None:
                 lines.append(
-                    f"• 🎯 Minimum {min_correction_label} ({self.CORRECTION_PCT*100:.2f}%): enter at {min_correction_entry:.6f}"
+                    f"• 🎯 Minimum correction value to enter: {min_correction_entry:.6f} ({self.CORRECTION_PCT*100:.2f}%)"
                 )
             if 'details' in pattern:
                 details = pattern['details']
@@ -549,12 +549,12 @@ class ReversalScalper:
                 if 'bounce_pct' in details:
                     lines.append(f"• Bounce: {details['bounce_pct']:.2f}%")
         else:
-            lines.append("🔍 Reversal pattern: NOT DETECTED")
+            lines.append("Reversal pattern: NOT DETECTED")
             if failure_reason:
                 lines.append(f"• 🔍 Reason: {failure_reason}")
             if min_correction_entry is not None:
                 lines.append(
-                    f"• 🎯 Minimum {min_correction_label} ({self.CORRECTION_PCT*100:.2f}%): enter at {min_correction_entry:.6f}"
+                    f"• 🎯 Minimum correction value to enter: {min_correction_entry:.6f} ({self.CORRECTION_PCT*100:.2f}%)"
                 )
             if wait_price:
                 lines.append(f"• 🎯 Wait for price {wait_direction} to {wait_price:.6f}")
