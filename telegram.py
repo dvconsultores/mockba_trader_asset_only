@@ -130,6 +130,7 @@ def command_list(m):
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("⚙️ Settings", cid), callback_data="Settings"))
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
+    markup.row(InlineKeyboardButton(translate("📊 Analize Trades Performing", cid), callback_data="ProcessSignal"))
     markup.row(InlineKeyboardButton(translate("📋 List All Settings", cid), callback_data="ListSettings"))
     
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
@@ -170,33 +171,8 @@ def callback_handler(call):
     elif call.data.startswith("set_val:"):
         _, key, val = call.data.split(":", 2)
         upsert_setting(key, val)
-        
-        # Determine next step for navigation
-        next_step = None
-        next_label = None
-        
-        if key == "interval": 
-            next_step = "set_min_tp"
-            next_label = "Next: Min TP ➡️"
-        elif key == "auto_trade": 
-            next_step = "set_indicator"
-            next_label = "Next: Indicator ➡️"
-        elif key == "indicator": 
-            next_step = "set_leverage"
-            next_label = "Next: Leverage ➡️"
-        elif key == "show_prompt": 
-            next_step = "set_prompt_mode"
-            next_label = "Next: Prompt Mode ➡️"
-        elif key == "prompt_mode": 
-            next_step = "set_order_book_threshold"
-            next_label = "Next: Order Book Threshold ➡️"
-        
-        markup = None
-        if next_step:
-            markup = InlineKeyboardMarkup()
-            markup.add(InlineKeyboardButton(translate(next_label, cid), callback_data=next_step))
-            
-        bot.send_message(cid, translate(f"✅ {key} set to {val}.", cid), reply_markup=markup)
+
+        bot.send_message(cid, translate(f"✅ {key} set to {val}.", cid))
     elif call.data == "auto_trade_auto":
         upsert_setting("auto_trade", "Automatic")
         bot.send_message(cid, translate("✅ Auto Trade set to Automatic.", cid))
@@ -226,22 +202,16 @@ def callback_handler(call):
             'set_asset': set_asset,
             'asset_add': ask_add_asset,
             'asset_remove': ask_remove_asset,
-            'manage_automated_assets': manage_automated_assets,
-            'auto_asset_add': ask_add_automated_asset,
-            'auto_asset_remove': ask_remove_automated_asset,
-            'set_risk': set_risk,
             'set_interval': set_interval,
-            'set_min_tp': set_min_tp,
-            'set_min_sl': set_min_sl,
+            'set_take_profit': set_take_profit,
+            'set_stop_loss': set_stop_loss,
+            # Backward-compatible callback aliases
+            'set_min_tp': set_take_profit,
+            'set_min_sl': set_stop_loss,
             'set_auto_trade': set_auto_trade,
-            'set_indicator': set_indicator,
             'set_leverage': set_leverage,
-            'set_prompt': set_prompt,
             'ListSettings': ListSettings,
-            'ProcessSignal': execute_signal,
-            'set_show_prompt': set_show_prompt,
-            'set_prompt_mode': set_prompt_mode,
-            'set_order_book_threshold': set_order_book_threshold
+            'ProcessSignal': execute_signal
         }
         func = options.get(call.data)
         if func:
@@ -264,17 +234,11 @@ def settings(m):
 
     labels = {
         "set_asset": "💰 Asset",
-        "set_risk": "⚠️ Risk Level",
         "set_interval": "⏱️ Interval",
-        "set_min_tp": "📈  Profit",
-        "set_min_sl": "📉  Stop Loss",
+        "set_take_profit": "📈 Take Profit",
+        "set_stop_loss": "📉 Stop Loss",
         "set_auto_trade": "🤖 Auto Trade",
-        "set_indicator": "📊 Indicator",
-        "set_leverage": "⚖️ Leverage",
-        "set_prompt": "💬 Prompt Text",
-        "set_show_prompt": "👁️ Show Prompt",
-        "set_prompt_mode": "📝 Prompt Mode",
-        "set_order_book_threshold": "📚 Order Book Threshold"
+        "set_leverage": "⚖️ Leverage"
     }
     
     markup = InlineKeyboardMarkup()
@@ -307,9 +271,9 @@ def upsert_assets(m):
     elif gp1 == "risk_level":
         if not is_float(valor) or float(valor) <= 0:
             valid, error_msg = False, "Risk must be a positive number (e.g., 1.5)"
-    elif gp1 in ("min_tp", "min_sl"):
+    elif gp1 in ("take_profit", "stop_loss"):
         if not is_float(valor) or float(valor) <= 0:
-            valid, error_msg = False, f"Min {'TP' if 'tp' in gp1 else 'SL'} must be positive"
+            valid, error_msg = False, f"{'Take Profit' if gp1 == 'take_profit' else 'Stop Loss'} must be positive"
     elif gp1 == "leverage":
         if not is_integer(valor) or not (1 <= int(valor) <= 50):
             valid, error_msg = False, "Leverage must be integer 1–50"
@@ -319,55 +283,14 @@ def upsert_assets(m):
     elif gp1 == "interval":
         if not re.match(r"^\d+[mhd]$", valor.lower()) and not valor.lower() in ("5m", "15m", "30m", "1h", "4h", "1d"):
             valid, error_msg = False, "Invalid interval (e.g., 15m, 1h)"
-    # show prompt validation
-    elif gp1 == "show_prompt":
-        if valor not in ("True", "False"):
-            valid, error_msg = False, "Show Prompt must be 'True' or 'False'"        
-    # prompt mode validation
-    elif gp1 == "prompt_mode":
-        if valor not in ("mixed", "user_only"):
-            valid, error_msg = False, "Prompt Mode must be 'mixed' or 'user_only'"
-    # order book threshold validation
-    elif gp1 == "order_book_threshold":
-        if not is_float(valor) or float(valor) <= 0:
-            valid, error_msg = False, "Order Book Threshold must be a positive number (e.g., 1.6)"                
-
     if not valid:
         bot.send_message(cid, translate(f"❌ {error_msg}. Try again:", cid))
         bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
         return
 
     upsert_setting(gp1, valor)
-    
-    # Determine next step for navigation
-    next_step = None
-    next_label = None
-    
-    if gp1 == "risk_level": 
-        next_step = "set_interval"
-        next_label = "Next: Interval ➡️"
-    elif gp1 == "min_tp": 
-        next_step = "set_min_sl"
-        next_label = "Next: Min SL ➡️"
-    elif gp1 == "min_sl": 
-        next_step = "set_auto_trade"
-        next_label = "Next: Auto Trade ➡️"
-    elif gp1 == "leverage": 
-        next_step = "set_prompt"
-        next_label = "Next: Prompt Text ➡️"
-    elif gp1 == "prompt_text": 
-        next_step = "set_show_prompt"
-        next_label = "Next: Show Prompt ➡️"
-    elif gp1 == "order_book_threshold": 
-        next_step = "Settings"
-        next_label = "Finish ✅"
 
-    markup = None
-    if next_step:
-        markup = InlineKeyboardMarkup()
-        markup.add(InlineKeyboardButton(translate(next_label, cid), callback_data=next_step))
-
-    bot.send_message(cid, translate(f"✅ {gp1} set to {valor}.", cid), reply_markup=markup)
+    bot.send_message(cid, translate(f"✅ {gp1} set to {valor}.", cid))
 
 
 # === Setting Entry Points ===
@@ -381,7 +304,7 @@ def set_asset(m):
     markup.add(InlineKeyboardButton(translate("➕ Add Asset", cid), callback_data="asset_add"))
     markup.add(InlineKeyboardButton(translate("➖ Remove Asset", cid), callback_data="asset_remove"))
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Risk Level ➡️", cid), callback_data="set_risk"))
+               InlineKeyboardButton(translate("Next: Interval ➡️", cid), callback_data="set_interval"))
     
     current_assets = get_asset_list()
     msg = translate("Manage Assets:", cid) + "\n" + ", ".join(current_assets)
@@ -464,26 +387,26 @@ def set_interval(m):
         markup.add(*buttons[i:i+3])
     
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Min TP ➡️", cid), callback_data="set_min_tp"))
+               InlineKeyboardButton(translate("Next: Take Profit ➡️", cid), callback_data="set_take_profit"))
         
     bot.send_message(cid, translate("Select Interval:", cid), reply_markup=markup)
 
-def set_min_tp(m):
+def set_take_profit(m):
     if m.chat.type != 'private': return
-    global gp1; gp1 = "min_tp"
+    global gp1; gp1 = "take_profit"
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Min SL ➡️", cid), callback_data="set_min_sl"))
+               InlineKeyboardButton(translate("Next: Stop Loss ➡️", cid), callback_data="set_stop_loss"))
                
-    bot.send_message(cid, translate("Enter min TP % (e.g., 1.0)", cid), reply_markup=markup)
+    bot.send_message(cid, translate("Enter take profit % (e.g., 0.3)", cid), reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
 
-def set_min_sl(m):
+def set_stop_loss(m):
     if m.chat.type != 'private': return
-    global gp1; gp1 = "min_sl"
+    global gp1; gp1 = "stop_loss"
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
     
@@ -491,7 +414,7 @@ def set_min_sl(m):
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Next: Auto Trade ➡️", cid), callback_data="set_auto_trade"))
                
-    bot.send_message(cid, translate("Enter min SL % (e.g., 1.0)", cid), reply_markup=markup)
+    bot.send_message(cid, translate("Enter stop loss % (e.g., 1.5)", cid), reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
 
 def set_auto_trade(m):
@@ -504,7 +427,7 @@ def set_auto_trade(m):
                InlineKeyboardButton("False", callback_data="set_val:auto_trade:False"))
     markup.add(InlineKeyboardButton("Automatic", callback_data="auto_trade_auto"))
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Indicator ➡️", cid), callback_data="set_indicator"))
+               InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
     
     bot.send_message(cid, translate("Select Auto Trade:", cid), reply_markup=markup)
 
@@ -630,7 +553,7 @@ def set_leverage(m):
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Prompt Text ➡️", cid), callback_data="set_prompt"))
+               InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
                
     bot.send_message(cid, translate("Enter leverage (e.g., 5)", cid), reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
@@ -763,19 +686,15 @@ def ListSettings(m):
     trading_keys = [
         ("💰", "asset", "Asset"),
         ("⏱️", "interval", "Interval"),
-        ("📊", "indicator", "Strategy"),
+        ("🎯", "take_profit", "Take Profit"),
+        ("🛡️", "stop_loss", "Stop Loss"),
         ("⚖️", "leverage", "Leverage"),
-        ("⚠️", "risk_level", "Risk"),
-        ("🎯", "min_tp", "Min TP"),
-        ("🎯", "min_sl", "Min SL")
-        # order book threshold
-        ,("📚", "order_book_threshold", "Order Book Threshold")
     ]
     
     for emoji, key, label in trading_keys:
         if key in settings:
             value = settings[key]
-            if key in ["min_tp", "min_sl"]:
+            if key in ["take_profit", "stop_loss"]:
                 value = f"{value}%"
             elif key == "leverage":
                 value = f"{value}x"
@@ -783,10 +702,7 @@ def ListSettings(m):
     
     message_lines.append("\n⚙️ Configuration:\n")
     config_keys = [
-        ("🤖", "auto_trade", "Auto Trade"),
-        ("💬", "prompt_text", "Prompt"),
-        ("🔄", "prompt_mode", "Prompt Mode"),
-        ("👁️", "show_prompt", "Show Prompt")
+        ("🤖", "auto_trade", "Auto Trade")
     ]
     
     for emoji, key, label in config_keys:
@@ -800,21 +716,6 @@ def ListSettings(m):
                          value += f"\n   └ 📋 {', '.join(auto_assets)}"
                      else:
                          value += "\n   └ ⚠️ No assets selected"
-            elif key == "show_prompt":
-                value = "✅ YES" if str(value).lower() == "true" else "❌ NO"
-            elif key == "prompt_text":
-                prompt_text = str(value)
-                chunk_size = 3000
-                prompt_chunks = [prompt_text[i:i + chunk_size] for i in range(0, len(prompt_text), chunk_size)] or [""]
-
-                if len(prompt_chunks) == 1:
-                    message_lines.append(f"{emoji} {label}:\n{prompt_chunks[0]}\n")
-                else:
-                    for index, prompt_chunk in enumerate(prompt_chunks, start=1):
-                        message_lines.append(
-                            f"{emoji} {label} ({index}/{len(prompt_chunks)}):\n{prompt_chunk}\n"
-                        )
-                continue
             message_lines.append(f"{emoji} {label}: {value}\n")
     
     # Add timestamp

@@ -33,32 +33,13 @@ def initialize_database_tables():
         """)
 
         # Insert the default setting if it doesn't exist
-        # key: asset, value: PERP_BTC_USDC
-        # key: risk_level, value: 1.5
-        # key: interval, value: 1h
-        # key: min_tp, value: 1.0
-        # key: min_sl, value: 1.0
-        # key: auto_trade, value: true
-        # key: indicator, value: Trend-Following
-        # key: leverage, value: 5
-        # key: prompt_text, value: standard
-        # key: show_prompt, value: True
-        # key: prompt_mode, value: mixed or user_only
         default_settings = [
             ('asset', 'PERP_BTC_USDC'),
-            ('automated_assets', ''),
-            ('risk_level', '1.5'),
-            ('interval', '1h'),
-            ('min_tp', '1.0'),
-            ('min_sl', '1.0'),
+            ('interval', '5m'),
+            ('take_profit', '0.3'),
+            ('stop_loss', '1.5'),
             ('auto_trade', 'False'),
-            ('indicator', 'Trend-Following'),
-            ('leverage', '5'), 
-            ('prompt_text', 'Analiza el asset a continuación y proporciona una recomendación de trading basada en las tendencias actuales del mercado y los indicadores técnicos.'),
-            ('show_prompt', 'False'),
-            ('prompt_mode', 'mixed'),
-            ('order_book_threshold', '1.6'),
-            ('llm_model', 'deepseek-chat')
+            ('leverage', '10'),
         ]
         for key, value in default_settings:
             cur.execute("""

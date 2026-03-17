@@ -26,17 +26,20 @@ class DateRotatingFileHandler(RotatingFileHandler):
 
 
 # Configure Apolo trader logger
-apolo_trader_logger = logging.getLogger('apolo_trader_logger')
-if not apolo_trader_logger.hasHandlers():
-    apolo_trader_logger.setLevel(logging.DEBUG)
+apolo_logger = logging.getLogger('apolo_logger')
+if not apolo_logger.hasHandlers():
+    apolo_logger.setLevel(logging.DEBUG)
 
     # Apolo file handler
     apolo_handler = DateRotatingFileHandler(
-        os.path.join(os.path.dirname(__file__), 'apolo_trader.log'), 
+        os.path.join(os.path.dirname(__file__), 'apolo.log'), 
         maxBytes=5*1024*1024, 
         backupCount=5  # Changed from 0 to keep some backups
     )
     apolo_handler.setLevel(logging.DEBUG)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     apolo_handler.setFormatter(formatter)
-    apolo_trader_logger.addHandler(apolo_handler)  # ✅ CORRECT - adding to apolo logger
+    apolo_logger.addHandler(apolo_handler)  # ✅ CORRECT - adding to apolo logger
+
+# Backward-compatible exported name used across the project.
+apolo_trader_logger = apolo_logger
