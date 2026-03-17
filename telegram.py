@@ -138,6 +138,16 @@ def command_start(m):
     bot.send_message(cid, f"{text}. {nom} - {cid}")
     command_list(m)
 
+##
+@bot.message_handler(commands=['trades'])
+def command_trades(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+    execute_trade_performance(m)
+
 
 @bot.message_handler(commands=['list'])
 def command_list(m):
@@ -150,8 +160,7 @@ def command_list(m):
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("⚙️ Settings", cid), callback_data="Settings"))
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
-    markup.row(InlineKeyboardButton(translate("📊 Analyze Trades", cid), callback_data="AnalyzeTradesPerforming"))
-    markup.row(InlineKeyboardButton(translate("📋 List All Settings", cid), callback_data="ListSettings"))
+    markup.row(InlineKeyboardButton(translate(" List All Settings", cid), callback_data="ListSettings"))
     
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
 
