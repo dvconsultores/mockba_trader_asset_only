@@ -27,22 +27,14 @@ from db.db_ops import get_setting, initialize_database_tables
 from logs.log_config import apolo_trader_logger as logger
 from futures_perps.trade.apolo.historical_data import (
     get_historical_data_limit_apolo, 
-    get_orderbook, 
-    get_funding_rate_history,
-    get_public_liquidations
+    get_orderbook
 )
 from trading_bot.futures_executor_apolo import (
     place_futures_order, 
     get_close_price, 
-    get_available_balance,
-    ORDERLY_ACCOUNT_ID, 
-    ORDERLY_SECRET, 
-    ORDERLY_PUBLIC_KEY
+    ORDERLY_ACCOUNT_ID
 )
 from trading_bot.send_bot_message import send_bot_message
-
-# Initialize database tables on startup
-initialize_database_tables()
 
 
 class ReversalScalper:
@@ -97,7 +89,7 @@ class ReversalScalper:
         # === REVERSAL PATTERN PARAMETERS ===
         self.CANDLE_COUNT = 2           # Need 2 consecutive candles same direction
         self.CORRECTION_PCT = 0.001     # 0.1% minimum pullback before entry
-        self.BIG_CANDLE_MULTIPLIER = 1.02 # Candle must be 1.5x average range
+        self.BIG_CANDLE_MULTIPLIER = 1.2 # Candle must be 1.2x average range
         
         # === ORDER BOOK IMBALANCE PARAMETERS ===
         self.OBI_THRESHOLD = float(get_setting('order_book_threshold') or 1.0)
@@ -107,7 +99,7 @@ class ReversalScalper:
         self.REGIME_WINDOW_5M = 20      # Lookback for 5-minute slope calculation
         self.REGIME_WINDOW_1H = 30      # Lookback for 1-hour slope calculation
         self.SLOPE_THRESHOLD_5M = 0.0015  # 0.15%/candle = trend threshold (5m)
-        self.SLOPE_THRESHOLD_1H = 0.0020  # Slightly higher threshold
+        self.SLOPE_THRESHOLD_1H = 0.0018  # Slightly higher threshold
         self.VOLUME_THRESHOLD = 1.2       # Volume must be 120% of average to confirm trend
         
         # === TIME FILTER PARAMETERS (UTC-4) ===
@@ -839,8 +831,8 @@ def autotrade():
 
 
 # === TESTING ===
-if __name__ == "__main__":
-    asset = "PERP_NEAR_USDC"
-    print(f"🧪 Testing signal for {asset}...\n")
-    result = process_signal(asset_override=asset)
-    print(result)
+# if __name__ == "__main__":
+#     asset = "PERP_NEAR_USDC"
+#     print(f"🧪 Testing signal for {asset}...\n")
+#     result = process_signal(asset_override=asset)
+#     print(result)

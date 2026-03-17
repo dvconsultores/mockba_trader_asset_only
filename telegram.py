@@ -3,6 +3,7 @@ import re
 import sys
 import time
 import threading
+import importlib.util
 import re
 import html
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'machine_learning')))
@@ -11,14 +12,13 @@ from deep_translator import GoogleTranslator
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.db_ops import (
-    upsert_setting, get_all_settings, initialize_database_tables, get_setting, 
+    upsert_setting, get_all_settings, initialize_database_tables, get_setting,
     add_asset, remove_asset, get_asset_list,
     add_automated_asset, remove_automated_asset, get_automated_asset_list
 )
-from futures_perps.trade.apolo.main import process_signal as run_process_signal , autotrade # Rename to avoid conflict
+from futures_perps.trade.apolo.main import process_signal as run_process_signal, autotrade
 import json
 from datetime import timedelta
-
 # Load environment variables
 load_dotenv()
 initialize_database_tables()
@@ -28,6 +28,26 @@ API_TOKEN = os.getenv("API_TOKEN")
 bot = telebot.TeleBot(API_TOKEN)
 gp1 = ""  # global setting key
 TELEGRAM_MAX_MESSAGE_LEN = 4096
+
+
+def _load_analyze_trade_performance():
+    module_path = os.path.join(
+        os.path.dirname(__file__),
+        "futures_perps",
+        "trade",
+        "apolo",
+        "performance-llm.py",
+    )
+    spec = importlib.util.spec_from_file_location("performance_llm", module_path)
+    if spec is None or spec.loader is None:
+        return None
+
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return getattr(module, "analyze_trade_performance", None)
+
+
+analyze_trade_performance = _load_analyze_trade_performance()
 
 
 def is_float(value):
@@ -130,7 +150,7 @@ def command_list(m):
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("⚙️ Settings", cid), callback_data="Settings"))
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
-    markup.row(InlineKeyboardButton(translate("📊 Analize Trades Performing", cid), callback_data="ProcessSignal"))
+    markup.row(InlineKeyboardButton(translate("📊 Analyze Trades", cid), callback_data="AnalyzeTradesPerforming"))
     markup.row(InlineKeyboardButton(translate("📋 List All Settings", cid), callback_data="ListSettings"))
     
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
@@ -211,7 +231,8 @@ def callback_handler(call):
             'set_auto_trade': set_auto_trade,
             'set_leverage': set_leverage,
             'ListSettings': ListSettings,
-            'ProcessSignal': execute_signal
+            'ProcessSignal': execute_signal,
+            'AnalyzeTradesPerforming': execute_trade_performance
         }
         func = options.get(call.data)
         if func:
@@ -242,10 +263,8 @@ def settings(m):
     }
     
     markup = InlineKeyboardMarkup()
-    items = list(labels.items())
-    for i in range(0, len(items), 2):
-        row = [InlineKeyboardButton(translate(label, cid), callback_data=key) for key, label in items[i:i+2]]
-        markup.add(*row)
+    for key, label in labels.items():
+        markup.row(InlineKeyboardButton(translate(label, cid), callback_data=key))
         
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
 
@@ -615,6 +634,85 @@ def set_order_book_threshold(m):
 
 # === Main Actions ===
 
+def execute_trade_performance(m):
+    if m.chat.type != 'private':
+        return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        return
+
+    if analyze_trade_performance is None:
+        bot.send_message(cid, translate("❌ Performance analyzer is not available.", cid))
+        return
+
+    bot.send_message(cid, translate("Analyzing trades performance with LLM...", cid))
+
+    asset = get_setting("asset") or "PERP_NEAR_USDC"
+    symbol_filter = asset.replace("PERP_", "")
+
+    try:
+        result = analyze_trade_performance(symbol_filter=symbol_filter)
+        if not result.get("ok"):
+            bot.send_message(cid, str(result.get("error", "Unknown error during trade performance analysis.")))
+            return
+
+        stats = result.get("trade_stats", {})
+        llm_response = str(result.get("llm_response", ""))
+        if llm_response.startswith("```"):
+            llm_response = re.sub(r"^```(?:json)?\n?", "", llm_response, flags=re.IGNORECASE)
+            llm_response = re.sub(r"\n?```$", "", llm_response)
+        llm_response = llm_response.strip()
+
+        parsed_llm = None
+        try:
+            parsed_llm = json.loads(llm_response)
+        except Exception:
+            parsed_llm = None
+
+        if isinstance(parsed_llm, dict):
+            improvements = parsed_llm.get("strategy_improvements", [])
+            params = parsed_llm.get("regime_filter_parameter_recommendations", [])
+
+            improvements_text = "\n".join(
+                [f"- {item}" for item in improvements[:5] if item]
+            ) or "- No specific improvements provided"
+
+            params_lines = []
+            for p in params[:5]:
+                if not isinstance(p, dict):
+                    continue
+                name = p.get("parameter", "parameter")
+                decision = str(p.get("decision", "keep")).upper()
+                suggested = p.get("suggested_value", "-")
+                params_lines.append(f"- {name}: {decision} -> {suggested}")
+            params_text = "\n".join(params_lines) if params_lines else "- No parameter recommendations"
+
+            summary = (
+                f"📊 Trades Performance ({symbol_filter})\n"
+                f"Total: {stats.get('total_trades', 0)}\n"
+                f"Positive: {stats.get('positive_trades', 0)}\n"
+                f"Negative: {stats.get('negative_trades', 0)}\n"
+                f"Neutral: {stats.get('neutral_trades', 0)}\n"
+                f"PnL Total: {stats.get('pnl_total', 0)}\n\n"
+                f"🧠 Verdict: {str(parsed_llm.get('final_verdict', 'N/A')).upper()}\n"
+                f"📌 Summary: {parsed_llm.get('summary', 'No summary')}\n\n"
+                f"✅ Improvements:\n{improvements_text}\n\n"
+                f"⚙️ Parameter Suggestions:\n{params_text}"
+            )
+        else:
+            summary = (
+                f"📊 Trades Performance ({symbol_filter})\n"
+                f"Total: {stats.get('total_trades', 0)}\n"
+                f"Positive: {stats.get('positive_trades', 0)}\n"
+                f"Negative: {stats.get('negative_trades', 0)}\n"
+                f"Neutral: {stats.get('neutral_trades', 0)}\n"
+                f"PnL Total: {stats.get('pnl_total', 0)}\n\n"
+                f"LLM Analysis:\n{llm_response}"
+            )
+        send_text_message_chunked(cid, summary)
+    except Exception as e:
+        bot.send_message(cid, translate(f"Error analyzing trades performance: {str(e)}", cid))
+
 def execute_signal(m, asset=None):
     if m.chat.type != 'private': return
     cid = m.chat.id
@@ -635,7 +733,7 @@ def execute_signal(m, asset=None):
 
     interval = get_setting("interval")
 
-    bot.send_message(cid, translate(f"Processing signal for {asset} interval {interval} with LLM...", cid))
+    bot.send_message(cid, translate(f"Processing signal for {asset} interval {interval} ...", cid))
     time.sleep(1)
     try:
         result = run_process_signal(asset_override=asset)  # Pass the selected asset

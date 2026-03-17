@@ -34,7 +34,7 @@ def initialize_database_tables():
 
         # Insert the default setting if it doesn't exist
         default_settings = [
-            ('asset', 'PERP_BTC_USDC'),
+            ('asset', 'PERP_NEAR_USDC'),
             ('interval', '5m'),
             ('take_profit', '0.3'),
             ('stop_loss', '1.5'),
