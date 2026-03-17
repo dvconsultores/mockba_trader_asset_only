@@ -473,7 +473,7 @@ class ReversalScalper:
             if not ((c1 > c0 and c2 > c1) or (c1 < c0 and c2 < c1)):
                 failure_reason = "Last 2 candles not same direction"
             elif candle2_range <= avg_range * self.BIG_CANDLE_MULTIPLIER:
-                failure_reason = "Last candle not big enough (need 1.5x average)"
+                failure_reason = f"Last candle not big enough (need {self.BIG_CANDLE_MULTIPLIER}x average)"
             else:
                 # Check pullback/bounce
                 if c2 > c1:  # Up candles → need pullback for SHORT
