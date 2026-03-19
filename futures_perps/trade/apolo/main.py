@@ -186,8 +186,13 @@ class ReversalScalper:
         
         # === 3. Spread Anomaly Detection ===
         if orderbook.get('bids') and orderbook.get('asks'):
-            best_bid = orderbook['bids'][0][0]
-            best_ask = orderbook['asks'][0][0]
+            try:
+                best_bid = float(orderbook['bids'][0][0])
+                best_ask = float(orderbook['asks'][0][0])
+            except (TypeError, ValueError, IndexError):
+                best_bid = 0.0
+                best_ask = 0.0
+
             if best_bid > 0:
                 spread = (best_ask - best_bid) / best_bid
                 if spread > self.SPREAD_ANOMALY_THRESHOLD:
