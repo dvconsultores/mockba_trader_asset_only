@@ -6,7 +6,7 @@ Risk: 0.3% TP, 1.5-1.8% SL, max 3 trades/day
 ✅ ALWAYS SHOWS: Order Book, Regime, Pattern (even when rejected)
 ✅ MULTI-CORE: Uses ThreadPoolExecutor for parallel data fetching
 ✅ DEBUG MODE: Full transparency on every decision
-✅ TRENDING FILTER: 1H slope priority + faster reaction window
+✅ MANIPULATION DETECTION: Volume spikes, OB divergence, spread anomalies
 """
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,7 +16,7 @@ import time
 import os
 import sys
 from pathlib import Path
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 
 # Ensure project root is importable when running this file directly
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -43,30 +43,23 @@ initialize_database_tables()
 
 class ReversalScalper:
     """
-    Hard-coded reversal strategy with regime filter and order book imbalance.
+    Hard-coded reversal strategy with regime filter, order book imbalance,
+    and manipulation detection.
     
     This class implements a rule-based trading system that:
     1. Only trades during preferred time windows (Sun-Thu, 6-11 AM UTC-4)
     2. Avoids trending markets using linear regression slope detection
     3. Requires order book imbalance confirmation for each trade
     4. Detects specific 2-candle reversal patterns at support/resistance
-    5. Uses multi-core processing for fast data fetching
+    5. Flags potential manipulation signals (volume spikes, OB divergence, spread)
+    6. Uses multi-core processing for fast data fetching
     
     No LLM, no TensorFlow - pure deterministic logic for speed and reliability.
     """
 
     @staticmethod
     def _setting_pct(key: str, default_pct: float) -> float:
-        """
-        Read a percentage value from database settings and convert to decimal.
-        
-        Args:
-            key: Setting name in database (e.g., 'take_profit')
-            default_pct: Default value as decimal (e.g., 0.003 = 0.3%)
-        
-        Returns:
-            Float value as decimal (e.g., database stores "0.3" → returns 0.003)
-        """
+        """Read a percentage value from database settings and convert to decimal."""
         raw = get_setting(key)
         try:
             return float(raw) / 100.0 if raw is not None else default_pct
@@ -74,10 +67,7 @@ class ReversalScalper:
             return default_pct
     
     def __init__(self):
-        """
-        Initialize the scalper with all strategy parameters.
-        All thresholds are tuned for NEAR/USDC 5-minute reversal scalping.
-        """
+        """Initialize the scalper with all strategy parameters."""
         # === STRATEGY PARAMETERS (Risk Management) ===
         self.TP_PCT = self._setting_pct('take_profit', 0.003)    # 0.3% take profit
         self.SL_PCT_MIN = self._setting_pct('stop_loss', 0.015)  # 1.5% stop loss
@@ -93,11 +83,11 @@ class ReversalScalper:
         self.OBI_THRESHOLD = float(get_setting('order_book_threshold') or 1.0)
         self.OB_DEPTH = 20              # Analyze top 20 levels of order book
         
-        # === REGIME FILTER PARAMETERS (VERIFIED FOR TRENDING MARKETS) ===
+        # === REGIME FILTER PARAMETERS ===
         self.REGIME_WINDOW_5M = 20      # Lookback for 5-minute slope calculation
         self.REGIME_WINDOW_1H = 30      # Lookback for 1-hour slope (faster reaction)
         self.SLOPE_THRESHOLD_5M = 0.0015  # 0.15%/candle = trend threshold (5m)
-        self.SLOPE_THRESHOLD_1H = 0.0018  # 0.18%/candle = trend threshold (1h) ← Conservative
+        self.SLOPE_THRESHOLD_1H = 0.0018  # 0.18%/candle = trend threshold (1h)
         self.VOLUME_THRESHOLD = 1.2       # Volume must be 120% of average to confirm trend
         
         # === TIME FILTER PARAMETERS (UTC-4) ===
@@ -108,8 +98,13 @@ class ReversalScalper:
         # === LIVE PRICE VALIDATION ===
         self.LIVE_PRICE_MAX_DEVIATION = 0.002  # Max 0.2% deviation from candle close
         
+        # === MANIPULATION DETECTION THRESHOLDS ===
+        self.VOLUME_SPIKE_MULTIPLIER = 3.0    # Volume > 3x avg = spike
+        self.OB_DIVERGENCE_THRESHOLD = 0.002  # 0.2% price move without OB confirmation
+        self.SPREAD_ANOMALY_THRESHOLD = 0.003 # 0.3% spread = suspicious
+        
         # === DEBUG MODE ===
-        self.DEBUG_MODE = True  # Always show full analysis even when rejected
+        self.DEBUG_MODE = True
 
         # === MULTI-CORE PROCESSING ===
         self.MAX_WORKERS = max(1, os.cpu_count() or 1)
@@ -129,23 +124,16 @@ class ReversalScalper:
                 self.PREFERRED_HOUR_START <= hour < self.PREFERRED_HOUR_END)
     
     def _calculate_normalized_slope(self, prices: np.ndarray, window: int) -> float:
-        """
-        Calculate linear regression slope normalized by price (percentage per candle).
-        Returns: slope as % change per candle (positive=uptrend, negative=downtrend)
-        """
+        """Calculate linear regression slope normalized by price (percentage per candle)."""
         if len(prices) < window:
             return 0.0
         recent = prices[-window:]
         x = np.arange(window)
         slope, _ = np.polyfit(x, recent, 1)
-        return slope / recent[-1]  # Normalize by last price
+        return slope / recent[-1]
     
     def _calculate_obi(self, orderbook: Dict) -> Tuple[float, Dict]:
-        """
-        Calculate Order Book Imbalance (OBI) ratio.
-        Returns: (obi_ratio, details_dict)
-        - obi_ratio: bids/asks ratio (>1 = bullish, <1 = bearish)
-        """
+        """Calculate Order Book Imbalance (OBI) ratio."""
         def _qty(value) -> float:
             try:
                 return float(value)
@@ -164,24 +152,57 @@ class ReversalScalper:
         
         return obi, {'bids': bids, 'asks': asks, 'imbalance_pct': imbalance_pct}
     
-    def _detect_regime(self, df_5m: pd.DataFrame, df_1h: Optional[pd.DataFrame] = None) -> Dict:
+    def _check_manipulation_signals(self, df: pd.DataFrame, orderbook: Dict) -> List[str]:
         """
-        Detect market regime using linear regression slope + volume analysis.
+        Detect potential manipulation or smart money signals.
         
-        Regime Detection Logic (priority order):
-        1. If 1H slope > threshold → TREND (macro trend overrides everything)
-        2. If 5M candle range > 2x average → HIGH_VOL (too dangerous)
-        3. If 5M slope > threshold AND volume confirms → TREND
-        4. Otherwise → RANGE (safe for reversal strategy)
+        Returns list of warning strings (empty if clean).
+        
+        Checks:
+        1. Volume spike (>3x average) = smart money entering/exiting
+        2. Price/OB divergence = possible trap
+        3. Abnormal spread = manipulation attempt
         """
+        warnings = []
+        
+        # === 1. Volume Spike Detection ===
+        if len(df) >= 20:
+            recent_vol = df['volume'].iloc[-1]
+            avg_vol = df['volume'].rolling(20).mean().iloc[-1]
+            if avg_vol > 0 and recent_vol > avg_vol * self.VOLUME_SPIKE_MULTIPLIER:
+                ratio = recent_vol / avg_vol
+                warnings.append(f"⚠️ Volume spike ({ratio:.1f}x avg) - smart money?")
+        
+        # === 2. Order Book Divergence Detection ===
+        obi, _ = self._calculate_obi(orderbook)
+        if len(df) >= 2:
+            price_change = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2]
+            # Price up but OB bearish = possible bull trap
+            if price_change > self.OB_DIVERGENCE_THRESHOLD and obi < 0.95:
+                warnings.append("⚠️ Price up but OB bearish - possible bull trap")
+            # Price down but OB bullish = possible bear trap
+            elif price_change < -self.OB_DIVERGENCE_THRESHOLD and obi > 1.05:
+                warnings.append("⚠️ Price down but OB bullish - possible bear trap")
+        
+        # === 3. Spread Anomaly Detection ===
+        if orderbook.get('bids') and orderbook.get('asks'):
+            best_bid = orderbook['bids'][0][0]
+            best_ask = orderbook['asks'][0][0]
+            if best_bid > 0:
+                spread = (best_ask - best_bid) / best_bid
+                if spread > self.SPREAD_ANOMALY_THRESHOLD:
+                    warnings.append(f"⚠️ Wide spread ({spread*100:.2f}%) - caution")
+        
+        return warnings
+    
+    def _detect_regime(self, df_5m: pd.DataFrame, df_1h: Optional[pd.DataFrame] = None) -> Dict:
+        """Detect market regime using linear regression slope + volume analysis."""
         closes_5m = df_5m['close'].values
         vols_5m = df_5m['volume'].values
         
-        # Calculate 5-minute slope and volume ratio
         slope_5m = self._calculate_normalized_slope(closes_5m, self.REGIME_WINDOW_5M)
         vol_ratio_5m = np.mean(vols_5m[-5:]) / np.mean(vols_5m[-20:]) if len(vols_5m) >= 20 else 1.0
         
-        # Calculate 1-hour slope (higher timeframe = more weight)
         regime_1h = None
         slope_1h = None
         if df_1h is not None and len(df_1h) >= self.REGIME_WINDOW_1H:
@@ -189,21 +210,19 @@ class ReversalScalper:
             if abs(slope_1h) > self.SLOPE_THRESHOLD_1H:
                 regime_1h = 'TREND_UP' if slope_1h > 0 else 'TREND_DOWN'
         
-        # Detect volatility expansion (candle range spike)
         ranges = df_5m['high'].values - df_5m['low'].values
         avg_range = np.mean(ranges[-20:])
         current_range = ranges[-1]
         is_high_vol = current_range > avg_range * 2.0
         
-        # Final regime decision (priority order matters)
         if regime_1h:
-            final_regime = regime_1h  # 1H trend overrides everything
+            final_regime = regime_1h
         elif is_high_vol:
-            final_regime = 'HIGH_VOL'  # Volatility spike = dangerous
+            final_regime = 'HIGH_VOL'
         elif abs(slope_5m) > self.SLOPE_THRESHOLD_5M and vol_ratio_5m > self.VOLUME_THRESHOLD:
             final_regime = 'TREND_UP' if slope_5m > 0 else 'TREND_DOWN'
         else:
-            final_regime = 'RANGE'  # Default = safe for reversals
+            final_regime = 'RANGE'
         
         return {
             'regime': final_regime,
@@ -214,21 +233,7 @@ class ReversalScalper:
         }
     
     def _detect_reversal_pattern(self, df: pd.DataFrame, live_price: float) -> Optional[Dict]:
-        """
-        Detect the specific 2-candle reversal pattern you trade manually.
-        
-        Pattern Logic (LONG):
-        1. Two consecutive DOWN candles (c1 < c0 AND c2 < c1)
-        2. Second candle is "big" (1.2x average range for NEAR)
-        3. Price bounces back up from low (correction >= 0.1%)
-        4. Low is near recent support (within 0.2% of 10-candle low)
-        
-        Pattern Logic (SHORT):
-        1. Two consecutive UP candles (c1 > c0 AND c2 > c1)
-        2. Second candle is "big" (1.2x average range for NEAR)
-        3. Price pulls back from high (correction >= 0.1%)
-        4. High is near recent resistance (within 0.2% of 10-candle high)
-        """
+        """Detect the specific 2-candle reversal pattern you trade manually."""
         if len(df) < 10:
             return None
             
@@ -236,22 +241,20 @@ class ReversalScalper:
         highs = df['high'].values
         lows = df['low'].values
         
-        # Get last 3 candles (oldest → newest)
         c0, c1, c2 = closes[-3], closes[-2], closes[-1]
         h0, h1, h2 = highs[-3], highs[-2], highs[-1]
         l0, l1, l2 = lows[-3], lows[-2], lows[-1]
         
-        # Calculate average candle range for "big move" detection
         avg_range = np.mean([highs[i] - lows[i] for i in range(-20, -1)])
         
         # === PATTERN: 2 candles UP → look for SHORT reversal ===
-        if c1 > c0 and c2 > c1:  # Two consecutive up candles
+        if c1 > c0 and c2 > c1:
             candle2_range = h2 - l2
-            if candle2_range > avg_range * self.BIG_CANDLE_MULTIPLIER:  # Big candle (1.2x)
-                pullback = (h2 - live_price) / h2  # How much price pulled back
-                if pullback >= self.CORRECTION_PCT:  # Minimum pullback met (0.1%)
-                    recent_high = np.max(highs[-10:])  # 10-candle resistance
-                    if abs(h2 - recent_high) / recent_high < 0.002:  # Near resistance (0.2%)
+            if candle2_range > avg_range * self.BIG_CANDLE_MULTIPLIER:
+                pullback = (h2 - live_price) / h2
+                if pullback >= self.CORRECTION_PCT:
+                    recent_high = np.max(highs[-10:])
+                    if abs(h2 - recent_high) / recent_high < 0.002:
                         return {
                             'side': 'SELL',
                             'entry': live_price,
@@ -264,13 +267,13 @@ class ReversalScalper:
                         }
         
         # === PATTERN: 2 candles DOWN → look for LONG reversal ===
-        elif c1 < c0 and c2 < c1:  # Two consecutive down candles
+        elif c1 < c0 and c2 < c1:
             candle2_range = h2 - l2
-            if candle2_range > avg_range * self.BIG_CANDLE_MULTIPLIER:  # Big candle (1.2x)
-                bounce = (live_price - l2) / l2  # How much price bounced
-                if bounce >= self.CORRECTION_PCT:  # Minimum bounce met (0.1%)
-                    recent_low = np.min(lows[-10:])  # 10-candle support
-                    if abs(l2 - recent_low) / recent_low < 0.002:  # Near support (0.2%)
+            if candle2_range > avg_range * self.BIG_CANDLE_MULTIPLIER:
+                bounce = (live_price - l2) / l2
+                if bounce >= self.CORRECTION_PCT:
+                    recent_low = np.min(lows[-10:])
+                    if abs(l2 - recent_low) / recent_low < 0.002:
                         return {
                             'side': 'BUY',
                             'entry': live_price,
@@ -282,12 +285,11 @@ class ReversalScalper:
                             }
                         }
         
-        return None  # No valid pattern found
+        return None
     
     def _validate_live_price(self, candle_close: float, live_price: float) -> float:
         """Calculate deviation between last candle close and current live price."""
-        deviation = abs(live_price - candle_close) / candle_close
-        return deviation
+        return abs(live_price - candle_close) / candle_close
     
     def _format_obi_display(self, obi: float, obi_details: Dict) -> str:
         """Format order book info for Telegram (NO markdown)."""
@@ -315,26 +317,18 @@ class ReversalScalper:
         
         lines = [f"{regime_emoji} Regime: {regime} {slope_emoji}"]
         lines.append(f"• Slope 5m: {slope_5m*100:+.3f}%/candle")
-        
         if slope_1h is not None:
             lines.append(f"• Slope 1h: {slope_1h*100:+.3f}%/candle")
-        
-        # Add short explanation only when regime is TREND
         if regime in ['TREND_UP', 'TREND_DOWN']:
             lines.append(f"• ℹ️ 1H slope > 0.18% = Trend detected (reversals disabled)")
         elif regime == 'HIGH_VOL':
             lines.append(f"• ℹ️ Candle range > 2x average = Too volatile")
-        
         if regime_info['is_high_vol']:
             lines.append("• ⚠️ High volatility detected")
-        
         return "\n".join(lines)
     
     def _format_pattern_display(self, pattern: Optional[Dict], live_price: float, regime: str, df: pd.DataFrame) -> str:
-        """
-        Format pattern detection with regime context, specific failure reasons,
-        AND exact price level to wait for.
-        """
+        """Format pattern detection with regime context and failure reasons."""
         failure_reason = None
         wait_price = None
         wait_direction = None
@@ -346,64 +340,52 @@ class ReversalScalper:
             closes = df['close'].values
             highs = df['high'].values
             lows = df['low'].values
-            
             c0, c1, c2 = closes[-3], closes[-2], closes[-1]
             h2, l2 = highs[-1], lows[-1]
-
-            # Compute minimum correction entry from latest candle direction
+            
             if c2 > c1:
                 min_correction_entry = h2 * (1 - self.CORRECTION_PCT)
             elif c2 < c1:
                 min_correction_entry = l2 * (1 + self.CORRECTION_PCT)
             
-            # Calculate average range
             avg_range = np.mean([highs[i] - lows[i] for i in range(-20, -1)])
             candle2_range = h2 - l2
-            
-            # Calculate recent high/low for resistance/support check
             recent_high = np.max(highs[-10:])
             recent_low = np.min(lows[-10:])
             
-            # Check conditions
             if not ((c1 > c0 and c2 > c1) or (c1 < c0 and c2 < c1)):
                 failure_reason = "Last 2 candles not same direction"
             elif candle2_range <= avg_range * self.BIG_CANDLE_MULTIPLIER:
                 failure_reason = f"Last candle not big enough (need {self.BIG_CANDLE_MULTIPLIER}x average)"
             else:
-                # Check pullback/bounce
-                if c2 > c1:  # Up candles → need pullback for SHORT
+                if c2 > c1:
                     pullback = (h2 - live_price) / h2
                     if pullback < self.CORRECTION_PCT:
                         failure_reason = "Waiting for pullback"
                         wait_price = h2 * (1 - self.CORRECTION_PCT)
                         wait_direction = "down"
                     else:
-                        distance_to_resistance = abs(h2 - recent_high) / recent_high
-                        if distance_to_resistance > 0.002:
+                        if abs(h2 - recent_high) / recent_high > 0.002:
                             failure_reason = "Pullback confirmed, but not at resistance"
                             wait_price = recent_high
                             wait_direction = "up"
                         else:
                             failure_reason = "At resistance, checking OBI confirmation"
-                else:  # Down candles → need bounce for LONG
+                else:
                     bounce = (live_price - l2) / l2
                     if bounce < self.CORRECTION_PCT:
                         failure_reason = "Waiting for bounce"
                         wait_price = l2 * (1 + self.CORRECTION_PCT)
                         wait_direction = "up"
                     else:
-                        distance_to_support = abs(l2 - recent_low) / recent_low
-                        if distance_to_support > 0.002:
+                        if abs(l2 - recent_low) / recent_low > 0.002:
                             failure_reason = "Bounce confirmed, but not at support"
                             wait_price = recent_low
                             wait_direction = "down"
                         else:
                             failure_reason = "At support, checking OBI confirmation"
         
-        # === BUILD DISPLAY ===
         lines = []
-        
-        # If in TREND regime
         if regime in ['TREND_UP', 'TREND_DOWN']:
             lines.append(f"⚠️ Pattern Status: BLOCKED by {regime}")
             if failure_reason:
@@ -412,8 +394,6 @@ class ReversalScalper:
                 lines.append(f"• 🎯 Wait for price {wait_direction} to {wait_price:.6f}")
             lines.append(f"• 🚫 Reversals disabled in trend")
             return "\n".join(lines)
-        
-        # If in HIGH_VOL regime
         if regime == 'HIGH_VOL':
             lines.append(f"⚠️ Pattern Status: BLOCKED by HIGH VOLATILITY")
             if failure_reason:
@@ -423,7 +403,6 @@ class ReversalScalper:
             lines.append(f"• 🌊 Waiting for stabilization")
             return "\n".join(lines)
         
-        # Normal RANGE mode
         if pattern is not None:
             side_emoji = "🔴 SHORT" if pattern['side'] == 'SELL' else "🟢 LONG"
             lines.append(f"✅ Pattern detected: {side_emoji}")
@@ -449,14 +428,21 @@ class ReversalScalper:
                 lines.append(f"• 📊 Recent resistance (10 candles): {recent_high:.6f}")
             elif recent_low and c2 < c1:
                 lines.append(f"• 📊 Recent support (10 candles): {recent_low:.6f}")
-        
+        return "\n".join(lines)
+    
+    def _format_manipulation_display(self, warnings: List[str]) -> Optional[str]:
+        """Format manipulation warnings for Telegram display."""
+        if not warnings:
+            return None
+        lines = ["🔍 Manipulation Checks:"]
+        for w in warnings:
+            lines.append(f"• {w}")
+        if len(warnings) >= 2:
+            lines.append("🚫 High risk - consider skipping trade")
         return "\n".join(lines)
     
     def analyze_signal(self, asset: str, interval: str = '5m') -> Dict:
-        """
-        Main analysis function - orchestrates all checks and returns decision.
-        Returns JSON-compatible dict for Telegram bot and executor.
-        """
+        """Main analysis function - orchestrates all checks and returns decision."""
         result = {
             'approved': False,
             'symbol': asset,
@@ -469,13 +455,12 @@ class ReversalScalper:
             'debug_info': {}
         }
         
-        # === STEP 1: FETCH ALL DATA IN PARALLEL (Multi-Core) ===
+        # === STEP 1: FETCH ALL DATA IN PARALLEL ===
         with ThreadPoolExecutor(max_workers=min(4, self.MAX_WORKERS)) as pool:
             f_df_5m = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='5m', limit=100)
             f_df_1h = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='1h', limit=100)
             f_live = pool.submit(get_close_price, ORDERLY_ACCOUNT_ID, asset, interval)
             f_orderbook = pool.submit(get_orderbook, asset, self.OB_DEPTH)
-
             df_5m = f_df_5m.result()
             df_1h = f_df_1h.result()
             live_price = f_live.result()
@@ -484,9 +469,7 @@ class ReversalScalper:
         if df_5m is None or len(df_5m) < 30:
             result['resume_of_analysis'] = "❌ Error: Insufficient 5m data"
             return result
-
         last_close = df_5m['close'].iloc[-1]
-        
         if live_price is None:
             result['resume_of_analysis'] = "❌ Error: Could not fetch live price"
             return result
@@ -502,15 +485,18 @@ class ReversalScalper:
         regime_info = self._detect_regime(df_5m, df_1h)
         result['debug_info']['regime'] = regime_info
         
-        # === STEP 4: ALWAYS CALCULATE Pattern ===
+        # === STEP 4: CHECK MANIPULATION SIGNALS ===
+        manipulation_warnings = self._check_manipulation_signals(df_5m, orderbook)
+        result['debug_info']['manipulation_warnings'] = manipulation_warnings
+        
+        # === STEP 5: ALWAYS CALCULATE Pattern ===
         pattern = self._detect_reversal_pattern(df_5m, live_price)
         result['debug_info']['pattern'] = pattern
         result['debug_info']['live_price'] = live_price
         result['debug_info']['last_close'] = last_close
         
-        # === STEP 5: BUILD DEBUG DISPLAY (Always shown) ===
+        # === STEP 6: BUILD DEBUG DISPLAY ===
         regime = regime_info['regime']
-        
         display_lines = [
             f"📊 {asset} | {interval} | Price: {live_price:.6f}",
             "",
@@ -522,16 +508,19 @@ class ReversalScalper:
             ""
         ]
         
-        # === STEP 6: APPLY FILTERS (Decision logic) ===
+        # Add manipulation warnings if any
+        manip_display = self._format_manipulation_display(manipulation_warnings)
+        if manip_display:
+            display_lines.append(manip_display)
+            display_lines.append("")
         
-        # Filter 1: Time Window
+        # === STEP 7: APPLY FILTERS ===
         if not self._is_preferred_time():
             result['rejection_reasons'].append("Outside preferred time window")
             display_lines.append("⏰ ❌ Outside preferred window (6-11 AM UTC-4, Sun-Thu)")
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        # Filter 2: Live Price Deviation
         price_dev = self._validate_live_price(last_close, live_price)
         if price_dev > self.LIVE_PRICE_MAX_DEVIATION:
             result['rejection_reasons'].append(f"Live price deviation {price_dev*100:.2f}%")
@@ -539,7 +528,6 @@ class ReversalScalper:
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        # Filter 3: Market Regime (MOST IMPORTANT)
         if regime in ['TREND_UP', 'TREND_DOWN']:
             result['rejection_reasons'].append(f"Market in {regime}")
             display_lines.append(f"🚫 ❌ Trend {regime} detected - Reversal strategy paused")
@@ -552,14 +540,19 @@ class ReversalScalper:
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        # Filter 4: Pattern Required
+        # Block if too many manipulation warnings
+        if len(manipulation_warnings) >= 2:
+            result['rejection_reasons'].append("Multiple manipulation signals detected")
+            display_lines.append("🚫 ❌ Trade blocked: Too many manipulation warnings")
+            result['resume_of_analysis'] = "\n".join(display_lines)
+            return result
+        
         if pattern is None:
             result['rejection_reasons'].append("No valid pattern")
             display_lines.append("❌ No valid reversal pattern at this time")
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        # Filter 5: Order Book Confirmation
         side = pattern['side']
         if side == 'BUY' and obi < 1.0:
             result['rejection_reasons'].append(f"OBI {obi:.2f} contradicts LONG")
@@ -572,11 +565,9 @@ class ReversalScalper:
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        # === STEP 7: ALL CHECKS PASSED - APPROVE TRADE ===
+        # === STEP 8: ALL CHECKS PASSED - APPROVE TRADE ===
         entry = live_price
         tp = entry * (1 + self.TP_PCT) if side == 'BUY' else entry * (1 - self.TP_PCT)
-        
-        # Dynamic SL based on volatility
         ranges = df_5m['high'].values - df_5m['low'].values
         avg_range_pct = np.mean(ranges[-20:]) / np.mean(df_5m['close'].values[-20:])
         sl_multiplier = min(1.2, max(1.0, avg_range_pct / 0.005))
@@ -611,12 +602,9 @@ def process_signal(asset_override: str = None) -> str:
     try:
         asset = asset_override or get_setting("asset")
         interval = get_setting("interval") or "5m"
-        
         scalper = ReversalScalper()
         result = scalper.analyze_signal(asset, interval)
-        
         output = result['resume_of_analysis']
-        
         if result['approved'] and get_setting("auto_trade") in ["True", "Automatic"]:
             order_payload = {
                 "symbol": result['symbol'],
@@ -629,9 +617,7 @@ def process_signal(asset_override: str = None) -> str:
             place_futures_order(order_payload)
             logger.info(f"🚀 Order placed: {order_payload}")
             output += "\n\n🚀 ORDER EXECUTED AUTOMATICALLY"
-        
         return output
-            
     except Exception as e:
         logger.exception("Error in process_signal")
         return f"🔥 Internal error: {str(e)}"
@@ -650,13 +636,11 @@ def autotrade():
                     '4h': timedelta(hours=4), '1d': timedelta(days=1)
                 }
                 trade_interval = interval_map.get(interval_str, timedelta(minutes=5))
-                
                 automated_assets = get_setting("automated_assets")
                 if automated_assets:
                     asset_list = [a.strip() for a in automated_assets.split(',') if a.strip()]
                     worker_count = min(max(1, os.cpu_count() or 1), len(asset_list))
                     logger.info(f"🖥️  Processing {len(asset_list)} assets with {worker_count} workers")
-                    
                     with ThreadPoolExecutor(max_workers=worker_count) as pool:
                         future_map = {
                             pool.submit(process_signal, asset_override=asset): asset
@@ -669,7 +653,6 @@ def autotrade():
                                 logger.info(f"Processed {asset}: {summary[:120]}...")
                             except Exception as e:
                                 logger.error(f"Error processing {asset}: {e}")
-                
                 time.sleep(trade_interval.total_seconds())
             else:
                 time.sleep(60)
@@ -679,8 +662,8 @@ def autotrade():
 
 
 # === TESTING ===
-# if __name__ == "__main__":
-#     asset = "PERP_NEAR_USDC"
-#     print(f"🧪 Testing signal for {asset}...\n")
-#     result = process_signal(asset_override=asset)
-#     print(result)
+if __name__ == "__main__":
+    asset = "PERP_NEAR_USDC"
+    print(f"🧪 Testing signal for {asset}...\n")
+    result = process_signal(asset_override=asset)
+    print(result)

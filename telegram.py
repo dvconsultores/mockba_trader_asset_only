@@ -719,6 +719,11 @@ def execute_trade_performance(m):
                 f"LLM Analysis:\n{llm_response}"
             )
         send_text_message_chunked(cid, summary)
+
+        md_path = result.get("md_path")
+        if md_path and os.path.isfile(md_path):
+            with open(md_path, "rb") as f:
+                bot.send_document(cid, f, caption="📄 performance_llm_analysis.md")
     except Exception as e:
         bot.send_message(cid, translate(f"Error analyzing trades performance: {str(e)}", cid))
 
