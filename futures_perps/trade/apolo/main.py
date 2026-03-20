@@ -47,7 +47,7 @@ class ReversalScalper:
     and manipulation detection.
     
     This class implements a rule-based trading system that:
-    1. Only trades during preferred time windows (Sun-Thu, 6-11 AM UTC-4)
+    1. Only trades during preferred time windows (Mon-Thu 6-11am+8-10pm, Fri 6-11am, Sun 8-10pm UTC-4)
     2. Avoids trending markets using linear regression slope detection
     3. Requires order book imbalance confirmation for each trade
     4. Detects specific 2-candle reversal patterns at support/resistance
@@ -79,6 +79,10 @@ class ReversalScalper:
         self.CORRECTION_PCT = 0.001     # 0.1% minimum pullback before entry
         self.BIG_CANDLE_MULTIPLIER = 1.2 # Candle must be 1.2x average range (NEAR-specific)
         
+        # === SPIKE REVERSAL PARAMETERS ===
+        self.SPIKE_CANDLE_MULTIPLIER = 2.0  # Candle range > 2x avg = spike
+        self.SPIKE_VOLUME_MULTIPLIER = 3.0  # Volume > 3x avg confirms spike
+        
         # === ORDER BOOK IMBALANCE PARAMETERS ===
         self.OBI_THRESHOLD = float(get_setting('order_book_threshold') or 1.0)
         self.OB_DEPTH = 20              # Analyze top 20 levels of order book
@@ -91,9 +95,15 @@ class ReversalScalper:
         self.VOLUME_THRESHOLD = 1.2       # Volume must be 120% of average to confirm trend
         
         # === TIME FILTER PARAMETERS (UTC-4) ===
-        self.PREFERRED_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']
-        self.PREFERRED_HOUR_START = 6   # 6 AM UTC-4
-        self.PREFERRED_HOUR_END = 11    # 11 AM UTC-4
+        # Mon-Thu: 6am-11am + 8pm-10pm | Fri: 6am-11am | Sun: 8pm-10pm | Sat: off
+        self.PREFERRED_WINDOWS = {
+            'Sunday':    [(20, 22)],
+            'Monday':    [(6, 11), (20, 22)],
+            'Tuesday':   [(6, 11), (20, 22)],
+            'Wednesday': [(6, 11), (20, 22)],
+            'Thursday':  [(6, 11), (20, 22)],
+            'Friday':    [(6, 11)],
+        }
         
         # === LIVE PRICE VALIDATION ===
         self.LIVE_PRICE_MAX_DEVIATION = 0.002  # Max 0.2% deviation from candle close
@@ -120,8 +130,8 @@ class ReversalScalper:
         now = self._get_user_time()
         day_name = now.strftime('%A')
         hour = now.hour
-        return (day_name in self.PREFERRED_DAYS and 
-                self.PREFERRED_HOUR_START <= hour < self.PREFERRED_HOUR_END)
+        windows = self.PREFERRED_WINDOWS.get(day_name, [])
+        return any(start <= hour < end for start, end in windows)
     
     def _calculate_normalized_slope(self, prices: np.ndarray, window: int) -> float:
         """Calculate linear regression slope normalized by price (percentage per candle)."""
@@ -292,6 +302,73 @@ class ReversalScalper:
         
         return None
     
+    def _detect_spike_reversal(self, df: pd.DataFrame, live_price: float, obi: float) -> Optional[Dict]:
+        """
+        Detect spike-reversal pattern: single outsized candle + OB confirms reversal.
+        
+        After a big spike, the correction is the trade:
+        - Spike UP + OB bearish → SHORT on pullback
+        - Spike DOWN + OB bullish → LONG on bounce
+        
+        Volume is informational only (lagging on low-liquidity DEX like Orderly).
+        """
+        if len(df) < 20:
+            return None
+        
+        highs = df['high'].values
+        lows = df['low'].values
+        closes = df['close'].values
+        opens = df['open'].values
+        volumes = df['volume'].values
+        
+        h_last = highs[-1]
+        l_last = lows[-1]
+        candle_range = h_last - l_last
+        avg_range = np.mean([highs[i] - lows[i] for i in range(-20, -1)])
+        avg_vol = np.mean(volumes[-20:-1])
+        last_vol = volumes[-1]
+        vol_ratio = last_vol / avg_vol if avg_vol > 0 else 0.0
+        
+        # Need outsized candle (range is real-time, not lagging like volume)
+        if candle_range < avg_range * self.SPIKE_CANDLE_MULTIPLIER:
+            return None
+        
+        is_bullish_candle = closes[-1] > opens[-1]
+        
+        # === SPIKE UP + OB bearish → SHORT on pullback ===
+        if is_bullish_candle and obi < 1.0:
+            pullback = (h_last - live_price) / h_last
+            if pullback >= self.CORRECTION_PCT:
+                return {
+                    'side': 'SELL',
+                    'entry': live_price,
+                    'reason': 'Spike up + OB bearish → reversal SHORT',
+                    'details': {
+                        'pullback_pct': pullback * 100,
+                        'candle_range': candle_range,
+                        'avg_range': avg_range,
+                        'vol_ratio': vol_ratio
+                    }
+                }
+        
+        # === SPIKE DOWN + OB bullish → LONG on bounce ===
+        elif not is_bullish_candle and obi > 1.0:
+            bounce = (live_price - l_last) / l_last
+            if bounce >= self.CORRECTION_PCT:
+                return {
+                    'side': 'BUY',
+                    'entry': live_price,
+                    'reason': 'Spike down + OB bullish → reversal LONG',
+                    'details': {
+                        'bounce_pct': bounce * 100,
+                        'candle_range': candle_range,
+                        'avg_range': avg_range,
+                        'vol_ratio': vol_ratio
+                    }
+                }
+        
+        return None
+    
     def _validate_live_price(self, candle_close: float, live_price: float) -> float:
         """Calculate deviation between last candle close and current live price."""
         return abs(live_price - candle_close) / candle_close
@@ -327,7 +404,7 @@ class ReversalScalper:
         if regime in ['TREND_UP', 'TREND_DOWN']:
             lines.append(f"• ℹ️ 1H slope > 0.18% = Trend detected (reversals disabled)")
         elif regime == 'HIGH_VOL':
-            lines.append(f"• ℹ️ Candle range > 2x average = Too volatile")
+            lines.append(f"• ℹ️ Candle range > 2x average = Spike detected (checking spike reversal)")
         if regime_info['is_high_vol']:
             lines.append("• ⚠️ High volatility detected")
         return "\n".join(lines)
@@ -400,12 +477,12 @@ class ReversalScalper:
             lines.append(f"• 🚫 Reversals disabled in trend")
             return "\n".join(lines)
         if regime == 'HIGH_VOL':
-            lines.append(f"⚠️ Pattern Status: BLOCKED by HIGH VOLATILITY")
+            lines.append(f"⚠️ 2-Candle Pattern: PAUSED (HIGH_VOL → spike reversal active)")
             if failure_reason:
                 lines.append(f"• 🔍 Pattern check: {failure_reason}")
             if wait_price:
                 lines.append(f"• 🎯 Wait for price {wait_direction} to {wait_price:.6f}")
-            lines.append(f"• 🌊 Waiting for stabilization")
+            lines.append(f"• ⚡ Spike reversal takes over in HIGH_VOL")
             return "\n".join(lines)
         
         if pattern is not None:
@@ -494,9 +571,11 @@ class ReversalScalper:
         manipulation_warnings = self._check_manipulation_signals(df_5m, orderbook)
         result['debug_info']['manipulation_warnings'] = manipulation_warnings
         
-        # === STEP 5: ALWAYS CALCULATE Pattern ===
+        # === STEP 5: ALWAYS CALCULATE Patterns ===
         pattern = self._detect_reversal_pattern(df_5m, live_price)
+        spike_reversal = self._detect_spike_reversal(df_5m, live_price, obi)
         result['debug_info']['pattern'] = pattern
+        result['debug_info']['spike_reversal'] = spike_reversal
         result['debug_info']['live_price'] = live_price
         result['debug_info']['last_close'] = last_close
         
@@ -513,6 +592,18 @@ class ReversalScalper:
             ""
         ]
         
+        # Show spike reversal status
+        if spike_reversal:
+            side_emoji = "🔴 SHORT" if spike_reversal['side'] == 'SELL' else "🟢 LONG"
+            details = spike_reversal['details']
+            display_lines.append(
+                f"⚡ Spike Reversal: {side_emoji}\n"
+                f"• {spike_reversal['reason']}\n"
+                f"• Volume: {details['vol_ratio']:.1f}x avg\n"
+                f"• Range: {details['candle_range']:.6f} vs avg {details['avg_range']:.6f}"
+            )
+            display_lines.append("")
+        
         # Add manipulation warnings if any
         manip_display = self._format_manipulation_display(manipulation_warnings)
         if manip_display:
@@ -522,7 +613,7 @@ class ReversalScalper:
         # === STEP 7: APPLY FILTERS ===
         if not self._is_preferred_time():
             result['rejection_reasons'].append("Outside preferred time window")
-            display_lines.append("⏰ ❌ Outside preferred window (6-11 AM UTC-4, Sun-Thu)")
+            display_lines.append("⏰ ❌ Outside preferred window (Mon-Thu 6-11am+8-10pm, Fri 6-11am, Sun 8-10pm UTC-4)")
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
@@ -533,42 +624,57 @@ class ReversalScalper:
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
+        # Trend always blocks both patterns
         if regime in ['TREND_UP', 'TREND_DOWN']:
             result['rejection_reasons'].append(f"Market in {regime}")
             display_lines.append(f"🚫 ❌ Trend {regime} detected - Reversal strategy paused")
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        if regime == 'HIGH_VOL':
+        # HIGH_VOL blocks 2-candle pattern but allows spike reversal
+        if regime == 'HIGH_VOL' and spike_reversal is None:
             result['rejection_reasons'].append("High volatility")
             display_lines.append("🌊 ❌ High volatility - Waiting for stabilization")
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        # Block if too many manipulation warnings
-        if len(manipulation_warnings) >= 2:
+        # Manipulation warnings block 2-candle pattern but NOT spike reversal
+        # (volume spike + OB divergence ARE the spike reversal confirmation)
+        if len(manipulation_warnings) >= 2 and spike_reversal is None:
             result['rejection_reasons'].append("Multiple manipulation signals detected")
             display_lines.append("🚫 ❌ Trade blocked: Too many manipulation warnings")
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        if pattern is None:
+        # Choose the active signal: spike reversal takes priority in HIGH_VOL,
+        # otherwise use 2-candle pattern
+        active_signal = None
+        if regime == 'HIGH_VOL' and spike_reversal is not None:
+            active_signal = spike_reversal
+        elif pattern is not None:
+            active_signal = pattern
+        elif spike_reversal is not None:
+            active_signal = spike_reversal
+        
+        if active_signal is None:
             result['rejection_reasons'].append("No valid pattern")
             display_lines.append("❌ No valid reversal pattern at this time")
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        side = pattern['side']
-        if side == 'BUY' and obi < 1.0:
-            result['rejection_reasons'].append(f"OBI {obi:.2f} contradicts LONG")
-            display_lines.append(f"📚 ❌ Order book does not confirm BUY (OBI: {obi:.2f})")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            return result
-        elif side == 'SELL' and obi > 1.0:
-            result['rejection_reasons'].append(f"OBI {obi:.2f} contradicts SHORT")
-            display_lines.append(f"📚 ❌ Order book does not confirm SELL (OBI: {obi:.2f})")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            return result
+        side = active_signal['side']
+        # OBI confirmation still required (spike reversal already has OBI baked in)
+        if active_signal is pattern:
+            if side == 'BUY' and obi < 1.0:
+                result['rejection_reasons'].append(f"OBI {obi:.2f} contradicts LONG")
+                display_lines.append(f"📚 ❌ Order book does not confirm BUY (OBI: {obi:.2f})")
+                result['resume_of_analysis'] = "\n".join(display_lines)
+                return result
+            elif side == 'SELL' and obi > 1.0:
+                result['rejection_reasons'].append(f"OBI {obi:.2f} contradicts SHORT")
+                display_lines.append(f"📚 ❌ Order book does not confirm SELL (OBI: {obi:.2f})")
+                result['resume_of_analysis'] = "\n".join(display_lines)
+                return result
         
         # === STEP 8: ALL CHECKS PASSED - APPROVE TRADE ===
         entry = live_price
@@ -590,6 +696,7 @@ class ReversalScalper:
         
         display_lines.append(
             f"✅ ✅ ✅ TRADE APPROVED ✅ ✅ ✅\n"
+            f"• Signal: {active_signal['reason']}\n"
             f"• Entry: {entry:.6f}\n"
             f"• TP: {tp:.6f} (+{self.TP_PCT*100:.1f}%)\n"
             f"• SL: {sl:.6f} (-{sl_dist*100:.1f}%)\n"
