@@ -264,41 +264,37 @@ class ReversalScalper:
         
         # === PATTERN: 2 candles UP → look for SHORT reversal ===
         if c1 > c0 and c2 > c1:
-            candle2_range = h2 - l2
-            if candle2_range > avg_range * self.BIG_CANDLE_MULTIPLIER:
-                pullback = (h2 - live_price) / h2
-                if pullback >= self.CORRECTION_PCT:
-                    recent_high = np.max(highs[-10:])
-                    if abs(h2 - recent_high) / recent_high < 0.002:
-                        return {
-                            'side': 'SELL',
-                            'entry': live_price,
-                            'reason': '2 up candles + big move + pullback at resistance',
-                            'details': {
-                                'pullback_pct': pullback * 100,
-                                'candle_range': candle2_range,
-                                'avg_range': avg_range
-                            }
+            pullback = (h2 - live_price) / h2
+            if pullback >= self.CORRECTION_PCT:
+                recent_high = np.max(highs[-10:])
+                if abs(h2 - recent_high) / recent_high < 0.002:
+                    return {
+                        'side': 'SELL',
+                        'entry': live_price,
+                        'reason': '2 up candles + pullback at resistance',
+                        'details': {
+                            'pullback_pct': pullback * 100,
+                            'candle_range': h2 - l2,
+                            'avg_range': avg_range
                         }
+                    }
         
         # === PATTERN: 2 candles DOWN → look for LONG reversal ===
         elif c1 < c0 and c2 < c1:
-            candle2_range = h2 - l2
-            if candle2_range > avg_range * self.BIG_CANDLE_MULTIPLIER:
-                bounce = (live_price - l2) / l2
-                if bounce >= self.CORRECTION_PCT:
-                    recent_low = np.min(lows[-10:])
-                    if abs(l2 - recent_low) / recent_low < 0.002:
-                        return {
-                            'side': 'BUY',
-                            'entry': live_price,
-                            'reason': '2 down candles + big move + bounce at support',
-                            'details': {
-                                'bounce_pct': bounce * 100,
-                                'candle_range': candle2_range,
-                                'avg_range': avg_range
-                            }
+            bounce = (live_price - l2) / l2
+            if bounce >= self.CORRECTION_PCT:
+                recent_low = np.min(lows[-10:])
+                if abs(l2 - recent_low) / recent_low < 0.002:
+                    return {
+                        'side': 'BUY',
+                        'entry': live_price,
+                        'reason': '2 down candles + bounce at support',
+                        'details': {
+                            'bounce_pct': bounce * 100,
+                            'candle_range': h2 - l2,
+                            'avg_range': avg_range
                         }
+                    }
         
         return None
     
@@ -437,8 +433,6 @@ class ReversalScalper:
             
             if not ((c1 > c0 and c2 > c1) or (c1 < c0 and c2 < c1)):
                 failure_reason = "Last 2 candles not same direction"
-            elif candle2_range <= avg_range * self.BIG_CANDLE_MULTIPLIER:
-                failure_reason = f"Last candle not big enough (need {self.BIG_CANDLE_MULTIPLIER}x average)"
             else:
                 if c2 > c1:
                     pullback = (h2 - live_price) / h2
