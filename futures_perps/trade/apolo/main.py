@@ -657,7 +657,9 @@ class ReversalScalper:
             return result
         
         side = active_signal['side']
-        # OBI confirmation still required (spike reversal already has OBI baked in)
+        # OBI confirmation: book must support the reversal direction
+        # BUY needs OBI > 1.0 (buyers defending support)
+        # SELL needs OBI < 1.0 (sellers defending resistance)
         if active_signal is pattern:
             if side == 'BUY' and obi < 1.0:
                 result['rejection_reasons'].append(f"OBI {obi:.2f} contradicts LONG")
