@@ -369,21 +369,35 @@ class ReversalScalper:
         """Calculate deviation between last candle close and current live price."""
         return abs(live_price - candle_close) / candle_close
     
-    def _format_obi_display(self, obi: float, obi_details: Dict, live_price: float) -> str:
+    def _format_obi_display(self, obi: float, obi_details: Dict, live_price: float, orderbook: Dict) -> str:
         """Format order book info for Telegram (NO markdown)."""
         direction = "🟢 BULLISH" if obi > 1.0 else "🔴 BEARISH" if obi < 1.0 else "⚪ NEUTRAL"
         leverage = int(get_setting("leverage") or 5)
-        # Max safe position: 10% of the thinnest side to avoid slippage
+        # Max safe position: 5% of the thinnest side to avoid slippage
         thin_side_qty = min(obi_details['bids'], obi_details['asks'])
-        safe_qty = thin_side_qty * 0.10
+        safe_qty = thin_side_qty * 0.05
         max_notional = safe_qty * live_price
         max_margin = max_notional / leverage
+        # Zero-impact max: smallest best level (fits entirely in top-of-book)
+        best_bid_qty = 0.0
+        best_ask_qty = 0.0
+        try:
+            if orderbook.get('bids'):
+                best_bid_qty = float(orderbook['bids'][0][1])
+            if orderbook.get('asks'):
+                best_ask_qty = float(orderbook['asks'][0][1])
+        except (TypeError, ValueError, IndexError):
+            pass
+        zero_impact_qty = min(best_bid_qty, best_ask_qty) if best_bid_qty > 0 and best_ask_qty > 0 else 0.0
+        zero_impact_notional = zero_impact_qty * live_price
+        zero_impact_margin = zero_impact_notional / leverage
         return (
             f"📚 Order Book (top {self.OB_DEPTH}):\n"
             f"• Bids: {obi_details['bids']:.0f} | Asks: {obi_details['asks']:.0f}\n"
             f"• Imbalance: {obi_details['imbalance_pct']:+.1f}%\n"
             f"• OBI Ratio: {obi:.2f} → {direction}\n"
-            f"• 💰 Max position: {max_notional:.0f} USDC ({max_margin:.0f} USDC margin @ {leverage}x)"
+            f"• 🟢 No-impact max: {zero_impact_notional:.0f} USDC ({zero_impact_margin:.0f} margin @ {leverage}x)\n"
+            f"• 💰 Safe max (5%): {max_notional:.0f} USDC ({max_margin:.0f} margin @ {leverage}x)"
         )
     
     def _format_regime_display(self, regime_info: Dict) -> str:
@@ -585,7 +599,7 @@ class ReversalScalper:
         display_lines = [
             f"📊 {asset} | {interval} | Price: {live_price:.6f}",
             "",
-            self._format_obi_display(obi, obi_details, live_price),
+            self._format_obi_display(obi, obi_details, live_price, orderbook),
             "",
             self._format_regime_display(regime_info),
             "",
