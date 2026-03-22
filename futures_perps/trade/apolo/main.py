@@ -28,7 +28,8 @@ from db.db_ops import get_setting, initialize_database_tables
 from logs.log_config import apolo_trader_logger as logger
 from futures_perps.trade.apolo.historical_data import (
     get_historical_data_limit_apolo, 
-    get_orderbook
+    get_orderbook,
+    get_market_trades
 )
 from trading_bot.futures_executor_apolo import (
     place_futures_order, 
@@ -369,15 +370,10 @@ class ReversalScalper:
         """Calculate deviation between last candle close and current live price."""
         return abs(live_price - candle_close) / candle_close
     
-    def _format_obi_display(self, obi: float, obi_details: Dict, live_price: float, orderbook: Dict) -> str:
+    def _format_obi_display(self, obi: float, obi_details: Dict, live_price: float, orderbook: Dict, market_trades: List = None) -> str:
         """Format order book info for Telegram (NO markdown)."""
         direction = "🟢 BULLISH" if obi > 1.0 else "🔴 BEARISH" if obi < 1.0 else "⚪ NEUTRAL"
         leverage = int(get_setting("leverage") or 5)
-        # Max safe position: 5% of the thinnest side to avoid slippage
-        thin_side_qty = min(obi_details['bids'], obi_details['asks'])
-        safe_qty = thin_side_qty * 0.05
-        max_notional = safe_qty * live_price
-        max_margin = max_notional / leverage
         # Zero-impact max: smallest best level (fits entirely in top-of-book)
         best_bid_qty = 0.0
         best_ask_qty = 0.0
@@ -391,14 +387,31 @@ class ReversalScalper:
         zero_impact_qty = min(best_bid_qty, best_ask_qty) if best_bid_qty > 0 and best_ask_qty > 0 else 0.0
         zero_impact_notional = zero_impact_qty * live_price
         zero_impact_margin = zero_impact_notional / leverage
-        return (
-            f"📚 Order Book (top {self.OB_DEPTH}):\n"
-            f"• Bids: {obi_details['bids']:.0f} | Asks: {obi_details['asks']:.0f}\n"
-            f"• Imbalance: {obi_details['imbalance_pct']:+.1f}%\n"
-            f"• OBI Ratio: {obi:.2f} → {direction}\n"
-            f"• 🟢 No-impact max: {zero_impact_notional:.0f} USDC ({zero_impact_margin:.0f} margin @ {leverage}x)\n"
-            f"• 💰 Safe max (5%): {max_notional:.0f} USDC ({max_margin:.0f} margin @ {leverage}x)"
-        )
+        # Safe max: median of recent market trades, capped by OB thin side
+        thin_side_qty = min(obi_details['bids'], obi_details['asks'])
+        trade_sizes = []
+        if market_trades:
+            trade_sizes = sorted([float(t.get('executed_quantity', 0)) for t in market_trades if float(t.get('executed_quantity', 0)) > 0])
+        if trade_sizes:
+            median_trade = trade_sizes[len(trade_sizes) // 2]
+            p75_trade = trade_sizes[int(len(trade_sizes) * 0.75)]
+            safe_qty = min(p75_trade, thin_side_qty)
+            trade_label = f"P75 recent trades: {p75_trade:.0f} | Median: {median_trade:.0f}"
+        else:
+            safe_qty = thin_side_qty * 0.05
+            trade_label = "(5% OB fallback - no trade data)"
+        max_notional = safe_qty * live_price
+        max_margin = max_notional / leverage
+        lines = [
+            f"📚 Order Book (top {self.OB_DEPTH}):",
+            f"• Bids: {obi_details['bids']:.0f} | Asks: {obi_details['asks']:.0f}",
+            f"• Imbalance: {obi_details['imbalance_pct']:+.1f}%",
+            f"• OBI Ratio: {obi:.2f} → {direction}",
+            f"• 🟢 No-impact max: {zero_impact_notional:.0f} USDC ({zero_impact_margin:.0f} margin @ {leverage}x)",
+            f"• 💰 Safe max: {max_notional:.0f} USDC ({max_margin:.0f} margin @ {leverage}x)",
+            f"• 📈 {trade_label}",
+        ]
+        return "\n".join(lines)
     
     def _format_regime_display(self, regime_info: Dict) -> str:
         """Format regime info for Telegram (NO markdown)."""
@@ -553,15 +566,17 @@ class ReversalScalper:
         }
         
         # === STEP 1: FETCH ALL DATA IN PARALLEL ===
-        with ThreadPoolExecutor(max_workers=min(4, self.MAX_WORKERS)) as pool:
+        with ThreadPoolExecutor(max_workers=min(5, self.MAX_WORKERS)) as pool:
             f_df_5m = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='5m', limit=100)
             f_df_1h = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='1h', limit=100)
             f_live = pool.submit(get_close_price, ORDERLY_ACCOUNT_ID, asset, interval)
             f_orderbook = pool.submit(get_orderbook, asset, self.OB_DEPTH)
+            f_trades = pool.submit(get_market_trades, asset, 50)
             df_5m = f_df_5m.result()
             df_1h = f_df_1h.result()
             live_price = f_live.result()
             orderbook = f_orderbook.result()
+            market_trades = f_trades.result()
         
         if df_5m is None or len(df_5m) < 30:
             result['resume_of_analysis'] = "❌ Error: Insufficient 5m data"
@@ -599,7 +614,7 @@ class ReversalScalper:
         display_lines = [
             f"📊 {asset} | {interval} | Price: {live_price:.6f}",
             "",
-            self._format_obi_display(obi, obi_details, live_price, orderbook),
+            self._format_obi_display(obi, obi_details, live_price, orderbook, market_trades),
             "",
             self._format_regime_display(regime_info),
             "",
@@ -791,8 +806,8 @@ def autotrade():
 
 
 # === TESTING ===
-if __name__ == "__main__":
-    asset = "PERP_NEAR_USDC"
-    print(f"🧪 Testing signal for {asset}...\n")
-    result = process_signal(asset_override=asset)
-    print(result)
+# if __name__ == "__main__":
+#     asset = "PERP_NEAR_USDC"
+#     print(f"🧪 Testing signal for {asset}...\n")
+#     result = process_signal(asset_override=asset)
+#     print(result)

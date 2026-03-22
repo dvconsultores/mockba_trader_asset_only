@@ -180,6 +180,28 @@ def get_funding_rate_history(symbol: str, limit: int = 1000):
         return data["rows"]
     return data if isinstance(data, list) else []    
 
+def get_market_trades(symbol: str, limit: int = 50) -> List:
+    """
+    Fetch recent public market trades from Orderly (no auth required).
+    Returns list of dicts with: symbol, side, executed_price, executed_quantity, executed_timestamp
+    """
+    rate_limiter()
+    url = f"{BASE_URL}/v1/public/market_trades"
+    params = {"symbol": symbol, "limit": limit}
+    try:
+        r = requests.get(url, params=params, timeout=10)
+        if r.status_code != 200:
+            logger.error(f"❌ Market trades API error: {r.status_code}")
+            return []
+        data = r.json().get("data", {})
+        if isinstance(data, dict) and "rows" in data:
+            return data["rows"]
+        return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.error(f"❌ Error fetching market trades: {e}")
+        return []
+
+
 def get_public_liquidations(symbol: str = None, lookback_hours: int = 24):
     """
     Liquidations in a time window. Many APIs require start_t/end_t in ms.
@@ -201,9 +223,9 @@ def get_public_liquidations(symbol: str = None, lookback_hours: int = 24):
 
 
 # if __name__ == "__main__":
-#   # data = fetch_historical_orderly("PERP_BTC_USDC", "30m", limit=80)
+    # data = get_market_trades("PERP_NEAR_USDC", limit=80)
 #   # current_price = float(data["close"].iloc[-1])
-#   #print(current_price)
+    # print(data)
 #   orderbook = get_orderbook("PERP_BTC_USDC", limit=5)
 #   print(orderbook)
     # data = get_funding_rate_history("PERP_BTC_USDC", limit=50)
