@@ -268,7 +268,7 @@ class ReversalScalper:
             pullback = (h2 - live_price) / h2
             if pullback >= self.CORRECTION_PCT:
                 recent_high = np.max(highs[-10:])
-                if abs(h2 - recent_high) / recent_high < 0.002:
+                if abs(h2 - recent_high) / recent_high < 0.005:
                     return {
                         'side': 'SELL',
                         'entry': live_price,
@@ -285,7 +285,7 @@ class ReversalScalper:
             bounce = (live_price - l2) / l2
             if bounce >= self.CORRECTION_PCT:
                 recent_low = np.min(lows[-10:])
-                if abs(l2 - recent_low) / recent_low < 0.002:
+                if abs(l2 - recent_low) / recent_low < 0.005:
                     return {
                         'side': 'BUY',
                         'entry': live_price,
@@ -394,9 +394,9 @@ class ReversalScalper:
             trade_sizes = sorted([float(t.get('executed_quantity', 0)) for t in market_trades if float(t.get('executed_quantity', 0)) > 0])
         if trade_sizes:
             median_trade = trade_sizes[len(trade_sizes) // 2]
-            p75_trade = trade_sizes[int(len(trade_sizes) * 0.75)]
-            safe_qty = min(p75_trade, thin_side_qty)
-            trade_label = f"P75 recent trades: {p75_trade:.0f} | Median: {median_trade:.0f}"
+            p90_trade = trade_sizes[int(len(trade_sizes) * 0.90)]
+            safe_qty = min(p90_trade, thin_side_qty)
+            trade_label = f"P90 recent trades: {p90_trade:.0f} | Median: {median_trade:.0f}"
         else:
             safe_qty = thin_side_qty * 0.05
             trade_label = "(5% OB fallback - no trade data)"
@@ -475,12 +475,12 @@ class ReversalScalper:
                         wait_price = h2 * (1 - self.CORRECTION_PCT)
                         wait_direction = "down"
                     else:
-                        if abs(h2 - recent_high) / recent_high > 0.002:
+                        if abs(h2 - recent_high) / recent_high > 0.005:
                             failure_reason = "Pullback confirmed, but not at resistance"
                             wait_price = recent_high
                             wait_direction = "up"
                         else:
-                            failure_reason = "At resistance, checking OBI confirmation"
+                            failure_reason = "At resistance, pattern ready"
                 else:
                     bounce = (live_price - l2) / l2
                     if bounce < self.CORRECTION_PCT:
@@ -488,12 +488,12 @@ class ReversalScalper:
                         wait_price = l2 * (1 + self.CORRECTION_PCT)
                         wait_direction = "up"
                     else:
-                        if abs(l2 - recent_low) / recent_low > 0.002:
+                        if abs(l2 - recent_low) / recent_low > 0.005:
                             failure_reason = "Bounce confirmed, but not at support"
                             wait_price = recent_low
                             wait_direction = "down"
                         else:
-                            failure_reason = "At support, checking OBI confirmation"
+                            failure_reason = "At support, pattern ready"
         
         lines = []
         if regime in ['TREND_UP', 'TREND_DOWN']:
@@ -692,21 +692,13 @@ class ReversalScalper:
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
+        # OBI is informational only — shown in display but does not block trades
         side = active_signal['side']
-        # OBI confirmation: book must support the reversal direction
-        # BUY needs OBI > 1.0 (buyers defending support)
-        # SELL needs OBI < 1.0 (sellers defending resistance)
         if active_signal is pattern:
             if side == 'BUY' and obi < 1.0:
-                result['rejection_reasons'].append(f"OBI {obi:.2f} contradicts LONG")
-                display_lines.append(f"📚 ❌ Order book does not confirm BUY (OBI: {obi:.2f})")
-                result['resume_of_analysis'] = "\n".join(display_lines)
-                return result
+                display_lines.append(f"📚 ℹ️ OBI {obi:.2f} does not confirm BUY (reference only)")
             elif side == 'SELL' and obi > 1.0:
-                result['rejection_reasons'].append(f"OBI {obi:.2f} contradicts SHORT")
-                display_lines.append(f"📚 ❌ Order book does not confirm SELL (OBI: {obi:.2f})")
-                result['resume_of_analysis'] = "\n".join(display_lines)
-                return result
+                display_lines.append(f"📚 ℹ️ OBI {obi:.2f} does not confirm SELL (reference only)")
         
         # === STEP 8: ALL CHECKS PASSED - APPROVE TRADE ===
         entry = live_price
