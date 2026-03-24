@@ -407,11 +407,11 @@ class ReversalScalper:
         if trade_sizes:
             median_trade = trade_sizes[len(trade_sizes) // 2]
             p90_trade = trade_sizes[int(len(trade_sizes) * 0.90)]
-            safe_qty = min(p90_trade, thin_side_qty)
+            safe_qty = max(p90_trade, thin_side_qty * 0.25)
             trade_label = f"P90 recent trades: {p90_trade:.0f} | Median: {median_trade:.0f}"
         else:
-            safe_qty = thin_side_qty * 0.05
-            trade_label = "(5% OB fallback - no trade data)"
+            safe_qty = thin_side_qty * 0.25
+            trade_label = "(25% OB depth - no trade data)"
         max_notional = safe_qty * live_price
         max_margin = max_notional / leverage
         lines = [
