@@ -96,6 +96,10 @@ class ReversalScalper:
         self.SLOPE_THRESHOLD_1H = 0.0018  # 0.18%/candle = trend threshold (1h)
         self.VOLUME_THRESHOLD = 1.2       # Volume must be 120% of average to confirm trend
         
+        # === OBI-BASED REGIME BOOST ===
+        self.OBI_BULLISH_THRESHOLD = 1.10  # OBI > 1.10 = bullish (10% more bids than asks)
+        self.OBI_IMBALANCE_PCT_THRESHOLD = 3.0  # Imbalance % > 3.0% = moderate strength signal
+        
         # === TIME FILTER PARAMETERS (UTC-4) ===
         # Mon-Thu: 6am-10pm | Fri: 6am-11am | Sun: 8pm-10pm | Sat: off
         self.PREFERRED_WINDOWS = {
@@ -212,8 +216,8 @@ class ReversalScalper:
         
         return warnings
     
-    def _detect_regime(self, df_5m: pd.DataFrame, df_1h: Optional[pd.DataFrame] = None) -> Dict:
-        """Detect market regime using linear regression slope + volume analysis."""
+    def _detect_regime(self, df_5m: pd.DataFrame, df_1h: Optional[pd.DataFrame] = None, obi: float = 1.0, obi_details: Optional[Dict] = None) -> Dict:
+        """Detect market regime using linear regression slope + volume analysis + OBI confirmation."""
         closes_5m = df_5m['close'].values
         vols_5m = df_5m['volume'].values
         
@@ -241,12 +245,19 @@ class ReversalScalper:
         else:
             final_regime = 'RANGE'
         
+        # === OBI REGIME BOOST: Override RANGE to TREND_UP when OBI is strongly bullish ===
+        if final_regime == 'RANGE' and obi_details:
+            imbalance_pct = abs(obi_details.get('imbalance_pct', 0))
+            if obi >= self.OBI_BULLISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD:
+                final_regime = 'TREND_UP'
+        
         return {
             'regime': final_regime,
             'slope_5m': slope_5m,
             'slope_1h': slope_1h,
             'vol_ratio': vol_ratio_5m,
-            'is_high_vol': is_high_vol
+            'is_high_vol': is_high_vol,
+            'obi_boosted': final_regime == 'TREND_UP' and obi >= self.OBI_BULLISH_THRESHOLD
         }
     
     def _detect_reversal_pattern(self, df: pd.DataFrame, live_price: float) -> Optional[Dict]:
@@ -419,6 +430,7 @@ class ReversalScalper:
         regime = regime_info['regime']
         slope_5m = regime_info['slope_5m']
         slope_1h = regime_info['slope_1h']
+        obi_boosted = regime_info.get('obi_boosted', False)
         
         slope_emoji = "📈" if slope_5m > 0 else "📉" if slope_5m < 0 else "➡️"
         regime_emoji = {
@@ -433,7 +445,10 @@ class ReversalScalper:
         if slope_1h is not None:
             lines.append(f"• Slope 1h: {slope_1h*100:+.3f}%/candle")
         if regime in ['TREND_UP', 'TREND_DOWN']:
-            lines.append(f"• ℹ️ 1H slope > 0.18% = Trend detected (reversals disabled)")
+            if obi_boosted:
+                lines.append(f"• ✨ OBI bullish override (strong order book imbalance)")
+            else:
+                lines.append(f"• ℹ️ 1H slope > 0.18% = Trend detected (reversals disabled)")
         elif regime == 'HIGH_VOL':
             lines.append(f"• ℹ️ Candle range > 2x average = Spike detected (checking spike reversal)")
         if regime_info['is_high_vol']:
@@ -595,7 +610,7 @@ class ReversalScalper:
         result['debug_info']['obi_details'] = obi_details
         
         # === STEP 3: ALWAYS CALCULATE Regime ===
-        regime_info = self._detect_regime(df_5m, df_1h)
+        regime_info = self._detect_regime(df_5m, df_1h, obi=obi, obi_details=obi_details)
         result['debug_info']['regime'] = regime_info
         
         # === STEP 4: CHECK MANIPULATION SIGNALS ===
