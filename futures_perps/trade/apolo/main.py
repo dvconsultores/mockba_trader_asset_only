@@ -48,7 +48,7 @@ class ReversalScalper:
     and manipulation detection.
     
     This class implements a rule-based trading system that:
-    1. Only trades during preferred time windows (Mon-Thu 6-11am+8-10pm, Fri 6-11am, Sun 8-10pm UTC-4)
+    1. Only trades during preferred time windows (Mon-Thu 6am-10pm, Fri 6-11am, Sun 8-10pm UTC-4)
     2. Avoids trending markets using linear regression slope detection
     3. Requires order book imbalance confirmation for each trade
     4. Detects specific 2-candle reversal patterns at support/resistance
@@ -97,13 +97,13 @@ class ReversalScalper:
         self.VOLUME_THRESHOLD = 1.2       # Volume must be 120% of average to confirm trend
         
         # === TIME FILTER PARAMETERS (UTC-4) ===
-        # Mon-Thu: 6am-11am + 8pm-10pm | Fri: 6am-11am | Sun: 8pm-10pm | Sat: off
+        # Mon-Thu: 6am-10pm | Fri: 6am-11am | Sun: 8pm-10pm | Sat: off
         self.PREFERRED_WINDOWS = {
             'Sunday':    [(20, 22)],
-            'Monday':    [(6, 11), (20, 22)],
-            'Tuesday':   [(6, 11), (20, 22)],
-            'Wednesday': [(6, 11), (20, 22)],
-            'Thursday':  [(6, 11), (20, 22)],
+            'Monday':    [(6, 22)],
+            'Tuesday':   [(6, 22)],
+            'Wednesday': [(6, 22)],
+            'Thursday':  [(6, 22)],
             'Friday':    [(6, 11)],
         }
         
@@ -644,7 +644,7 @@ class ReversalScalper:
         # === STEP 7: APPLY FILTERS ===
         if not self._is_preferred_time():
             result['rejection_reasons'].append("Outside preferred time window")
-            display_lines.append("⏰ ❌ Outside preferred window (Mon-Thu 6-11am+8-10pm, Fri 6-11am, Sun 8-10pm UTC-4)")
+            display_lines.append("⏰ ❌ Outside preferred window (Mon-Thu 6am-10pm, Fri 6-11am, Sun 8-10pm UTC-4)")
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
