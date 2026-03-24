@@ -87,6 +87,7 @@ class ReversalScalper:
         # === ORDER BOOK IMBALANCE PARAMETERS ===
         self.OBI_THRESHOLD = float(get_setting('order_book_threshold') or 1.0)
         self.OB_DEPTH = 20              # Analyze top 20 levels of order book
+        self.MIN_SIGNIFICANT_TRADE_QTY = 100  # Filter retail noise trades below this qty
         
         # === REGIME FILTER PARAMETERS ===
         self.REGIME_WINDOW_5M = 20      # Lookback for 5-minute slope calculation
@@ -391,7 +392,7 @@ class ReversalScalper:
         thin_side_qty = min(obi_details['bids'], obi_details['asks'])
         trade_sizes = []
         if market_trades:
-            trade_sizes = sorted([float(t.get('executed_quantity', 0)) for t in market_trades if float(t.get('executed_quantity', 0)) > 0])
+            trade_sizes = sorted([float(t.get('executed_quantity', 0)) for t in market_trades if float(t.get('executed_quantity', 0)) >= self.MIN_SIGNIFICANT_TRADE_QTY])
         if trade_sizes:
             median_trade = trade_sizes[len(trade_sizes) // 2]
             p90_trade = trade_sizes[int(len(trade_sizes) * 0.90)]
