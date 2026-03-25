@@ -255,12 +255,10 @@ class ReversalScalper:
         return warnings
     
     def _detect_regime(self, df_5m: pd.DataFrame, df_1h: Optional[pd.DataFrame] = None, obi: float = 1.0, obi_details: Optional[Dict] = None) -> Dict:
-        """Detect market regime using linear regression slope + volume analysis + OBI confirmation."""
+        """Detect market regime using real-time price action (slopes only)."""
         closes_5m = df_5m['close'].values
-        vols_5m = df_5m['volume'].values
         
         slope_5m = self._calculate_normalized_slope(closes_5m, self.REGIME_WINDOW_5M)
-        vol_ratio_5m = np.mean(vols_5m[-5:]) / np.mean(vols_5m[-20:]) if len(vols_5m) >= 20 else 1.0
         
         regime_1h = None
         slope_1h = None
@@ -269,50 +267,17 @@ class ReversalScalper:
             if abs(slope_1h) > self.SLOPE_THRESHOLD_1H:
                 regime_1h = 'TREND_UP' if slope_1h > 0 else 'TREND_DOWN'
         
-        ranges = df_5m['high'].values - df_5m['low'].values
-        avg_range = np.mean(ranges[-20:])
-        current_range = ranges[-1]
-        is_high_vol = current_range > avg_range * 2.0
-        
         if regime_1h:
             final_regime = regime_1h
-        elif is_high_vol:
-            final_regime = 'HIGH_VOL'
-        elif abs(slope_5m) > self.SLOPE_THRESHOLD_5M and vol_ratio_5m > self.VOLUME_THRESHOLD:
+        elif abs(slope_5m) > self.SLOPE_THRESHOLD_5M:
             final_regime = 'TREND_UP' if slope_5m > 0 else 'TREND_DOWN'
         else:
             final_regime = 'RANGE'
-        
-        # === OBI REGIME BOOST: Override RANGE based on strong OBI signals ===
-        # Both 5m AND 1h slopes must not contradict the direction
-        obi_boosted = False
-        if final_regime == 'RANGE' and obi_details:
-            imbalance_pct = abs(obi_details.get('imbalance_pct', 0))
-            slope_1h_val = slope_1h if slope_1h is not None else 0.0
-            
-            # Bullish override: OBI strong + 5m flat/up + 1h NOT clearly down
-            if (obi >= self.OBI_BULLISH_THRESHOLD
-                    and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD
-                    and slope_5m >= 0
-                    and slope_1h_val >= 0):
-                final_regime = 'TREND_UP'
-                obi_boosted = True
-            
-            # Bearish override: OBI weak + 5m flat/down + 1h NOT clearly up
-            elif (obi <= self.OBI_BEARISH_THRESHOLD
-                    and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD
-                    and slope_5m <= 0
-                    and slope_1h_val <= 0):
-                final_regime = 'TREND_DOWN'
-                obi_boosted = True
         
         return {
             'regime': final_regime,
             'slope_5m': slope_5m,
             'slope_1h': slope_1h,
-            'vol_ratio': vol_ratio_5m,
-            'is_high_vol': is_high_vol,
-            'obi_boosted': obi_boosted
         }
     
     def _detect_reversal_pattern(self, df: pd.DataFrame, live_price: float) -> Optional[Dict]:
@@ -485,14 +450,12 @@ class ReversalScalper:
         regime = regime_info['regime']
         slope_5m = regime_info['slope_5m']
         slope_1h = regime_info['slope_1h']
-        obi_boosted = regime_info.get('obi_boosted', False)
         
         slope_emoji = "📈" if slope_5m > 0 else "📉" if slope_5m < 0 else "➡️"
         regime_emoji = {
             'RANGE': '🔄',
             'TREND_UP': '🚀',
             'TREND_DOWN': '🔻',
-            'HIGH_VOL': '🌊'
         }.get(regime, '❓')
         
         lines = [f"{regime_emoji} Regime: {regime} {slope_emoji}"]
@@ -500,14 +463,7 @@ class ReversalScalper:
         if slope_1h is not None:
             lines.append(f"• Slope 1h: {slope_1h*100:+.3f}%/candle")
         if regime in ['TREND_UP', 'TREND_DOWN']:
-            if obi_boosted:
-                lines.append(f"• ✨ OBI bullish override (strong order book imbalance)")
-            else:
-                lines.append(f"• ℹ️ 1H slope > 0.18% = Trend detected (reversals disabled)")
-        elif regime == 'HIGH_VOL':
-            lines.append(f"• ℹ️ Candle range > 2x average = Spike detected (checking spike reversal)")
-        if regime_info['is_high_vol']:
-            lines.append("• ⚠️ High volatility detected")
+            lines.append(f"• ℹ️ 1H slope > 0.18% = Trend detected (reversals disabled)")
         return "\n".join(lines)
     
     def _format_pattern_display(self, pattern: Optional[Dict], live_price: float, regime: str, df: pd.DataFrame) -> str:
