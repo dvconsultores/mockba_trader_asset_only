@@ -284,19 +284,25 @@ class ReversalScalper:
             final_regime = 'RANGE'
         
         # === OBI REGIME BOOST: Override RANGE based on strong OBI signals ===
-        # For LONGS: Override RANGE → TREND_UP when OBI bullish, if NOT already in downtrend
-        # For SHORTS: Override RANGE → TREND_DOWN when OBI bearish, if NOT already in uptrend
+        # Both 5m AND 1h slopes must not contradict the direction
         obi_boosted = False
         if final_regime == 'RANGE' and obi_details:
             imbalance_pct = abs(obi_details.get('imbalance_pct', 0))
+            slope_1h_val = slope_1h if slope_1h is not None else 0.0
             
-            # Bullish override (for longs) - only if slope is essentially flat or slightly up (no clear downtrend)
-            if obi >= self.OBI_BULLISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD and slope_5m >= -0.00005:
+            # Bullish override: OBI strong + 5m flat/up + 1h NOT clearly down
+            if (obi >= self.OBI_BULLISH_THRESHOLD
+                    and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD
+                    and slope_5m >= 0
+                    and slope_1h_val >= 0):
                 final_regime = 'TREND_UP'
                 obi_boosted = True
             
-            # Bearish override (for shorts) - only if slope is essentially flat or slightly down (no clear uptrend)
-            elif obi <= self.OBI_BEARISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD and slope_5m <= 0.00005:
+            # Bearish override: OBI weak + 5m flat/down + 1h NOT clearly up
+            elif (obi <= self.OBI_BEARISH_THRESHOLD
+                    and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD
+                    and slope_5m <= 0
+                    and slope_1h_val <= 0):
                 final_regime = 'TREND_DOWN'
                 obi_boosted = True
         
