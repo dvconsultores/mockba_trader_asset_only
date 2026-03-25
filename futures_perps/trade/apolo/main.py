@@ -98,6 +98,7 @@ class ReversalScalper:
         
         # === OBI-BASED REGIME BOOST ===
         self.OBI_BULLISH_THRESHOLD = 1.10  # OBI > 1.10 = bullish (10% more bids than asks)
+        self.OBI_BEARISH_THRESHOLD = 1.0 / 1.10  # OBI < 0.909 = bearish (more asks than bids)
         self.OBI_IMBALANCE_PCT_THRESHOLD = 3.0  # Imbalance % > 3.0% = moderate strength signal
         
         # === TIME FILTER PARAMETERS (UTC-4) ===
@@ -282,11 +283,22 @@ class ReversalScalper:
         else:
             final_regime = 'RANGE'
         
-        # === OBI REGIME BOOST: Override RANGE to TREND_UP when OBI is strongly bullish ===
+        # === OBI REGIME BOOST: Override RANGE based on strong OBI signals ===
+        # For LONGS: Override RANGE → TREND_UP when OBI bullish, if NOT already in downtrend
+        # For SHORTS: Override RANGE → TREND_DOWN when OBI bearish, if NOT already in uptrend
+        obi_boosted = False
         if final_regime == 'RANGE' and obi_details:
             imbalance_pct = abs(obi_details.get('imbalance_pct', 0))
-            if obi >= self.OBI_BULLISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD:
+            
+            # Bullish override (for longs) - only if slope not already clearly down
+            if obi >= self.OBI_BULLISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD and slope_5m >= -0.0005:
                 final_regime = 'TREND_UP'
+                obi_boosted = True
+            
+            # Bearish override (for shorts) - only if slope not already clearly up
+            elif obi <= self.OBI_BEARISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD and slope_5m <= 0.0005:
+                final_regime = 'TREND_DOWN'
+                obi_boosted = True
         
         return {
             'regime': final_regime,
@@ -294,7 +306,7 @@ class ReversalScalper:
             'slope_1h': slope_1h,
             'vol_ratio': vol_ratio_5m,
             'is_high_vol': is_high_vol,
-            'obi_boosted': final_regime == 'TREND_UP' and obi >= self.OBI_BULLISH_THRESHOLD
+            'obi_boosted': obi_boosted
         }
     
     def _detect_reversal_pattern(self, df: pd.DataFrame, live_price: float) -> Optional[Dict]:
