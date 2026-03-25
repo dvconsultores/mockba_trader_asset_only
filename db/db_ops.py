@@ -32,6 +32,16 @@ def initialize_database_tables():
             );
         """)
 
+        # create table trades_daily (track daily trade count) - MIGRATION: Auto-created if missing
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS trades_daily (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                date TEXT UNIQUE NOT NULL,
+                trades_count INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+
         # Insert the default setting if it doesn't exist
         default_settings = [
             ('asset', 'PERP_NEAR_USDC'),
@@ -49,7 +59,7 @@ def initialize_database_tables():
         
         conn.commit()
         
-        logger.info("✅ SQLite tables initialized.")
+        logger.info("✅ SQLite tables initialized (includes trades_daily for daily trade counter).")
 
 
 # Def to insert or update settings
@@ -125,5 +135,40 @@ def remove_automated_asset(asset: str):
     assets = get_automated_asset_list()
     if asset in assets:
         assets.remove(asset)
-        upsert_setting('automated_assets', ','.join(assets))  
-                    
+        upsert_setting('automated_assets', ','.join(assets))
+
+# === DAILY TRADES COUNTER (for managing MAX_TRADES_PER_DAY) ===
+
+def get_today_date_utc4() -> str:
+    """Get today's date in UTC-4 format (user's local time)."""
+    from datetime import datetime, timezone, timedelta
+    utc_now = datetime.now(timezone.utc)
+    user_now = utc_now - timedelta(hours=4)
+    return user_now.strftime('%Y-%m-%d')
+
+def get_trades_today() -> int:
+    """Get today's trade count."""
+    today = get_today_date_utc4()
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT trades_count FROM trades_daily WHERE date = ?", (today,))
+        row = cur.fetchone()
+        return row['trades_count'] if row else 0
+
+def increment_trades_today() -> int:
+    """Increment today's trade counter and return new count."""
+    today = get_today_date_utc4()
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO trades_daily (date, trades_count)
+            VALUES (?, 1)
+            ON CONFLICT(date) DO UPDATE SET
+                trades_count = trades_count + 1;
+        """, (today,))
+        conn.commit()
+        
+        # Return updated count
+        cur.execute("SELECT trades_count FROM trades_daily WHERE date = ?", (today,))
+        row = cur.fetchone()
+        return row['trades_count'] if row else 1

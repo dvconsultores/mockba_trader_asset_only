@@ -24,7 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # === IMPORTS FROM YOUR EXISTING PROJECT ===
-from db.db_ops import get_setting, initialize_database_tables
+from db.db_ops import get_setting, initialize_database_tables, get_trades_today, increment_trades_today
 from logs.log_config import apolo_trader_logger as logger
 from futures_perps.trade.apolo.historical_data import (
     get_historical_data_limit_apolo, 
@@ -138,6 +138,43 @@ class ReversalScalper:
         hour = now.hour
         windows = self.PREFERRED_WINDOWS.get(day_name, [])
         return any(start <= hour < end for start, end in windows)
+    
+    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
+        """
+        Calculate Average True Range (ATR) for adaptive stop loss.
+        
+        ATR measures volatility:
+        - Higher ATR = wider moves expected = wider SL
+        - Lower ATR = tight moves = tighter SL
+        
+        Returns ATR in price units (not percentage).
+        """
+        if len(df) < period:
+            return 0.0
+        
+        highs = df['high'].values
+        lows = df['low'].values
+        closes = df['close'].values
+        
+        # True Range = max of:
+        # 1. High - Low
+        # 2. |High - Previous Close|
+        # 3. |Low - Previous Close|
+        tr = []
+        for i in range(len(df)):
+            if i == 0:
+                tr_val = highs[i] - lows[i]
+            else:
+                tr_val = max(
+                    highs[i] - lows[i],
+                    abs(highs[i] - closes[i-1]),
+                    abs(lows[i] - closes[i-1])
+                )
+            tr.append(tr_val)
+        
+        # ATR = simple moving average of TR
+        atr = np.mean(tr[-period:])
+        return atr
     
     def _calculate_normalized_slope(self, prices: np.ndarray, window: int) -> float:
         """Calculate linear regression slope normalized by price (percentage per candle)."""
@@ -625,6 +662,10 @@ class ReversalScalper:
         result['debug_info']['live_price'] = live_price
         result['debug_info']['last_close'] = last_close
         
+        # === CALCULATE ATR for display and SL/TP later ===
+        atr = self._calculate_atr(df_5m, period=14)
+        result['debug_info']['atr'] = atr
+        
         # === STEP 6: BUILD DEBUG DISPLAY ===
         regime = regime_info['regime']
         display_lines = [
@@ -633,6 +674,8 @@ class ReversalScalper:
             self._format_obi_display(obi, obi_details, live_price, orderbook, market_trades),
             "",
             self._format_regime_display(regime_info),
+            "",
+            f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n• SL will be: {live_price - atr*2:.6f} (-{(atr*2/live_price)*100:.2f}%)\n• TP will be: {live_price + atr*3:.6f} (+{(atr*3/live_price)*100:.2f}%)",
             "",
             self._format_pattern_display(pattern, live_price, regime, df_5m),
             ""
@@ -716,15 +759,48 @@ class ReversalScalper:
             elif side == 'SELL' and obi > 1.0:
                 display_lines.append(f"📚 ℹ️ OBI {obi:.2f} does not confirm SELL (reference only)")
         
+        # === CHECK DAILY TRADES LIMIT ===
+        trades_today = get_trades_today()
+        max_trades = self.MAX_TRADES_PER_DAY
+        
+        if trades_today >= max_trades and get_setting("auto_trade") == "Automatic":
+            result['rejection_reasons'].append(f"Daily limit reached ({trades_today}/{max_trades})")
+            display_lines.append(f"🚫 ❌ Daily trade limit reached: {trades_today}/{max_trades} trades\n• Resume trading tomorrow")
+            result['resume_of_analysis'] = "\n".join(display_lines)
+            return result
+        
+        # Display trades count + reminder if approaching limit
+        display_lines.append(f"📊 Trades today: {trades_today}/{max_trades}")
+        if trades_today == max_trades - 1:
+            display_lines.append(f"⚠️ WARNING: This is your final trade for today!")
+        elif trades_today >= max_trades:
+            display_lines.append(f"🚫 Daily limit reached: {trades_today}/{max_trades}\n• Wait until tomorrow for more trades")
+        
         # === STEP 8: ALL CHECKS PASSED - APPROVE TRADE ===
         entry = live_price
-        tp = entry * (1 + self.TP_PCT) if side == 'BUY' else entry * (1 - self.TP_PCT)
-        ranges = df_5m['high'].values - df_5m['low'].values
-        avg_range_pct = np.mean(ranges[-20:]) / np.mean(df_5m['close'].values[-20:])
-        sl_multiplier = min(1.2, max(1.0, avg_range_pct / 0.005))
-        sl_dist = self.SL_PCT_MIN * sl_multiplier
-        sl_dist = min(sl_dist, self.SL_PCT_MAX)
-        sl = entry * (1 - sl_dist) if side == 'BUY' else entry * (1 + sl_dist)
+        
+        # === ATR-Based SL/TP (adapts to volatility) ===
+        atr = self._calculate_atr(df_5m, period=14)
+        
+        if atr > 0:
+            # Use ATR for adaptive stops
+            if side == 'BUY':
+                tp = entry + (atr * 3.0)  # Risk 1, Reward 3
+                sl = entry - (atr * 2.0)  # Stop at 2x ATR below
+            else:  # SELL
+                tp = entry - (atr * 3.0)
+                sl = entry + (atr * 2.0)
+            atr_based = True
+        else:
+            # Fallback: use original fixed percentages
+            tp = entry * (1 + self.TP_PCT) if side == 'BUY' else entry * (1 - self.TP_PCT)
+            ranges = df_5m['high'].values - df_5m['low'].values
+            avg_range_pct = np.mean(ranges[-20:]) / np.mean(df_5m['close'].values[-20:])
+            sl_multiplier = min(1.2, max(1.0, avg_range_pct / 0.005))
+            sl_dist = self.SL_PCT_MIN * sl_multiplier
+            sl_dist = min(sl_dist, self.SL_PCT_MAX)
+            sl = entry * (1 - sl_dist) if side == 'BUY' else entry * (1 + sl_dist)
+            atr_based = False
         
         result.update({
             'approved': True,
@@ -734,10 +810,16 @@ class ReversalScalper:
             'stop_loss': round(sl, 6),
         })
         
+        sl_distance_pct = abs(sl - entry) / entry * 100
+        tp_distance_pct = abs(tp - entry) / entry * 100
+        
         display_lines.append(
             f"✅ ✅ ✅ TRADE APPROVED ✅ ✅ ✅\n"
             f"• Signal: {active_signal['reason']}\n"
             f"• Entry: {entry:.6f}\n"
+            f"• SL: {sl:.6f} (-{sl_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
+            f"• TP: {tp:.6f} (+{tp_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
+            f"• Risk/Reward: {(tp_distance_pct / sl_distance_pct):.2f}:1"
             f"• TP: {tp:.6f} (+{self.TP_PCT*100:.1f}%)\n"
             f"• SL: {sl:.6f} (-{sl_dist*100:.1f}%)\n"
             f"• RR: 1:{(sl_dist/self.TP_PCT):.1f}"
@@ -768,7 +850,10 @@ def process_signal(asset_override: str = None) -> str:
             }
             place_futures_order(order_payload)
             logger.info(f"🚀 Order placed: {order_payload}")
-            output += "\n\n🚀 ORDER EXECUTED AUTOMATICALLY"
+            
+            # Increment daily trade counter
+            trades_count = increment_trades_today()
+            output += f"\n\n🚀 ORDER EXECUTED AUTOMATICALLY\n📊 Daily trade count: {trades_count}"
         return output
     except Exception as e:
         logger.exception("Error in process_signal")
