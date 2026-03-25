@@ -290,13 +290,13 @@ class ReversalScalper:
         if final_regime == 'RANGE' and obi_details:
             imbalance_pct = abs(obi_details.get('imbalance_pct', 0))
             
-            # Bullish override (for longs) - only if slope not already clearly down
-            if obi >= self.OBI_BULLISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD and slope_5m >= -0.0005:
+            # Bullish override (for longs) - only if slope is essentially flat or slightly up (no clear downtrend)
+            if obi >= self.OBI_BULLISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD and slope_5m >= -0.00005:
                 final_regime = 'TREND_UP'
                 obi_boosted = True
             
-            # Bearish override (for shorts) - only if slope not already clearly up
-            elif obi <= self.OBI_BEARISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD and slope_5m <= 0.0005:
+            # Bearish override (for shorts) - only if slope is essentially flat or slightly down (no clear uptrend)
+            elif obi <= self.OBI_BEARISH_THRESHOLD and imbalance_pct >= self.OBI_IMBALANCE_PCT_THRESHOLD and slope_5m <= 0.00005:
                 final_regime = 'TREND_DOWN'
                 obi_boosted = True
         
@@ -687,10 +687,8 @@ class ReversalScalper:
             "",
             self._format_regime_display(regime_info),
             "",
-            f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n"
-            f"   • For BUY:  {live_price:.6f} - ({atr:.6f} × 1.5) = {live_price:.6f} - {atr*1.5:.6f} = SL: {live_price - atr*1.5:.6f}\n"
-            f"   • For SELL: {live_price:.6f} + ({atr:.6f} × 1.5) = {live_price:.6f} + {atr*1.5:.6f} = SL: {live_price + atr*1.5:.6f}\n"
-            f"   • TP both: {live_price:.6f} ± ({atr:.6f} × 1.0) = ±{atr:.6f}",
+            f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%) | "
+            f"BUY SL: {live_price - atr*1.5:.6f} | SELL SL: {live_price + atr*1.5:.6f} | TP: ±{atr:.6f}",
             "",
             self._format_pattern_display(pattern, live_price, regime, df_5m),
             ""
