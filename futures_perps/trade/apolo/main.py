@@ -687,8 +687,9 @@ class ReversalScalper:
             "",
             self._format_regime_display(regime_info),
             "",
-            f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%) | "
-            f"BUY SL: {live_price - atr*1.5:.6f} | SELL SL: {live_price + atr*1.5:.6f} | TP: ±{atr:.6f}",
+            f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n"
+            f"• SL will be: {live_price - atr*1.5:.6f} (-{(atr*1.5/live_price)*100:.2f}%)\n"
+            f"• TP will be: {live_price + atr*1.0:.6f} (+{(atr*1.0/live_price)*100:.2f}%)",
             "",
             self._format_pattern_display(pattern, live_price, regime, df_5m),
             ""
