@@ -762,13 +762,6 @@ def execute_signal(m, asset=None):
         send_text_message_chunked(cid, full_message)
     except Exception as e:
         bot.send_message(cid, translate(f"Signal processed but error displaying result: {str(e)}", cid))
-
-    auto_trade = get_setting("auto_trade")
-    time.sleep(2)
-    if auto_trade and auto_trade.lower() == 'false':
-        bot.send_message(cid, translate("Auto Trade is disabled. Please execute the trade manually.", cid))
-    if auto_trade and auto_trade.lower() == 'true':
-        bot.send_message(cid, translate("Auto Trade is enabled. Trade execution handled by the signal processor.", cid))
          
 
 def ListSettings(m):
