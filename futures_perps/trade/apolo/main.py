@@ -48,7 +48,7 @@ class ReversalScalper:
     and manipulation detection.
     
     This class implements a rule-based trading system that:
-    1. Only trades during preferred time windows (Mon-Thu 6am-10pm, Fri 6-11am, Sun 8-10pm UTC-4)
+    1. Only trades during preferred time windows (Mon-Fri 6am-12pm, Sun 8-10am UTC-4)
     2. Avoids trending markets using linear regression slope detection
     3. Requires order book imbalance confirmation for each trade
     4. Detects specific 2-candle reversal patterns at support/resistance
@@ -73,7 +73,7 @@ class ReversalScalper:
         self.TP_PCT = self._setting_pct('take_profit', 0.003)    # 0.3% take profit
         self.SL_PCT_MIN = self._setting_pct('stop_loss', 0.015)  # 1.5% stop loss
         self.SL_PCT_MAX = 0.018                                   # 1.8% max stop loss
-        self.MAX_TRADES_PER_DAY = 3                               # Daily trade limit
+        self.MAX_TRADES_PER_DAY = 2                               # Max 2 positive trades daily
         
         # === REVERSAL PATTERN PARAMETERS ===
         self.CANDLE_COUNT = 2           # Need 2 consecutive candles same direction
@@ -102,14 +102,14 @@ class ReversalScalper:
         self.OBI_IMBALANCE_PCT_THRESHOLD = 3.0  # Imbalance % > 3.0% = moderate strength signal
         
         # === TIME FILTER PARAMETERS (UTC-4) ===
-        # Mon-Thu: 6am-10pm | Fri: 6am-11am | Sun: 8pm-10pm | Sat: off
+        # Mon-Fri: 6am-12pm | Sun: 8am-10am | Sat: off
         self.PREFERRED_WINDOWS = {
-            'Sunday':    [(20, 22)],
-            'Monday':    [(6, 22)],
-            'Tuesday':   [(6, 22)],
-            'Wednesday': [(6, 22)],
-            'Thursday':  [(6, 22)],
-            'Friday':    [(6, 11)],
+            'Sunday':    [(8, 10)],
+            'Monday':    [(6, 12)],
+            'Tuesday':   [(6, 12)],
+            'Wednesday': [(6, 12)],
+            'Thursday':  [(6, 12)],
+            'Friday':    [(6, 12)],
         }
         
         # === LIVE PRICE VALIDATION ===
@@ -678,7 +678,7 @@ class ReversalScalper:
         # === STEP 7: APPLY FILTERS ===
         if not self._is_preferred_time():
             result['rejection_reasons'].append("Outside preferred time window")
-            display_lines.append("⏰ ❌ Outside preferred window (Mon-Thu 6am-10pm, Fri 6-11am, Sun 8-10pm UTC-4)")
+            display_lines.append("⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4)")
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         

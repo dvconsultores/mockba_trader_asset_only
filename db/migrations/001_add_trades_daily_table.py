@@ -35,12 +35,12 @@ def migrate():
             conn.close()
             return True
         
-        # Create table
+        # Create table (tracks positive trades only - max 2 per day)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS trades_daily (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT UNIQUE NOT NULL,
-                trades_count INTEGER DEFAULT 0,
+                positive_trades_count INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -49,7 +49,7 @@ def migrate():
         conn.close()
         
         print("✅ Successfully created trades_daily table")
-        print("📊 Daily trade counter is now active")
+        print("📊 Daily positive trades counter is now active (max 2 per day)")
         return True
         
     except Exception as e:

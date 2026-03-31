@@ -32,12 +32,12 @@ def initialize_database_tables():
             );
         """)
 
-        # create table trades_daily (track daily trade count) - MIGRATION: Auto-created if missing
+        # create table trades_daily (track daily positive trades) - MIGRATION: Auto-created if missing
         cur.execute("""
             CREATE TABLE IF NOT EXISTS trades_daily (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT UNIQUE NOT NULL,
-                trades_count INTEGER DEFAULT 0,
+                positive_trades_count INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
@@ -59,7 +59,7 @@ def initialize_database_tables():
         
         conn.commit()
         
-        logger.info("✅ SQLite tables initialized (includes trades_daily for daily trade counter).")
+        logger.info("✅ SQLite tables initialized (includes trades_daily for daily positive trades counter).")
 
 
 # Def to insert or update settings
@@ -147,28 +147,28 @@ def get_today_date_utc4() -> str:
     return user_now.strftime('%Y-%m-%d')
 
 def get_trades_today() -> int:
-    """Get today's trade count."""
+    """Get today's positive trade count."""
     today = get_today_date_utc4()
     with get_db_connection() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT trades_count FROM trades_daily WHERE date = ?", (today,))
+        cur.execute("SELECT positive_trades_count FROM trades_daily WHERE date = ?", (today,))
         row = cur.fetchone()
-        return row['trades_count'] if row else 0
+        return row['positive_trades_count'] if row else 0
 
 def increment_trades_today() -> int:
-    """Increment today's trade counter and return new count."""
+    """Increment today's positive trade counter and return new count."""
     today = get_today_date_utc4()
     with get_db_connection() as conn:
         cur = conn.cursor()
         cur.execute("""
-            INSERT INTO trades_daily (date, trades_count)
+            INSERT INTO trades_daily (date, positive_trades_count)
             VALUES (?, 1)
             ON CONFLICT(date) DO UPDATE SET
-                trades_count = trades_count + 1;
+                positive_trades_count = positive_trades_count + 1;
         """, (today,))
         conn.commit()
         
         # Return updated count
-        cur.execute("SELECT trades_count FROM trades_daily WHERE date = ?", (today,))
+        cur.execute("SELECT positive_trades_count FROM trades_daily WHERE date = ?", (today,))
         row = cur.fetchone()
-        return row['trades_count'] if row else 1
+        return row['positive_trades_count'] if row else 1

@@ -51,7 +51,7 @@ def _to_datetime_utc(timestamp_ms: Any) -> datetime | None:
 
 
 def _is_preferred_window(timestamp_ms: Any) -> bool:
-    """Check if timestamp falls within preferred trading window (Sun-Thu, 6-11 AM UTC-4)."""
+    """Check if timestamp falls within preferred trading window (Mon-Fri 6am-12pm, Sun 8am-10am UTC-4)."""
     dt = _to_datetime_utc(timestamp_ms)
     if dt is None:
         return False
@@ -59,8 +59,13 @@ def _is_preferred_window(timestamp_ms: Any) -> bool:
     dt_utc4 = dt.replace(tzinfo=None) - timedelta(hours=4)
     day_name = dt_utc4.strftime('%A')
     hour = dt_utc4.hour
-    preferred_days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday']
-    return day_name in preferred_days and 6 <= hour < 11
+    
+    if day_name == 'Sunday':
+        return 8 <= hour < 10
+    elif day_name in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']:
+        return 6 <= hour < 12
+    else:
+        return False
 
 
 def _extract_parameters_from_main(pattern_keys: list[str], class_name: str = "ReversalScalper") -> dict[str, Any]:
@@ -318,12 +323,12 @@ def _build_llm_prompt(
         "2) MAINTAIN WIN RATE: Keep win rate >50% in RANGE regime conditions",
         "3) IMPROVE NET PnL: Account for fees (avg $0.45/trade) - small wins get eaten",
         "4) PRESERVE LATENCY: Keep execution <100ms - no heavy ML, prefer hard-coded logic",
-        "5) RESPECT USER PREFERENCES: Only trade Sun-Thu, 6-11 AM UTC-4 unless strong signal",
+        "5) RESPECT USER PREFERENCES: Only trade Mon-Fri 6am-12pm, Sun 8am-10am UTC-4 unless strong signal",
         "",
         "=== REQUIRED ANALYSIS POINTS ===",
         "1) POSITIVE TRADES: What conditions led to wins? (regime, OBI, time, pattern, position size)",
         "2) NEGATIVE TRADES: What conditions led to losses? Could regime filter have blocked them?",
-        "3) HOUR ANALYSIS: Are losses clustered outside 6-11 AM UTC-4? Should time filter be adjusted?",
+        "3) HOUR ANALYSIS: Are losses clustered outside 6am-12pm (Mon-Fri) or 8-10am (Sun) UTC-4? Should time filter be adjusted?",
         "4) DAY ANALYSIS: Are certain days (e.g., Monday) higher risk? Any pattern?",
         "5) STRATEGY PATTERN: Is the 2-candle reversal pattern detecting valid setups? Missed opportunities?",
         "6) FEE IMPACT: Avg win=$3.61, avg fee=$0.45 = 12.5% fee drag. Propose minimum profit threshold?",
