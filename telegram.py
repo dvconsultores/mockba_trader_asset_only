@@ -451,9 +451,9 @@ def set_auto_trade(m):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
     
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("True", callback_data="set_val:auto_trade:True"),
-               InlineKeyboardButton("False", callback_data="set_val:auto_trade:False"))
-    markup.add(InlineKeyboardButton("Automatic", callback_data="auto_trade_auto"))
+    markup.add(InlineKeyboardButton("✅ Manual (Yes)", callback_data="set_val:auto_trade:True"),
+               InlineKeyboardButton("❌ OFF", callback_data="set_val:auto_trade:False"))
+    markup.add(InlineKeyboardButton("🤖 Automatic", callback_data="auto_trade_auto"))
     markup.add(InlineKeyboardButton("📡 Signal Mode", callback_data="set_val:auto_trade:Signal"))
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
