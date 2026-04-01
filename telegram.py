@@ -13,8 +13,7 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.db_ops import (
     upsert_setting, get_all_settings, initialize_database_tables, get_setting,
-    add_asset, remove_asset, get_asset_list,
-    add_automated_asset, remove_automated_asset, get_automated_asset_list
+    add_asset, remove_asset, get_asset_list
 )
 from futures_perps.trade.apolo.main import process_signal as run_process_signal, autotrade
 import json
@@ -205,25 +204,7 @@ def callback_handler(call):
     elif call.data == "auto_trade_auto":
         upsert_setting("auto_trade", "Automatic")
         bot.send_message(cid, translate("✅ Auto Trade set to Automatic.", cid))
-        manage_automated_assets(call.message)
-    elif call.data.startswith("toggle_auto_asset:"):
-        asset = call.data.split(":", 1)[1]
-        current_auto = get_automated_asset_list()
-        if asset in current_auto:
-            remove_automated_asset(asset)
-            try: bot.answer_callback_query(call.id, f"Removed {asset}")
-            except: pass
-        else:
-            add_automated_asset(asset)
-            try: bot.answer_callback_query(call.id, f"Added {asset}")
-            except: pass
-        manage_automated_assets(call.message, edit_msg_id=call.message.message_id)
-    elif call.data.startswith("add_auto_asset:"):
-        asset = call.data.split(":", 1)[1]
-        confirm_add_automated_asset(call.message, asset)
-    elif call.data.startswith("rm_auto_asset:"):
-        asset = call.data.split(":", 1)[1]
-        confirm_remove_automated_asset(call.message, asset)
+        bot.send_message(cid, translate(f"📊 Running on: {get_setting('asset')}", cid))
     else:
         options = {
             'List': command_list,
@@ -263,7 +244,8 @@ def settings(m):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     labels = {
-        "set_asset": "💰 Asset",
+        "manage_assets": "💰 Manage Assets",
+        "set_current_asset": "🎯 Current Asset",
         "set_interval": "⏱️ Interval",
         "set_take_profit": "📈 Take Profit",
         "set_stop_loss": "📉 Stop Loss",
@@ -293,9 +275,10 @@ def upsert_assets(m):
     global gp1
     valid, error_msg = True, ""
 
-    if gp1 == "asset":
-        if not re.match(r"^PERP_[A-Z0-9]+_USDC$", valor):
-            valid, error_msg = False, "Invalid asset format. Use: PERP_BTC_USDC"
+    if gp1 == "current_asset":
+        assets = get_asset_list()
+        if valor not in assets:
+            valid, error_msg = False, f"Asset not in list. Available: {', '.join(assets)}"
     elif gp1 == "risk_level":
         if not is_float(valor) or float(valor) <= 0:
             valid, error_msg = False, "Risk must be a positive number (e.g., 1.5)"
@@ -363,6 +346,27 @@ def confirm_add_asset(m):
     add_asset(valor)
     bot.send_message(cid, translate(f"✅ Asset {valor} added.", cid))
     set_asset(m) # Show menu again
+
+def set_current_asset(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+    
+    assets = get_asset_list()
+    if not assets:
+        bot.send_message(cid, translate("No assets available. Add one first.", cid))
+        return
+
+    markup = InlineKeyboardMarkup()
+    current = get_setting("current_asset")
+    for asset in assets:
+        status = "✅" if asset == current else "  "
+        markup.add(InlineKeyboardButton(f"{status} {asset}", callback_data=f"set_val:current_asset:{asset}"))
+    
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Next: Interval ➡️", cid), callback_data="set_interval"))
+    
+    bot.send_message(cid, translate("Select Current Asset:", cid), reply_markup=markup)
 
 def ask_remove_asset(m):
     if m.chat.type != 'private': return
@@ -451,128 +455,13 @@ def set_auto_trade(m):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
     
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("✅ Manual (Yes)", callback_data="set_val:auto_trade:True"),
-               InlineKeyboardButton("❌ OFF", callback_data="set_val:auto_trade:False"))
-    markup.add(InlineKeyboardButton("🤖 Automatic", callback_data="auto_trade_auto"))
+    markup.add(InlineKeyboardButton("❌ OFF", callback_data="set_val:auto_trade:False"),
+               InlineKeyboardButton("🤖 Automatic", callback_data="auto_trade_auto"))
     markup.add(InlineKeyboardButton("📡 Signal Mode", callback_data="set_val:auto_trade:Signal"))
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
     
     bot.send_message(cid, translate("Select Auto Trade:", cid), reply_markup=markup)
-
-def manage_automated_assets(m, edit_msg_id=None):
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-    
-    all_assets = get_asset_list()
-    auto_assets = get_automated_asset_list()
-    
-    markup = InlineKeyboardMarkup()
-    
-    # Create toggle buttons for each asset
-    row = []
-    for asset in all_assets:
-        is_auto = asset in auto_assets
-        status = "✅" if is_auto else "❌"
-        btn_text = f"{status} {asset}"
-        row.append(InlineKeyboardButton(btn_text, callback_data=f"toggle_auto_asset:{asset}"))
-        
-        if len(row) == 2: 
-            markup.add(*row)
-            row = []
-    if row:
-        markup.add(*row)
-            
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Indicator ➡️", cid), callback_data="set_indicator"))
-    
-    msg_text = translate("Manage Automated Assets (Click to toggle):", cid)
-    
-    if edit_msg_id:
-        try:
-            bot.edit_message_text(chat_id=cid, message_id=edit_msg_id, text=msg_text, reply_markup=markup)
-        except:
-            bot.send_message(cid, msg_text, reply_markup=markup)
-    else:
-        bot.send_message(cid, msg_text, reply_markup=markup)
-
-def ask_add_automated_asset(m):
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-    
-    # Show available assets that are NOT in automated list
-    all_assets = get_asset_list()
-    current_auto = get_automated_asset_list()
-    available = [a for a in all_assets if a not in current_auto]
-    
-    if not available:
-        bot.send_message(cid, translate("No more assets available to add.", cid))
-        manage_automated_assets(m)
-        return
-
-    markup = InlineKeyboardMarkup()
-    for asset in available:
-        markup.add(InlineKeyboardButton(f"➕ {asset}", callback_data=f"add_auto_asset:{asset}"))
-    
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="manage_automated_assets"))
-    bot.send_message(cid, translate("Select asset to ADD to Automation:", cid), reply_markup=markup)
-
-def confirm_add_automated_asset(m, asset):
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-    
-    add_automated_asset(asset)
-    bot.send_message(cid, translate(f"✅ Asset {asset} added to automation.", cid))
-    manage_automated_assets(m)
-
-def ask_remove_automated_asset(m):
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-    
-    assets = get_automated_asset_list()
-    if not assets:
-        bot.send_message(cid, translate("No automated assets to remove.", cid))
-        manage_automated_assets(m)
-        return
-
-    markup = InlineKeyboardMarkup()
-    for asset in assets:
-        markup.add(InlineKeyboardButton(f"❌ {asset}", callback_data=f"rm_auto_asset:{asset}"))
-    
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="manage_automated_assets"))
-    bot.send_message(cid, translate("Select asset to REMOVE from Automation:", cid), reply_markup=markup)
-
-def confirm_remove_automated_asset(m, asset):
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-    
-    remove_automated_asset(asset)
-    bot.send_message(cid, translate(f"✅ Asset {asset} removed from automation.", cid))
-    manage_automated_assets(m)
-
-
-def set_indicator(m):
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-    
-    markup = InlineKeyboardMarkup()
-    options = ['Trend-Following', 'Volatility Breakout', 'Momentum Reversal', 'Momentum + Volatility', 'Hybrid', 'Advanced', 'Router']
-    for opt in options:
-        markup.add(InlineKeyboardButton(translate(opt, cid), callback_data=f"set_val:indicator:{opt}"))
-    
-    # Add reference URL button
-    markup.add(InlineKeyboardButton(translate("📚 Reference Indicators", cid), url="https://learning-dex.apolopay.app/docs/strategy-indicators-reference"))
-
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
-        
-    bot.send_message(cid, translate("Select Indicator:", cid), reply_markup=markup)
 
 def set_leverage(m):
     if m.chat.type != 'private': return
@@ -787,10 +676,9 @@ def ListSettings(m):
     message_lines.append("⚙️ BOT SETTINGS\n")
     message_lines.append("═══════════════════\n\n")
     
-    # Trading settings section
-    message_lines.append("📈 Trading:\n")
+    message_lines.append("⏰ Trading:\n")
     trading_keys = [
-        ("💰", "asset", "Asset"),
+        ("🌟", "current_asset", "Current Asset"),
         ("⏱️", "interval", "Interval"),
         ("🎯", "take_profit", "Take Profit"),
         ("🛡️", "stop_loss", "Stop Loss"),
@@ -816,17 +704,11 @@ def ListSettings(m):
             value = settings[key]
             if key == "auto_trade": # add for automatic option
                 if value == "Automatic":
-                    value = "🤖 Automatic"
+                    value = "🤖 Automatic (30s auto-trade)"
                 elif value == "Signal":
-                    value = "📡 Signal Mode (30s scan)"
+                    value = "📡 Signal Mode (30s alerts)"
                 else:
-                    value = "✅ YES" if str(value).lower() == "true" else "❌ NO"
-                if settings[key] == "Automatic":
-                     auto_assets = get_automated_asset_list()
-                     if auto_assets:
-                         value += f"\n   └ 📋 {', '.join(auto_assets)}"
-                     else:
-                         value += "\n   └ ⚠️ No assets selected"
+                    value = "❌ OFF"
             message_lines.append(f"{emoji} {label}: {value}\n")
     
     # Add timestamp

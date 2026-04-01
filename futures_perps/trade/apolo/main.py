@@ -999,7 +999,7 @@ class ReversalScalper:
 def process_signal(asset_override: str = None) -> str:
     """Drop-in replacement - always returns full analysis for manual review."""
     try:
-        asset = asset_override or get_setting("asset")
+        asset = asset_override or get_setting("current_asset")
         interval = get_setting("interval") or "5m"
         scalper = ReversalScalper()
         result = scalper.analyze_signal(asset, interval)
@@ -1038,7 +1038,7 @@ def autotrade():
                     logger.info("⏰ Signal Mode: outside preferred window — sleeping 1 hour")
                     time.sleep(3600)
                     continue
-                asset = get_setting("asset")
+                asset = get_setting("current_asset")
                 interval = get_setting("interval") or "5m"
                 if asset:
                     result = scalper.analyze_signal(asset, interval)
@@ -1052,32 +1052,37 @@ def autotrade():
                 time.sleep(30)
                 continue
 
-            if mode == "Automatic":
-                interval_str = get_setting("interval") or "5m"
-                interval_map = {
-                    '5m': timedelta(minutes=5), '15m': timedelta(minutes=15),
-                    '30m': timedelta(minutes=30), '1h': timedelta(hours=1),
-                    '4h': timedelta(hours=4), '1d': timedelta(days=1)
-                }
-                trade_interval = interval_map.get(interval_str, timedelta(minutes=5))
-                automated_assets = get_setting("automated_assets")
-                if automated_assets:
-                    asset_list = [a.strip() for a in automated_assets.split(',') if a.strip()]
-                    worker_count = min(max(1, os.cpu_count() or 1), len(asset_list))
-                    logger.info(f"🖥️  Processing {len(asset_list)} assets with {worker_count} workers")
-                    with ThreadPoolExecutor(max_workers=worker_count) as pool:
-                        future_map = {
-                            pool.submit(process_signal, asset_override=asset): asset
-                            for asset in asset_list
+            elif mode == "Automatic":
+                scalper = ReversalScalper()
+                if not scalper._is_preferred_time():
+                    logger.info("⏰ Automatic Mode: outside preferred window — sleeping 1 hour")
+                    time.sleep(3600)
+                    continue
+                asset = get_setting("current_asset")
+                interval = get_setting("interval") or "5m"
+                if asset:
+                    result = scalper.analyze_signal(asset, interval)
+                    if result.get("approved"):
+                        order_payload = {
+                            "symbol": result['symbol'],
+                            "side": result['side'],
+                            "entry": result['entry'],
+                            "take_profit": result['take_profit'],
+                            "stop_loss": result['stop_loss'],
+                            "leverage": int(get_setting("leverage") or 5)
                         }
-                        for future in as_completed(future_map):
-                            asset = future_map[future]
-                            try:
-                                summary = future.result()
-                                logger.info(f"Processed {asset}: {summary[:120]}...")
-                            except Exception as e:
-                                logger.error(f"Error processing {asset}: {e}")
-                time.sleep(trade_interval.total_seconds())
+                        place_futures_order(order_payload)
+                        logger.info(f"🚀 Order placed: {order_payload}")
+                        trades_count = increment_trades_today()
+                        msg = (
+                            f"🚀 ORDER EXECUTED\n"
+                            f"{result['resume_of_analysis']}\n\n"
+                            f"📈 Daily trade count: {trades_count}"
+                        )
+                        send_bot_message(msg)
+                        logger.info(f"🤖 Automatic trade executed for {asset}")
+                time.sleep(30)
+                continue
             else:
                 time.sleep(60)
         except Exception as e:

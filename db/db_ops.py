@@ -44,7 +44,8 @@ def initialize_database_tables():
 
         # Insert the default setting if it doesn't exist
         default_settings = [
-            ('asset', 'PERP_NEAR_USDC'),
+            ('asset', 'PERP_NEAR_USDC'),  # List of all assets (comma-separated)
+            ('current_asset', 'PERP_NEAR_USDC'),  # Current asset the bot trades on
             ('interval', '5m'),
             ('take_profit', '0.3'),
             ('stop_loss', '1.5'),
