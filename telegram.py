@@ -625,17 +625,10 @@ def execute_signal(m, asset=None):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     if asset is None:
-        assets = get_asset_list()
-        if not assets:
-            bot.send_message(cid, translate("❌ No assets configured. Please add assets first.", cid))
+        asset = get_setting("current_asset")
+        if not asset:
+            bot.send_message(cid, translate("❌ No current asset set. Please configure one first.", cid))
             return
-
-        markup = InlineKeyboardMarkup()
-        for asset_item in assets:
-            markup.add(InlineKeyboardButton(f"📡 {asset_item}", callback_data=f"exec_sig:{asset_item}"))
-        
-        bot.send_message(cid, translate("Select asset to process:", cid), reply_markup=markup)
-        return
 
     interval = get_setting("interval")
 
