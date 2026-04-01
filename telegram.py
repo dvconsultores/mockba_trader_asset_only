@@ -209,6 +209,8 @@ def callback_handler(call):
         options = {
             'List': command_list,
             'Settings': settings,
+            'manage_assets': set_asset,
+            'set_current_asset': set_current_asset,
             'set_asset': set_asset,
             'asset_add': ask_add_asset,
             'asset_remove': ask_remove_asset,
