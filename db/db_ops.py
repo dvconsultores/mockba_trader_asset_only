@@ -48,7 +48,7 @@ def initialize_database_tables():
             ('current_asset', 'PERP_NEAR_USDC'),  # Current asset the bot trades on
             ('interval', '5m'),
             ('take_profit', '0.3'),
-            ('stop_loss', '1.5'),
+            ('stop_loss', '0.8'),
             ('auto_trade', 'False'),
             ('leverage', '10'),
         ]

@@ -955,6 +955,13 @@ class ReversalScalper:
             else:  # SELL
                 tp = entry - (atr * self.TP_ATR_MULTIPLIER)
                 sl = entry + (atr * self.SL_ATR_MULTIPLIER)
+            # Apply floor guards: ATR values cannot be tighter than DB settings
+            sl_pct = abs(sl - entry) / entry
+            sl_pct = max(sl_pct, self.SL_PCT_MIN)
+            sl = entry * (1 - sl_pct) if side == 'BUY' else entry * (1 + sl_pct)
+            tp_pct = abs(tp - entry) / entry
+            tp_pct = max(tp_pct, self.TP_PCT)
+            tp = entry * (1 + tp_pct) if side == 'BUY' else entry * (1 - tp_pct)
             atr_based = True
         else:
             # Fallback: use original fixed percentages
