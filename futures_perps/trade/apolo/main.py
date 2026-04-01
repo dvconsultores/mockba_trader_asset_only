@@ -748,7 +748,13 @@ class ReversalScalper:
             'rejection_reasons': [],
             'debug_info': {}
         }
-        
+
+        # === HARD BLOCK: Time window check before any data fetch ===
+        if not self._is_preferred_time():
+            result['rejection_reasons'].append("Outside preferred time window")
+            result['resume_of_analysis'] = "⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4)"
+            return result
+
         # === STEP 1: FETCH ALL DATA IN PARALLEL ===
         with ThreadPoolExecutor(max_workers=min(5, self.MAX_WORKERS)) as pool:
             f_df_5m = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='5m', limit=100)
@@ -855,6 +861,7 @@ class ReversalScalper:
             display_lines.append("")
         
         # === STEP 7: APPLY FILTERS ===
+        # Time window already enforced before data fetch — this is a safety fallback
         if not self._is_preferred_time():
             result['rejection_reasons'].append("Outside preferred time window")
             display_lines.append("⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4)")
@@ -910,13 +917,18 @@ class ReversalScalper:
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        # OBI is informational only — shown in display but does not block trades
+        # OBI confirmation required for all signals
         side = active_signal['side']
-        if active_signal is pattern:
-            if side == 'BUY' and obi < 1.0:
-                display_lines.append(f"📚 ℹ️ OBI {obi:.2f} does not confirm BUY (reference only)")
-            elif side == 'SELL' and obi > 1.0:
-                display_lines.append(f"📚 ℹ️ OBI {obi:.2f} does not confirm SELL (reference only)")
+        if side == 'BUY' and obi < 1.0:
+            result['rejection_reasons'].append(f"OBI {obi:.2f} does not confirm BUY")
+            display_lines.append(f"📚 ❌ OBI {obi:.2f} does not confirm BUY — trade blocked")
+            result['resume_of_analysis'] = "\n".join(display_lines)
+            return result
+        elif side == 'SELL' and obi > 1.0:
+            result['rejection_reasons'].append(f"OBI {obi:.2f} does not confirm SELL")
+            display_lines.append(f"📚 ❌ OBI {obi:.2f} does not confirm SELL — trade blocked")
+            result['resume_of_analysis'] = "\n".join(display_lines)
+            return result
         
         # === CHECK DAILY TRADES LIMIT ===
         trades_today = get_trades_today()
