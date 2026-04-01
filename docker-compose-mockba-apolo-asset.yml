@@ -3,6 +3,8 @@ services:
     image: andresdom2004/micro-mockba-asset-futures-bot:latest
     container_name: micro-mockba-asset-futures-bot
     restart: always
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     env_file:
       - .env
     volumes:
@@ -17,6 +19,6 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - WATCHTOWER_CLEANUP=true
-      - WATCHTOWER_POLL_INTERVAL=300
+      - WATCHTOWER_POLL_INTERVAL=60
       - WATCHTOWER_LIFECYCLE_HOOKS=true
       - WATCHTOWER_LABEL_ENABLE=true
