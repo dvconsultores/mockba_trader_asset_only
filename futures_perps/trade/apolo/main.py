@@ -74,14 +74,17 @@ class ReversalScalper:
         self.SL_PCT_MIN = self._setting_pct('stop_loss', 0.015)  # 1.5% stop loss
         self.SL_PCT_MAX = 0.018                                   # 1.8% max stop loss
         self.MAX_TRADES_PER_DAY = 2                               # Max 2 positive trades daily
+        self.SL_ATR_MULTIPLIER = 1.2    # SL at 1.2x ATR (tight, capital-preserving)
+        self.TP_ATR_MULTIPLIER = 2.0    # TP at 2.0x ATR (R:R ~1.67:1)
         
         # === REVERSAL PATTERN PARAMETERS ===
-        self.CANDLE_COUNT = 2           # Need 2 consecutive candles same direction
+        self.CANDLE_COUNT = 2           # Need 2+ consecutive candles same direction
         self.CORRECTION_PCT = 0.001     # 0.1% minimum pullback before entry
         self.BIG_CANDLE_MULTIPLIER = 1.2 # Candle must be 1.2x average range (NEAR-specific)
+        self.SR_PROXIMITY_PCT = 0.008   # 0.8% proximity to S/R level (relaxed for real markets)
         
         # === SPIKE REVERSAL PARAMETERS ===
-        self.SPIKE_CANDLE_MULTIPLIER = 2.0  # Candle range > 2x avg = spike
+        self.SPIKE_CANDLE_MULTIPLIER = 1.5  # Candle range > 1.5x avg = spike (lowered for sensitivity)
         self.SPIKE_VOLUME_MULTIPLIER = 3.0  # Volume > 3x avg confirms spike
         
         # === ORDER BOOK IMBALANCE PARAMETERS ===
@@ -280,8 +283,25 @@ class ReversalScalper:
             'slope_1h': slope_1h,
         }
     
+    def _count_consecutive_candles(self, closes: np.ndarray) -> Tuple[int, int]:
+        """Count consecutive candles in same direction from most recent backward."""
+        consecutive_up = 0
+        consecutive_down = 0
+        for i in range(len(closes) - 1, 0, -1):
+            if closes[i] > closes[i-1]:
+                if consecutive_down > 0:
+                    break
+                consecutive_up += 1
+            elif closes[i] < closes[i-1]:
+                if consecutive_up > 0:
+                    break
+                consecutive_down += 1
+            else:
+                break
+        return consecutive_up, consecutive_down
+    
     def _detect_reversal_pattern(self, df: pd.DataFrame, live_price: float) -> Optional[Dict]:
-        """Detect the specific 2-candle reversal pattern you trade manually."""
+        """Detect 2+ consecutive candle reversal pattern at S/R."""
         if len(df) < 10:
             return None
             
@@ -289,42 +309,43 @@ class ReversalScalper:
         highs = df['high'].values
         lows = df['low'].values
         
-        c0, c1, c2 = closes[-3], closes[-2], closes[-1]
-        h0, h1, h2 = highs[-3], highs[-2], highs[-1]
-        l0, l1, l2 = lows[-3], lows[-2], lows[-1]
-        
+        consecutive_up, consecutive_down = self._count_consecutive_candles(closes)
         avg_range = np.mean([highs[i] - lows[i] for i in range(-20, -1)])
         
-        # === PATTERN: 2 candles UP → look for SHORT reversal ===
-        if c1 > c0 and c2 > c1:
-            pullback = (h2 - live_price) / h2
+        # === PATTERN: 2+ candles UP → look for SHORT reversal ===
+        if consecutive_up >= self.CANDLE_COUNT:
+            h_recent = highs[-1]
+            pullback = (h_recent - live_price) / h_recent
             if pullback >= self.CORRECTION_PCT:
                 recent_high = np.max(highs[-10:])
-                if abs(h2 - recent_high) / recent_high < 0.005:
+                if abs(h_recent - recent_high) / recent_high < self.SR_PROXIMITY_PCT:
                     return {
                         'side': 'SELL',
                         'entry': live_price,
-                        'reason': '2 up candles + pullback at resistance',
+                        'reason': f'{consecutive_up} up candles + pullback at resistance',
                         'details': {
+                            'consecutive': consecutive_up,
                             'pullback_pct': pullback * 100,
-                            'candle_range': h2 - l2,
+                            'candle_range': h_recent - lows[-1],
                             'avg_range': avg_range
                         }
                     }
         
-        # === PATTERN: 2 candles DOWN → look for LONG reversal ===
-        elif c1 < c0 and c2 < c1:
-            bounce = (live_price - l2) / l2
+        # === PATTERN: 2+ candles DOWN → look for LONG reversal ===
+        if consecutive_down >= self.CANDLE_COUNT:
+            l_recent = lows[-1]
+            bounce = (live_price - l_recent) / l_recent
             if bounce >= self.CORRECTION_PCT:
                 recent_low = np.min(lows[-10:])
-                if abs(l2 - recent_low) / recent_low < 0.005:
+                if abs(l_recent - recent_low) / recent_low < self.SR_PROXIMITY_PCT:
                     return {
                         'side': 'BUY',
                         'entry': live_price,
-                        'reason': '2 down candles + bounce at support',
+                        'reason': f'{consecutive_down} down candles + bounce at support',
                         'details': {
+                            'consecutive': consecutive_down,
                             'bounce_pct': bounce * 100,
-                            'candle_range': h2 - l2,
+                            'candle_range': highs[-1] - l_recent,
                             'avg_range': avg_range
                         }
                     }
@@ -364,14 +385,14 @@ class ReversalScalper:
         
         is_bullish_candle = closes[-1] > opens[-1]
         
-        # === SPIKE UP + OB bearish → SHORT on pullback ===
-        if is_bullish_candle and obi < 1.0:
+        # === SPIKE UP → SHORT on pullback (softened OBI) ===
+        if is_bullish_candle and obi < 1.15:
             pullback = (h_last - live_price) / h_last
             if pullback >= self.CORRECTION_PCT:
                 return {
                     'side': 'SELL',
                     'entry': live_price,
-                    'reason': 'Spike up + OB bearish → reversal SHORT',
+                    'reason': f'Spike up (OBI {obi:.2f}) → reversal SHORT',
                     'details': {
                         'pullback_pct': pullback * 100,
                         'candle_range': candle_range,
@@ -380,19 +401,155 @@ class ReversalScalper:
                     }
                 }
         
-        # === SPIKE DOWN + OB bullish → LONG on bounce ===
-        elif not is_bullish_candle and obi > 1.0:
+        # === SPIKE DOWN → LONG on bounce (softened OBI) ===
+        elif not is_bullish_candle and obi > 0.85:
             bounce = (live_price - l_last) / l_last
             if bounce >= self.CORRECTION_PCT:
                 return {
                     'side': 'BUY',
                     'entry': live_price,
-                    'reason': 'Spike down + OB bullish → reversal LONG',
+                    'reason': f'Spike down (OBI {obi:.2f}) → reversal LONG',
                     'details': {
                         'bounce_pct': bounce * 100,
                         'candle_range': candle_range,
                         'avg_range': avg_range,
                         'vol_ratio': vol_ratio
+                    }
+                }
+        
+        return None
+    
+    def _detect_engulfing_pattern(self, df: pd.DataFrame, live_price: float) -> Optional[Dict]:
+        """
+        Detect engulfing candle reversal at S/R levels.
+        
+        Bearish engulfing at resistance → SHORT
+        Bullish engulfing at support → LONG
+        """
+        if len(df) < 10:
+            return None
+        
+        opens = df['open'].values
+        closes = df['close'].values
+        highs = df['high'].values
+        lows = df['low'].values
+        
+        # Previous and current candle
+        o1, c1 = opens[-2], closes[-2]
+        o2, c2, h2, l2 = opens[-1], closes[-1], highs[-1], lows[-1]
+        
+        body1 = abs(c1 - o1)
+        body2 = abs(c2 - o2)
+        
+        if body1 == 0 or body2 == 0:
+            return None
+        
+        recent_high = np.max(highs[-10:])
+        recent_low = np.min(lows[-10:])
+        
+        # === Bearish engulfing at resistance → SHORT ===
+        if (c1 > o1 and          # prev candle bullish
+            c2 < o2 and          # current candle bearish
+            body2 > body1 and    # current body larger
+            o2 >= c1 and         # open at or above prev close
+            c2 <= o1 and         # close at or below prev open
+            abs(h2 - recent_high) / recent_high < self.SR_PROXIMITY_PCT):
+            pullback = (h2 - live_price) / h2
+            if pullback >= self.CORRECTION_PCT:
+                return {
+                    'side': 'SELL',
+                    'entry': live_price,
+                    'reason': 'Bearish engulfing at resistance',
+                    'details': {
+                        'pullback_pct': pullback * 100,
+                        'body_ratio': body2 / body1,
+                        'candle_range': h2 - l2,
+                    }
+                }
+        
+        # === Bullish engulfing at support → LONG ===
+        if (c1 < o1 and          # prev candle bearish
+            c2 > o2 and          # current candle bullish
+            body2 > body1 and    # current body larger
+            o2 <= c1 and         # open at or below prev close
+            c2 >= o1 and         # close at or above prev open
+            abs(l2 - recent_low) / recent_low < self.SR_PROXIMITY_PCT):
+            bounce = (live_price - l2) / l2
+            if bounce >= self.CORRECTION_PCT:
+                return {
+                    'side': 'BUY',
+                    'entry': live_price,
+                    'reason': 'Bullish engulfing at support',
+                    'details': {
+                        'bounce_pct': bounce * 100,
+                        'body_ratio': body2 / body1,
+                        'candle_range': h2 - l2,
+                    }
+                }
+        
+        return None
+    
+    def _detect_pinbar_pattern(self, df: pd.DataFrame, live_price: float) -> Optional[Dict]:
+        """
+        Detect pin bar (wick rejection) at S/R levels.
+        
+        Shooting star (long upper wick) at resistance → SHORT
+        Hammer (long lower wick) at support → LONG
+        """
+        if len(df) < 10:
+            return None
+        
+        opens = df['open'].values
+        closes = df['close'].values
+        highs = df['high'].values
+        lows = df['low'].values
+        
+        o, c, h, l = opens[-1], closes[-1], highs[-1], lows[-1]
+        body = abs(c - o)
+        total_range = h - l
+        
+        if total_range == 0:
+            return None
+        
+        upper_wick = h - max(o, c)
+        lower_wick = min(o, c) - l
+        
+        recent_high = np.max(highs[-10:])
+        recent_low = np.min(lows[-10:])
+        
+        # === Shooting star at resistance → SHORT ===
+        # Upper wick > 2x body, wick is majority of candle, near resistance
+        if (upper_wick > body * 2 and
+            upper_wick > total_range * 0.6 and
+            abs(h - recent_high) / recent_high < self.SR_PROXIMITY_PCT):
+            pullback = (h - live_price) / h
+            if pullback >= self.CORRECTION_PCT:
+                return {
+                    'side': 'SELL',
+                    'entry': live_price,
+                    'reason': 'Shooting star (wick rejection) at resistance',
+                    'details': {
+                        'pullback_pct': pullback * 100,
+                        'wick_body_ratio': upper_wick / body if body > 0 else 99,
+                        'wick_pct': (upper_wick / total_range) * 100,
+                    }
+                }
+        
+        # === Hammer at support → LONG ===
+        # Lower wick > 2x body, wick is majority of candle, near support
+        if (lower_wick > body * 2 and
+            lower_wick > total_range * 0.6 and
+            abs(l - recent_low) / recent_low < self.SR_PROXIMITY_PCT):
+            bounce = (live_price - l) / l
+            if bounce >= self.CORRECTION_PCT:
+                return {
+                    'side': 'BUY',
+                    'entry': live_price,
+                    'reason': 'Hammer (wick rejection) at support',
+                    'details': {
+                        'bounce_pct': bounce * 100,
+                        'wick_body_ratio': lower_wick / body if body > 0 else 99,
+                        'wick_pct': (lower_wick / total_range) * 100,
                     }
                 }
         
@@ -479,12 +636,12 @@ class ReversalScalper:
             closes = df['close'].values
             highs = df['high'].values
             lows = df['low'].values
-            c0, c1, c2 = closes[-3], closes[-2], closes[-1]
             h2, l2 = highs[-1], lows[-1]
+            consecutive_up, consecutive_down = self._count_consecutive_candles(closes)
             
-            if c2 > c1:
+            if closes[-1] > closes[-2]:
                 min_correction_entry = h2 * (1 - self.CORRECTION_PCT)
-            elif c2 < c1:
+            elif closes[-1] < closes[-2]:
                 min_correction_entry = l2 * (1 + self.CORRECTION_PCT)
             
             avg_range = np.mean([highs[i] - lows[i] for i in range(-20, -1)])
@@ -492,35 +649,35 @@ class ReversalScalper:
             recent_high = np.max(highs[-10:])
             recent_low = np.min(lows[-10:])
             
-            if not ((c1 > c0 and c2 > c1) or (c1 < c0 and c2 < c1)):
-                failure_reason = "Last 2 candles not same direction"
+            if consecutive_up < self.CANDLE_COUNT and consecutive_down < self.CANDLE_COUNT:
+                failure_reason = f"Need {self.CANDLE_COUNT}+ candles same direction (up: {consecutive_up}, down: {consecutive_down})"
             else:
-                if c2 > c1:
+                if consecutive_up >= self.CANDLE_COUNT:
                     pullback = (h2 - live_price) / h2
                     if pullback < self.CORRECTION_PCT:
                         failure_reason = "Waiting for pullback"
                         wait_price = h2 * (1 - self.CORRECTION_PCT)
                         wait_direction = "down"
                     else:
-                        if abs(h2 - recent_high) / recent_high > 0.005:
+                        if abs(h2 - recent_high) / recent_high > self.SR_PROXIMITY_PCT:
                             failure_reason = "Pullback confirmed, but not at resistance"
                             wait_price = recent_high
                             wait_direction = "up"
                         else:
-                            failure_reason = "At resistance, pattern ready"
-                else:
+                            failure_reason = f"At resistance, {consecutive_up}-candle pattern ready"
+                elif consecutive_down >= self.CANDLE_COUNT:
                     bounce = (live_price - l2) / l2
                     if bounce < self.CORRECTION_PCT:
                         failure_reason = "Waiting for bounce"
                         wait_price = l2 * (1 + self.CORRECTION_PCT)
                         wait_direction = "up"
                     else:
-                        if abs(l2 - recent_low) / recent_low > 0.005:
+                        if abs(l2 - recent_low) / recent_low > self.SR_PROXIMITY_PCT:
                             failure_reason = "Bounce confirmed, but not at support"
                             wait_price = recent_low
                             wait_direction = "down"
                         else:
-                            failure_reason = "At support, pattern ready"
+                            failure_reason = f"At support, {consecutive_down}-candle pattern ready"
         
         lines = []
         if regime in ['TREND_UP', 'TREND_DOWN']:
@@ -561,9 +718,9 @@ class ReversalScalper:
                 lines.append(f"• 🎯 Minimum correction to enter: {min_correction_entry:.6f} ({self.CORRECTION_PCT*100:.2f}%)")
             if wait_price:
                 lines.append(f"• 🎯 Wait for price {wait_direction} to {wait_price:.6f}")
-            if recent_high and c2 > c1:
+            if recent_high and consecutive_up >= self.CANDLE_COUNT:
                 lines.append(f"• 📊 Recent resistance (10 candles): {recent_high:.6f}")
-            elif recent_low and c2 < c1:
+            elif recent_low and consecutive_down >= self.CANDLE_COUNT:
                 lines.append(f"• 📊 Recent support (10 candles): {recent_low:.6f}")
         return "\n".join(lines)
     
@@ -631,8 +788,12 @@ class ReversalScalper:
         # === STEP 5: ALWAYS CALCULATE Patterns ===
         pattern = self._detect_reversal_pattern(df_5m, live_price)
         spike_reversal = self._detect_spike_reversal(df_5m, live_price, obi)
+        engulfing = self._detect_engulfing_pattern(df_5m, live_price)
+        pinbar = self._detect_pinbar_pattern(df_5m, live_price)
         result['debug_info']['pattern'] = pattern
         result['debug_info']['spike_reversal'] = spike_reversal
+        result['debug_info']['engulfing'] = engulfing
+        result['debug_info']['pinbar'] = pinbar
         result['debug_info']['live_price'] = live_price
         result['debug_info']['last_close'] = last_close
         
@@ -650,8 +811,8 @@ class ReversalScalper:
             self._format_regime_display(regime_info),
             "",
             f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n"
-            f"• SL will be: {live_price - atr*1.5:.6f} (-{(atr*1.5/live_price)*100:.2f}%)\n"
-            f"• TP will be: {live_price + atr*1.0:.6f} (+{(atr*1.0/live_price)*100:.2f}%)",
+            f"• SL will be: {live_price - atr*self.SL_ATR_MULTIPLIER:.6f} (-{(atr*self.SL_ATR_MULTIPLIER/live_price)*100:.2f}%)\n"
+            f"• TP will be: {live_price + atr*self.TP_ATR_MULTIPLIER:.6f} (+{(atr*self.TP_ATR_MULTIPLIER/live_price)*100:.2f}%)",
             "",
             self._format_pattern_display(pattern, live_price, regime, df_5m),
             ""
@@ -666,6 +827,24 @@ class ReversalScalper:
                 f"• {spike_reversal['reason']}\n"
                 f"• Volume: {details['vol_ratio']:.1f}x avg\n"
                 f"• Range: {details['candle_range']:.6f} vs avg {details['avg_range']:.6f}"
+            )
+            display_lines.append("")
+        
+        # Show engulfing pattern status
+        if engulfing:
+            side_emoji = "🔴 SHORT" if engulfing['side'] == 'SELL' else "🟢 LONG"
+            display_lines.append(
+                f"🔄 Engulfing Pattern: {side_emoji}\n"
+                f"• {engulfing['reason']}"
+            )
+            display_lines.append("")
+        
+        # Show pin bar pattern status
+        if pinbar:
+            side_emoji = "🔴 SHORT" if pinbar['side'] == 'SELL' else "🟢 LONG"
+            display_lines.append(
+                f"📌 Pin Bar Pattern: {side_emoji}\n"
+                f"• {pinbar['reason']}"
             )
             display_lines.append("")
         
@@ -712,12 +891,16 @@ class ReversalScalper:
             return result
         
         # Choose the active signal: spike reversal takes priority in HIGH_VOL,
-        # otherwise use 2-candle pattern
+        # then 2+ candle pattern, then engulfing, then pin bar, then spike
         active_signal = None
         if regime == 'HIGH_VOL' and spike_reversal is not None:
             active_signal = spike_reversal
         elif pattern is not None:
             active_signal = pattern
+        elif engulfing is not None:
+            active_signal = engulfing
+        elif pinbar is not None:
+            active_signal = pinbar
         elif spike_reversal is not None:
             active_signal = spike_reversal
         
@@ -759,13 +942,13 @@ class ReversalScalper:
         atr = self._calculate_atr(df_5m, period=14)
         
         if atr > 0:
-            # Use ATR for adaptive stops
+            # Use ATR for adaptive stops (tight SL to preserve capital)
             if side == 'BUY':
-                tp = entry + (atr * 3.0)  # Risk 1, Reward 3
-                sl = entry - (atr * 2.0)  # Stop at 2x ATR below
+                tp = entry + (atr * self.TP_ATR_MULTIPLIER)
+                sl = entry - (atr * self.SL_ATR_MULTIPLIER)
             else:  # SELL
-                tp = entry - (atr * 3.0)
-                sl = entry + (atr * 2.0)
+                tp = entry - (atr * self.TP_ATR_MULTIPLIER)
+                sl = entry + (atr * self.SL_ATR_MULTIPLIER)
             atr_based = True
         else:
             # Fallback: use original fixed percentages
