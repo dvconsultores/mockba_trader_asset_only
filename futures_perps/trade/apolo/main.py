@@ -1042,8 +1042,8 @@ def autotrade():
             if mode == "Signal":
                 scalper = ReversalScalper()
                 if not scalper._is_preferred_time():
-                    logger.info("⏰ Signal Mode: outside preferred window — sleeping 1 hour")
-                    time.sleep(3600)
+                    logger.info("⏰ Signal Mode: outside preferred window — sleeping 60s")
+                    time.sleep(60)
                     continue
                 asset = get_setting("current_asset")
                 interval = get_setting("interval") or "5m"
@@ -1062,8 +1062,8 @@ def autotrade():
             elif mode == "Automatic":
                 scalper = ReversalScalper()
                 if not scalper._is_preferred_time():
-                    logger.info("⏰ Automatic Mode: outside preferred window — sleeping 1 hour")
-                    time.sleep(3600)
+                    logger.info("⏰ Automatic Mode: outside preferred window — sleeping 60s")
+                    time.sleep(60)
                     continue
                 asset = get_setting("current_asset")
                 interval = get_setting("interval") or "5m"
