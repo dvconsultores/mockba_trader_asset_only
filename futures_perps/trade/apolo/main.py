@@ -749,12 +749,6 @@ class ReversalScalper:
             'debug_info': {}
         }
 
-        # === HARD BLOCK: Time window check before any data fetch ===
-        if not self._is_preferred_time():
-            result['rejection_reasons'].append("Outside preferred time window")
-            result['resume_of_analysis'] = "⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4)"
-            return result
-
         # === STEP 1: FETCH ALL DATA IN PARALLEL ===
         with ThreadPoolExecutor(max_workers=min(5, self.MAX_WORKERS)) as pool:
             f_df_5m = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='5m', limit=100)
@@ -861,12 +855,12 @@ class ReversalScalper:
             display_lines.append("")
         
         # === STEP 7: APPLY FILTERS ===
-        # Time window already enforced before data fetch — this is a safety fallback
         if not self._is_preferred_time():
             result['rejection_reasons'].append("Outside preferred time window")
-            display_lines.append("⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4)")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            return result
+            display_lines.append("⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4) — study mode only")
+            if get_setting("auto_trade") == "Automatic":
+                result['resume_of_analysis'] = "\n".join(display_lines)
+                return result
         
         price_dev = self._validate_live_price(last_close, live_price)
         if price_dev > self.LIVE_PRICE_MAX_DEVIATION:
