@@ -1026,11 +1026,33 @@ def process_signal(asset_override: str = None) -> str:
 
 
 def autotrade():
-    """Main autotrade loop - runs continuously when auto_trade = 'Automatic'."""
+    """Main autotrade loop - runs continuously when auto_trade = 'Automatic' or 'Signal'."""
     logger.info("🤖 Starting hard-coded autotrade loop...")
     while True:
         try:
-            if get_setting("auto_trade") == "Automatic":
+            mode = get_setting("auto_trade")
+
+            if mode == "Signal":
+                scalper = ReversalScalper()
+                if not scalper._is_preferred_time():
+                    logger.info("⏰ Signal Mode: outside preferred window — sleeping 1 hour")
+                    time.sleep(3600)
+                    continue
+                asset = get_setting("asset")
+                interval = get_setting("interval") or "5m"
+                if asset:
+                    result = scalper.analyze_signal(asset, interval)
+                    if result.get("approved"):
+                        msg = (
+                            f"📡 SIGNAL ALERT\n"
+                            f"{result['resume_of_analysis']}"
+                        )
+                        send_bot_message(msg)
+                        logger.info(f"📡 Signal alert sent for {asset}")
+                time.sleep(30)
+                continue
+
+            if mode == "Automatic":
                 interval_str = get_setting("interval") or "5m"
                 interval_map = {
                     '5m': timedelta(minutes=5), '15m': timedelta(minutes=15),

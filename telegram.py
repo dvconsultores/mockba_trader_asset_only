@@ -454,6 +454,7 @@ def set_auto_trade(m):
     markup.add(InlineKeyboardButton("True", callback_data="set_val:auto_trade:True"),
                InlineKeyboardButton("False", callback_data="set_val:auto_trade:False"))
     markup.add(InlineKeyboardButton("Automatic", callback_data="auto_trade_auto"))
+    markup.add(InlineKeyboardButton("📡 Signal Mode", callback_data="set_val:auto_trade:Signal"))
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
     
@@ -814,7 +815,12 @@ def ListSettings(m):
         if key in settings:
             value = settings[key]
             if key == "auto_trade": # add for automatic option
-                value = "🤖 Automatic" if value == "Automatic" else ("✅ YES" if str(value).lower() == "true" else "❌ NO")
+                if value == "Automatic":
+                    value = "🤖 Automatic"
+                elif value == "Signal":
+                    value = "📡 Signal Mode (30s scan)"
+                else:
+                    value = "✅ YES" if str(value).lower() == "true" else "❌ NO"
                 if settings[key] == "Automatic":
                      auto_assets = get_automated_asset_list()
                      if auto_assets:
