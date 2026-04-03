@@ -71,15 +71,15 @@ class ReversalScalper:
         """Initialize the scalper with all strategy parameters."""
         # === STRATEGY PARAMETERS (Risk Management) ===
         self.TP_PCT = self._setting_pct('take_profit', 0.003)    # 0.3% take profit
-        self.SL_PCT_MIN = self._setting_pct('stop_loss', 0.015)  # 1.5% stop loss
-        self.SL_PCT_MAX = 0.018                                   # 1.8% max stop loss
+        self.SL_PCT_MIN = self._setting_pct('stop_loss', 0.010)  # 1.0% stop loss (tighter for scalp-style)
+        self.SL_PCT_MAX = 0.012                                   # 1.2% max stop loss
         self.MAX_TRADES_PER_DAY = 2                               # Max 2 positive trades daily
         self.SL_ATR_MULTIPLIER = 1.2    # SL at 1.2x ATR (tight, capital-preserving)
         self.TP_ATR_MULTIPLIER = 2.0    # TP at 2.0x ATR (R:R ~1.67:1)
         
         # === REVERSAL PATTERN PARAMETERS ===
         self.CANDLE_COUNT = 2           # Need 2+ consecutive candles same direction
-        self.CORRECTION_PCT = 0.001     # 0.1% minimum pullback before entry
+        self.CORRECTION_PCT = 0.0003    # 0.03% minimum pullback (catch early reversals before pullback completes)
         self.BIG_CANDLE_MULTIPLIER = 1.2 # Candle must be 1.2x average range (NEAR-specific)
         self.SR_PROXIMITY_PCT = 0.008   # 0.8% proximity to S/R level (relaxed for real markets)
         
@@ -95,8 +95,8 @@ class ReversalScalper:
         # === REGIME FILTER PARAMETERS ===
         self.REGIME_WINDOW_5M = 20      # Lookback for 5-minute slope calculation
         self.REGIME_WINDOW_1H = 30      # Lookback for 1-hour slope (faster reaction)
-        self.SLOPE_THRESHOLD_5M = 0.0015  # 0.15%/candle = trend threshold (5m)
-        self.SLOPE_THRESHOLD_1H = 0.0018  # 0.18%/candle = trend threshold (1h)
+        self.SLOPE_THRESHOLD_5M = 0.0012  # 0.12%/candle = trend threshold (5m, softened for early detection)
+        self.SLOPE_THRESHOLD_1H = 0.0014  # 0.14%/candle = trend threshold (1h, softened for early detection)
         self.VOLUME_THRESHOLD = 1.2       # Volume must be 120% of average to confirm trend
         
         # === OBI-BASED REGIME BOOST ===
@@ -917,11 +917,12 @@ class ReversalScalper:
             return result
         
         # OBI is reference only — counter-trend OBI logged as warning, not a blocker
+        # In thin markets like Orderly, OBI is too volatile to use as hard filter
         side = active_signal['side']
         if side == 'BUY' and obi < 1.0:
-            display_lines.append(f"📚 ⚠️ OBI {obi:.2f} counter-trend (bearish book, reference only)")
+            display_lines.append(f"📚 ℹ️ OBI {obi:.2f} (bearish book, thin market—reference only)")
         elif side == 'SELL' and obi > 1.0:
-            display_lines.append(f"📚 ⚠️ OBI {obi:.2f} counter-trend (bullish book, reference only)")
+            display_lines.append(f"📚 ℹ️ OBI {obi:.2f} (bullish book, thin market—reference only)")
         
         # === CHECK DAILY TRADES LIMIT ===
         trades_today = get_trades_today()
