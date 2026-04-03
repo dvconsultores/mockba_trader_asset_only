@@ -916,18 +916,12 @@ class ReversalScalper:
             result['resume_of_analysis'] = "\n".join(display_lines)
             return result
         
-        # OBI confirmation required for all signals
+        # OBI is reference only — counter-trend OBI logged as warning, not a blocker
         side = active_signal['side']
         if side == 'BUY' and obi < 1.0:
-            result['rejection_reasons'].append(f"OBI {obi:.2f} does not confirm BUY")
-            display_lines.append(f"📚 ❌ OBI {obi:.2f} does not confirm BUY — trade blocked")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            return result
+            display_lines.append(f"📚 ⚠️ OBI {obi:.2f} counter-trend (bearish book, reference only)")
         elif side == 'SELL' and obi > 1.0:
-            result['rejection_reasons'].append(f"OBI {obi:.2f} does not confirm SELL")
-            display_lines.append(f"📚 ❌ OBI {obi:.2f} does not confirm SELL — trade blocked")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            return result
+            display_lines.append(f"📚 ⚠️ OBI {obi:.2f} counter-trend (bullish book, reference only)")
         
         # === CHECK DAILY TRADES LIMIT ===
         trades_today = get_trades_today()
