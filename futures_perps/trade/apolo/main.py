@@ -107,7 +107,6 @@ class ReversalScalper:
         # === TIME FILTER PARAMETERS (UTC-4) ===
         # Mon-Fri: 6am-12pm | Sun: 8am-10am | Sat: off
         self.PREFERRED_WINDOWS = {
-            'Sunday':    [(8, 10)],
             'Monday':    [(6, 12)],
             'Tuesday':   [(6, 12)],
             'Wednesday': [(6, 12)],
