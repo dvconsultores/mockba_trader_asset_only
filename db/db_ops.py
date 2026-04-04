@@ -42,6 +42,28 @@ def initialize_database_tables():
             );
         """)
 
+        # create table signal_history (track every signal: approved & rejected)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS signal_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                asset TEXT NOT NULL,
+                regime TEXT,
+                obi REAL,
+                pattern_type TEXT,
+                approved INTEGER DEFAULT 0,
+                side TEXT,
+                entry_price REAL,
+                stop_loss REAL,
+                take_profit REAL,
+                rejection_reasons TEXT,
+                manipulation_warnings TEXT,
+                atr REAL,
+                live_price REAL,
+                candle_count INTEGER
+            );
+        """)
+
         # Insert the default setting if it doesn't exist
         default_settings = [
             ('asset', 'PERP_NEAR_USDC'),  # List of all assets (comma-separated)
@@ -173,3 +195,81 @@ def increment_trades_today() -> int:
         cur.execute("SELECT positive_trades_count FROM trades_daily WHERE date = ?", (today,))
         row = cur.fetchone()
         return row['positive_trades_count'] if row else 1
+
+
+# === SIGNAL HISTORY TRACKING (for ML/analysis later) ===
+
+def save_signal_to_history(
+    asset: str,
+    regime: str,
+    obi: float,
+    pattern_type: str | None,
+    approved: bool,
+    side: str | None = None,
+    entry_price: float | None = None,
+    stop_loss: float | None = None,
+    take_profit: float | None = None,
+    rejection_reasons: list | None = None,
+    manipulation_warnings: list | None = None,
+    atr: float | None = None,
+    live_price: float | None = None,
+    candle_count: int | None = None
+) -> int:
+    """
+    Save signal analysis to database.
+    
+    Returns: signal_id (for later correlation with actual trades)
+    """
+    import json
+    
+    rejection_str = json.dumps(rejection_reasons or [])
+    manipulation_str = json.dumps(manipulation_warnings or [])
+    
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO signal_history (
+                asset, regime, obi, pattern_type, approved, side,
+                entry_price, stop_loss, take_profit,
+                rejection_reasons, manipulation_warnings,
+                atr, live_price, candle_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            asset, regime, obi, pattern_type, int(approved), side,
+            entry_price, stop_loss, take_profit,
+            rejection_str, manipulation_str,
+            atr, live_price, candle_count
+        ))
+        conn.commit()
+        return cur.lastrowid
+
+
+def get_signal_history(limit: int = 100, approved_only: bool = False):
+    """Retrieve signal history for analysis."""
+    import json
+    
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        if approved_only:
+            cur.execute("""
+                SELECT * FROM signal_history 
+                WHERE approved = 1 
+                ORDER BY timestamp DESC 
+                LIMIT ?
+            """, (limit,))
+        else:
+            cur.execute("""
+                SELECT * FROM signal_history 
+                ORDER BY timestamp DESC 
+                LIMIT ?
+            """, (limit,))
+        
+        rows = cur.fetchall()
+        result = []
+        for row in rows:
+            row_dict = dict(row)
+            # Parse JSON fields
+            row_dict['rejection_reasons'] = json.loads(row['rejection_reasons'])
+            row_dict['manipulation_warnings'] = json.loads(row['manipulation_warnings'])
+            result.append(row_dict)
+        return result

@@ -24,7 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # === IMPORTS FROM YOUR EXISTING PROJECT ===
-from db.db_ops import get_setting, initialize_database_tables, get_trades_today, increment_trades_today
+from db.db_ops import get_setting, initialize_database_tables, get_trades_today, increment_trades_today, save_signal_to_history
 from logs.log_config import apolo_trader_logger as logger
 from futures_perps.trade.apolo.historical_data import (
     get_historical_data_limit_apolo, 
@@ -78,8 +78,9 @@ class ReversalScalper:
         self.TP_ATR_MULTIPLIER = 2.0    # TP at 2.0x ATR (R:R ~1.67:1)
         
         # === REVERSAL PATTERN PARAMETERS ===
-        self.CANDLE_COUNT = 2           # Need 2+ consecutive candles same direction
-        self.CORRECTION_PCT = 0.0003    # 0.03% minimum pullback (catch early reversals before pullback completes)
+        self.CANDLE_COUNT = 2           # Minimum 2 candles same direction
+        self.CANDLE_COUNTS = [2, 3, 4]  # Support 2, 3, 4 candle reversals
+        self.CORRECTION_PCT = 0.001     # 0.1% minimum pullback (LLM: 0.0001 was too early, reduce false entries)
         self.BIG_CANDLE_MULTIPLIER = 1.2 # Candle must be 1.2x average range (NEAR-specific)
         self.SR_PROXIMITY_PCT = 0.008   # 0.8% proximity to S/R level (relaxed for real markets)
         
@@ -89,6 +90,8 @@ class ReversalScalper:
         
         # === ORDER BOOK IMBALANCE PARAMETERS ===
         self.OBI_THRESHOLD = float(get_setting('order_book_threshold') or 1.0)
+        self.OBI_BULLISH_EXTREME = 1.30    # OBI > 1.30 = extreme bullish (whale pump detection)
+        self.OBI_BEARISH_EXTREME = 0.77    # OBI < 0.77 = extreme bearish (whale dump detection)
         self.OB_DEPTH = 20              # Analyze top 20 levels of order book
         self.MIN_SIGNIFICANT_TRADE_QTY = 100  # Filter retail noise trades below this qty
         
@@ -208,18 +211,27 @@ class ReversalScalper:
         
         return obi, {'bids': bids, 'asks': asks, 'imbalance_pct': imbalance_pct}
     
-    def _check_manipulation_signals(self, df: pd.DataFrame, orderbook: Dict) -> List[str]:
+    def _check_manipulation_signals(self, df: pd.DataFrame, orderbook: Dict, obi: float = 1.0) -> List[str]:
         """
-        Detect potential manipulation or smart money signals.
+        Detect potential manipulation or smart money signals using volume, OBI, and price action.
         
         Returns list of warning strings (empty if clean).
         
         Checks:
-        1. Volume spike (>3x average) = smart money entering/exiting
-        2. Price/OB divergence = possible trap
-        3. Abnormal spread = manipulation attempt
+        1. OBI extreme values (>1.3 or <0.77) = whale accumulation/dump
+        2. Volume spike (>3x average) = smart money entering/exiting
+        3. Price/OB divergence = possible trap
+        4. Abnormal spread = manipulation attempt
         """
         warnings = []
+        
+        # === 0. OBI Extreme Values Detection ===
+        # OBI > 1.3 = extremely bullish (90%+ more bids than asks) = whale pump attempt
+        if obi > self.OBI_BULLISH_EXTREME:
+            warnings.append(f"🔴 EXTREME BULLISH OBI ({obi:.2f}) - potential whale pump")
+        # OBI < 0.77 = extremely bearish (23%+ fewer bids than asks) = whale dump attempt
+        elif obi < self.OBI_BEARISH_EXTREME:
+            warnings.append(f"🔴 EXTREME BEARISH OBI ({obi:.2f}) - potential whale dump")
         
         # === 1. Volume Spike Detection ===
         if len(df) >= 20:
@@ -229,16 +241,15 @@ class ReversalScalper:
                 ratio = recent_vol / avg_vol
                 warnings.append(f"⚠️ Volume spike ({ratio:.1f}x avg) - smart money?")
         
-        # === 2. Order Book Divergence Detection ===
-        obi, _ = self._calculate_obi(orderbook)
+        # === 2. Order Book Divergence Detection (with OBI context) ===
         if len(df) >= 2:
             price_change = (df['close'].iloc[-1] - df['close'].iloc[-2]) / df['close'].iloc[-2]
             # Price up but OB bearish = possible bull trap
             if price_change > self.OB_DIVERGENCE_THRESHOLD and obi < 0.95:
-                warnings.append("⚠️ Price up but OB bearish - possible bull trap")
+                warnings.append(f"⚠️ Price up ({price_change*100:.2f}%) but OB bearish (OBI {obi:.2f}) - possible bull trap")
             # Price down but OB bullish = possible bear trap
             elif price_change < -self.OB_DIVERGENCE_THRESHOLD and obi > 1.05:
-                warnings.append("⚠️ Price down but OB bullish - possible bear trap")
+                warnings.append(f"⚠️ Price down ({price_change*100:.2f}%) but OB bullish (OBI {obi:.2f}) - possible bear trap")
         
         # === 3. Spread Anomaly Detection ===
         if orderbook.get('bids') and orderbook.get('asks'):
@@ -300,7 +311,12 @@ class ReversalScalper:
         return consecutive_up, consecutive_down
     
     def _detect_reversal_pattern(self, df: pd.DataFrame, live_price: float) -> Optional[Dict]:
-        """Detect 2+ consecutive candle reversal pattern at S/R."""
+        """
+        Detect 2, 3, or 4 consecutive candle reversal patterns at S/R.
+        
+        Anticipatory entry: enters at start of pullback/bounce (0.01% correction = very early).
+        Supports multiple candle patterns to catch more signals.
+        """
         if len(df) < 10:
             return None
             
@@ -310,20 +326,31 @@ class ReversalScalper:
         
         consecutive_up, consecutive_down = self._count_consecutive_candles(closes)
         avg_range = np.mean([highs[i] - lows[i] for i in range(-20, -1)])
+        recent_high = np.max(highs[-10:])
+        recent_low = np.min(lows[-10:])
         
         # === PATTERN: 2+ candles UP → look for SHORT reversal ===
-        if consecutive_up >= self.CANDLE_COUNT:
+        # Support 2, 3, or 4 candle reversals
+        if consecutive_up >= 2:
             h_recent = highs[-1]
             pullback = (h_recent - live_price) / h_recent
-            if pullback >= self.CORRECTION_PCT:
-                recent_high = np.max(highs[-10:])
-                if abs(h_recent - recent_high) / recent_high < self.SR_PROXIMITY_PCT:
+            
+            # Anticipatory entry: catch pullback from VERY early (0.01% correction)
+            if pullback >= self.CORRECTION_PCT and abs(h_recent - recent_high) / recent_high < self.SR_PROXIMITY_PCT:
+                pattern_found = None
+                for candle_count in self.CANDLE_COUNTS:
+                    if consecutive_up >= candle_count:
+                        pattern_found = candle_count
+                        break
+                
+                if pattern_found:
                     return {
                         'side': 'SELL',
                         'entry': live_price,
-                        'reason': f'{consecutive_up} up candles + pullback at resistance',
+                        'reason': f'{consecutive_up} up candles (reversal anticipation) + pullback at resistance',
                         'details': {
                             'consecutive': consecutive_up,
+                            'pattern': pattern_found,
                             'pullback_pct': pullback * 100,
                             'candle_range': h_recent - lows[-1],
                             'avg_range': avg_range
@@ -331,18 +358,26 @@ class ReversalScalper:
                     }
         
         # === PATTERN: 2+ candles DOWN → look for LONG reversal ===
-        if consecutive_down >= self.CANDLE_COUNT:
+        if consecutive_down >= 2:
             l_recent = lows[-1]
             bounce = (live_price - l_recent) / l_recent
-            if bounce >= self.CORRECTION_PCT:
-                recent_low = np.min(lows[-10:])
-                if abs(l_recent - recent_low) / recent_low < self.SR_PROXIMITY_PCT:
+            
+            # Anticipatory entry: catch bounce from VERY early (0.01% correction)
+            if bounce >= self.CORRECTION_PCT and abs(l_recent - recent_low) / recent_low < self.SR_PROXIMITY_PCT:
+                pattern_found = None
+                for candle_count in self.CANDLE_COUNTS:
+                    if consecutive_down >= candle_count:
+                        pattern_found = candle_count
+                        break
+                
+                if pattern_found:
                     return {
                         'side': 'BUY',
                         'entry': live_price,
-                        'reason': f'{consecutive_down} down candles + bounce at support',
+                        'reason': f'{consecutive_down} down candles (reversal anticipation) + bounce at support',
                         'details': {
                             'consecutive': consecutive_down,
+                            'pattern': pattern_found,
                             'bounce_pct': bounce * 100,
                             'candle_range': highs[-1] - l_recent,
                             'avg_range': avg_range
@@ -623,7 +658,7 @@ class ReversalScalper:
         return "\n".join(lines)
     
     def _format_pattern_display(self, pattern: Optional[Dict], live_price: float, regime: str, df: pd.DataFrame) -> str:
-        """Format pattern detection with regime context and failure reasons."""
+        """Format pattern detection with anticipatory entry info."""
         failure_reason = None
         wait_price = None
         wait_direction = None
@@ -648,13 +683,13 @@ class ReversalScalper:
             recent_high = np.max(highs[-10:])
             recent_low = np.min(lows[-10:])
             
-            if consecutive_up < self.CANDLE_COUNT and consecutive_down < self.CANDLE_COUNT:
-                failure_reason = f"Need {self.CANDLE_COUNT}+ candles same direction (up: {consecutive_up}, down: {consecutive_down})"
+            if consecutive_up < 2 and consecutive_down < 2:
+                failure_reason = f"Need 2+ candles same direction (up: {consecutive_up}, down: {consecutive_down})"
             else:
-                if consecutive_up >= self.CANDLE_COUNT:
+                if consecutive_up >= 2:
                     pullback = (h2 - live_price) / h2
                     if pullback < self.CORRECTION_PCT:
-                        failure_reason = "Waiting for pullback"
+                        failure_reason = "Waiting for pullback to begin"
                         wait_price = h2 * (1 - self.CORRECTION_PCT)
                         wait_direction = "down"
                     else:
@@ -663,11 +698,13 @@ class ReversalScalper:
                             wait_price = recent_high
                             wait_direction = "up"
                         else:
-                            failure_reason = f"At resistance, {consecutive_up}-candle pattern ready"
-                elif consecutive_down >= self.CANDLE_COUNT:
+                            # Show how many candle patterns are active
+                            active_patterns = [c for c in self.CANDLE_COUNTS if consecutive_up >= c]
+                            failure_reason = f"✅ Ready: {consecutive_up}-candle pattern (supports: {active_patterns})"
+                elif consecutive_down >= 2:
                     bounce = (live_price - l2) / l2
                     if bounce < self.CORRECTION_PCT:
-                        failure_reason = "Waiting for bounce"
+                        failure_reason = "Waiting for bounce to begin"
                         wait_price = l2 * (1 + self.CORRECTION_PCT)
                         wait_direction = "up"
                     else:
@@ -676,50 +713,37 @@ class ReversalScalper:
                             wait_price = recent_low
                             wait_direction = "down"
                         else:
-                            failure_reason = f"At support, {consecutive_down}-candle pattern ready"
+                            # Show how many candle patterns are active
+                            active_patterns = [c for c in self.CANDLE_COUNTS if consecutive_down >= c]
+                            failure_reason = f"✅ Ready: {consecutive_down}-candle pattern (supports: {active_patterns})"
         
         lines = []
-        if regime in ['TREND_UP', 'TREND_DOWN']:
-            lines.append(f"⚠️ Pattern Status: BLOCKED by {regime}")
-            if failure_reason:
-                lines.append(f"• 🔍 Pattern check: {failure_reason}")
-            if wait_price:
-                lines.append(f"• 🎯 Wait for price {wait_direction} to {wait_price:.6f}")
-            lines.append(f"• 🚫 Reversals disabled in trend")
-            return "\n".join(lines)
-        if regime == 'HIGH_VOL':
-            lines.append(f"⚠️ 2-Candle Pattern: PAUSED (HIGH_VOL → spike reversal active)")
-            if failure_reason:
-                lines.append(f"• 🔍 Pattern check: {failure_reason}")
-            if wait_price:
-                lines.append(f"• 🎯 Wait for price {wait_direction} to {wait_price:.6f}")
-            lines.append(f"• ⚡ Spike reversal takes over in HIGH_VOL")
-            return "\n".join(lines)
-        
         if pattern is not None:
             side_emoji = "🔴 SHORT" if pattern['side'] == 'SELL' else "🟢 LONG"
             lines.append(f"✅ Pattern detected: {side_emoji}")
             lines.append(f"• Reason: {pattern['reason']}")
             lines.append(f"• Suggested entry: {live_price:.6f}")
             if min_correction_entry is not None:
-                lines.append(f"• 🎯 Minimum correction to enter: {min_correction_entry:.6f} ({self.CORRECTION_PCT*100:.2f}%)")
+                lines.append(f"• 🎯 Minimum correction to enter: {min_correction_entry:.6f} ({self.CORRECTION_PCT*100:.3f}%)")
             if 'details' in pattern:
                 details = pattern['details']
+                if 'pattern' in details:
+                    lines.append(f"• Pattern type: {details['pattern']}-candle reversal")
                 if 'pullback_pct' in details:
-                    lines.append(f"• Pullback: {details['pullback_pct']:.2f}%")
+                    lines.append(f"• Pullback started: {details['pullback_pct']:.3f}%")
                 if 'bounce_pct' in details:
-                    lines.append(f"• Bounce: {details['bounce_pct']:.2f}%")
+                    lines.append(f"• Bounce started: {details['bounce_pct']:.3f}%")
         else:
             lines.append("🔍 Reversal pattern: NOT DETECTED")
             if failure_reason:
-                lines.append(f"• 🔍 Reason: {failure_reason}")
+                lines.append(f"• Status: {failure_reason}")
             if min_correction_entry is not None:
-                lines.append(f"• 🎯 Minimum correction to enter: {min_correction_entry:.6f} ({self.CORRECTION_PCT*100:.2f}%)")
+                lines.append(f"• 🎯 Minimum correction to enter: {min_correction_entry:.6f} ({self.CORRECTION_PCT*100:.3f}%)")
             if wait_price:
                 lines.append(f"• 🎯 Wait for price {wait_direction} to {wait_price:.6f}")
-            if recent_high and consecutive_up >= self.CANDLE_COUNT:
+            if recent_high and consecutive_up >= 2:
                 lines.append(f"• 📊 Recent resistance (10 candles): {recent_high:.6f}")
-            elif recent_low and consecutive_down >= self.CANDLE_COUNT:
+            elif recent_low and consecutive_down >= 2:
                 lines.append(f"• 📊 Recent support (10 candles): {recent_low:.6f}")
         return "\n".join(lines)
     
@@ -781,7 +805,7 @@ class ReversalScalper:
         result['debug_info']['regime'] = regime_info
         
         # === STEP 4: CHECK MANIPULATION SIGNALS ===
-        manipulation_warnings = self._check_manipulation_signals(df_5m, orderbook)
+        manipulation_warnings = self._check_manipulation_signals(df_5m, orderbook, obi=obi)
         result['debug_info']['manipulation_warnings'] = manipulation_warnings
         
         # === STEP 5: ALWAYS CALCULATE Patterns ===
@@ -861,31 +885,50 @@ class ReversalScalper:
         # === STEP 7: APPLY FILTERS ===
         if not self._is_preferred_time():
             result['rejection_reasons'].append("Outside preferred time window")
-            display_lines.append("⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4) — study mode only")
-            if get_setting("auto_trade") == "Automatic":
-                result['resume_of_analysis'] = "\n".join(display_lines)
-                return result
+            display_lines.append("⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4) — TRADE BLOCKED")
+            result['resume_of_analysis'] = "\n".join(display_lines)
+            
+            # === LOG REJECTED SIGNAL ===
+            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+            save_signal_to_history(
+                asset=asset, regime=regime, obi=obi, pattern_type=None,
+                approved=False, rejection_reasons=result['rejection_reasons'],
+                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
+                candle_count=max(consecutive_up, consecutive_down)
+            )
+            
+            return result
         
         price_dev = self._validate_live_price(last_close, live_price)
         if price_dev > self.LIVE_PRICE_MAX_DEVIATION:
             result['rejection_reasons'].append(f"Live price deviation {price_dev*100:.2f}%")
             display_lines.append(f"⚠️ ❌ Live price deviation: {price_dev*100:.2f}% (max: {self.LIVE_PRICE_MAX_DEVIATION*100:.1f}%)")
             result['resume_of_analysis'] = "\n".join(display_lines)
+            
+            # === LOG REJECTED SIGNAL ===
+            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+            save_signal_to_history(
+                asset=asset, regime=regime, obi=obi, pattern_type=None,
+                approved=False, rejection_reasons=result['rejection_reasons'],
+                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
+                candle_count=max(consecutive_up, consecutive_down)
+            )
+            
             return result
         
-        # Trend always blocks both patterns
-        if regime in ['TREND_UP', 'TREND_DOWN']:
-            result['rejection_reasons'].append(f"Market in {regime}")
-            display_lines.append(f"🚫 ❌ Trend {regime} detected - Reversal strategy paused")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            return result
+        # ✅ REMOVED: Trend filter — reversals trade in any regime now
+        # if regime in ['TREND_UP', 'TREND_DOWN']:
+        #     result['rejection_reasons'].append(f"Market in {regime}")
+        #     display_lines.append(f"🚫 ❌ Trend {regime} detected - Reversal strategy paused")
+        #     result['resume_of_analysis'] = "\n".join(display_lines)
+        #     return result
         
-        # HIGH_VOL blocks 2-candle pattern but allows spike reversal
-        if regime == 'HIGH_VOL' and spike_reversal is None:
-            result['rejection_reasons'].append("High volatility")
-            display_lines.append("🌊 ❌ High volatility - Waiting for stabilization")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            return result
+        # ✅ REMOVED: HIGH_VOL filter — reversals allowed in all volatility regimes
+        # if regime == 'HIGH_VOL' and spike_reversal is None:
+        #     result['rejection_reasons'].append("High volatility")
+        #     display_lines.append("🌊 ❌ High volatility - Waiting for stabilization")
+        #     result['resume_of_analysis'] = "\n".join(display_lines)
+        #     return result
         
         # Manipulation warnings block 2-candle pattern but NOT spike reversal
         # (volume spike + OB divergence ARE the spike reversal confirmation)
@@ -893,6 +936,16 @@ class ReversalScalper:
             result['rejection_reasons'].append("Multiple manipulation signals detected")
             display_lines.append("🚫 ❌ Trade blocked: Too many manipulation warnings")
             result['resume_of_analysis'] = "\n".join(display_lines)
+            
+            # === LOG REJECTED SIGNAL ===
+            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+            save_signal_to_history(
+                asset=asset, regime=regime, obi=obi, pattern_type=None,
+                approved=False, rejection_reasons=result['rejection_reasons'],
+                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
+                candle_count=max(consecutive_up, consecutive_down)
+            )
+            
             return result
         
         # Choose the active signal: spike reversal takes priority in HIGH_VOL,
@@ -913,6 +966,16 @@ class ReversalScalper:
             result['rejection_reasons'].append("No valid pattern")
             display_lines.append("❌ No valid reversal pattern at this time")
             result['resume_of_analysis'] = "\n".join(display_lines)
+            
+            # === LOG REJECTED SIGNAL ===
+            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+            save_signal_to_history(
+                asset=asset, regime=regime, obi=obi, pattern_type=None,
+                approved=False, rejection_reasons=result['rejection_reasons'],
+                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
+                candle_count=max(consecutive_up, consecutive_down)
+            )
+            
             return result
         
         # OBI is reference only — counter-trend OBI logged as warning, not a blocker
@@ -931,6 +994,16 @@ class ReversalScalper:
             result['rejection_reasons'].append(f"Daily limit reached ({trades_today}/{max_trades})")
             display_lines.append(f"🚫 ❌ Daily trade limit reached: {trades_today}/{max_trades} trades\n• Resume trading tomorrow")
             result['resume_of_analysis'] = "\n".join(display_lines)
+            
+            # === LOG REJECTED SIGNAL ===
+            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+            save_signal_to_history(
+                asset=asset, regime=regime, obi=obi, pattern_type=active_signal.get('reason') if active_signal else None,
+                approved=False, rejection_reasons=result['rejection_reasons'],
+                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
+                candle_count=max(consecutive_up, consecutive_down)
+            )
+            
             return result
         
         # Display trades count + reminder if approaching limit
@@ -998,6 +1071,27 @@ class ReversalScalper:
         
         result['resume_of_analysis'] = "\n".join(display_lines)
         logger.info(f"✅ Signal approved: {side} @ {entry} for {asset}")
+        
+        # === SAVE SIGNAL TO DATABASE FOR LATER ANALYSIS ===
+        consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+        signal_id = save_signal_to_history(
+            asset=asset,
+            regime=regime,
+            obi=obi,
+            pattern_type=active_signal.get('reason', 'Unknown'),
+            approved=True,
+            side=side,
+            entry_price=entry,
+            stop_loss=sl,
+            take_profit=tp,
+            rejection_reasons=[],
+            manipulation_warnings=manipulation_warnings,
+            atr=atr,
+            live_price=live_price,
+            candle_count=max(consecutive_up, consecutive_down)
+        )
+        logger.info(f"💾 Signal saved to DB with ID: {signal_id}")
+        
         return result
 
 
