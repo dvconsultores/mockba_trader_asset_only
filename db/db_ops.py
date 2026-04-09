@@ -169,11 +169,24 @@ def get_today_date_utc4() -> str:
     user_now = utc_now - timedelta(hours=4)
     return user_now.strftime('%Y-%m-%d')
 
+
+def _ensure_trades_daily_schema(cur):
+    """Ensure trades_daily has the expected positive counter column."""
+    cur.execute("PRAGMA table_info(trades_daily)")
+    columns = [row[1] for row in cur.fetchall()]
+
+    if columns and 'positive_trades_count' not in columns:
+        cur.execute(
+            "ALTER TABLE trades_daily ADD COLUMN positive_trades_count INTEGER DEFAULT 0"
+        )
+        cur.connection.commit()
+
 def get_trades_today() -> int:
     """Get today's positive trade count."""
     today = get_today_date_utc4()
     with get_db_connection() as conn:
         cur = conn.cursor()
+        _ensure_trades_daily_schema(cur)
         cur.execute("SELECT positive_trades_count FROM trades_daily WHERE date = ?", (today,))
         row = cur.fetchone()
         return row['positive_trades_count'] if row else 0
@@ -183,6 +196,7 @@ def increment_trades_today() -> int:
     today = get_today_date_utc4()
     with get_db_connection() as conn:
         cur = conn.cursor()
+        _ensure_trades_daily_schema(cur)
         cur.execute("""
             INSERT INTO trades_daily (date, positive_trades_count)
             VALUES (?, 1)
