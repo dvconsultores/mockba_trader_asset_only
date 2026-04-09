@@ -80,12 +80,12 @@ class ReversalScalper:
         # === REVERSAL PATTERN PARAMETERS ===
         self.CANDLE_COUNT = 2           # Minimum 2 candles same direction
         self.CANDLE_COUNTS = [2, 3, 4]  # Support 2, 3, 4 candle reversals
-        self.CORRECTION_PCT = 0.001     # 0.1% minimum pullback (LLM: 0.0001 was too early, reduce false entries)
+        self.CORRECTION_PCT = 0.0003    # 0.03% minimum pullback (balanced: catches entries on 30s poll without being too early)
         self.BIG_CANDLE_MULTIPLIER = 1.2 # Candle must be 1.2x average range (NEAR-specific)
-        self.SR_PROXIMITY_PCT = 0.008   # 0.8% proximity to S/R level (relaxed for real markets)
+        self.SR_PROXIMITY_PCT = 0.015   # 1.5% proximity to S/R level (wider for low-liquidity DEX like Orderly)
         
         # === SPIKE REVERSAL PARAMETERS ===
-        self.SPIKE_CANDLE_MULTIPLIER = 1.5  # Candle range > 1.5x avg = spike (lowered for sensitivity)
+        self.SPIKE_CANDLE_MULTIPLIER = 1.3  # Candle range > 1.3x avg = spike (sensitive for low-liquidity DEX)
         self.SPIKE_VOLUME_MULTIPLIER = 3.0  # Volume > 3x avg confirms spike
         
         # === ORDER BOOK IMBALANCE PARAMETERS ===
@@ -335,8 +335,11 @@ class ReversalScalper:
             h_recent = highs[-1]
             pullback = (h_recent - live_price) / h_recent
             
-            # Anticipatory entry: catch pullback from VERY early (0.01% correction)
-            if pullback >= self.CORRECTION_PCT and abs(h_recent - recent_high) / recent_high < self.SR_PROXIMITY_PCT:
+            # Strong setup: 3+ candles need less correction confirmation
+            min_correction = self.CORRECTION_PCT if consecutive_up < 3 else self.CORRECTION_PCT * 0.5
+            
+            # Anticipatory entry: catch pullback early
+            if pullback >= min_correction and abs(h_recent - recent_high) / recent_high < self.SR_PROXIMITY_PCT:
                 pattern_found = None
                 for candle_count in self.CANDLE_COUNTS:
                     if consecutive_up >= candle_count:
@@ -362,8 +365,11 @@ class ReversalScalper:
             l_recent = lows[-1]
             bounce = (live_price - l_recent) / l_recent
             
-            # Anticipatory entry: catch bounce from VERY early (0.01% correction)
-            if bounce >= self.CORRECTION_PCT and abs(l_recent - recent_low) / recent_low < self.SR_PROXIMITY_PCT:
+            # Strong setup: 3+ candles need less correction confirmation
+            min_correction = self.CORRECTION_PCT if consecutive_down < 3 else self.CORRECTION_PCT * 0.5
+            
+            # Anticipatory entry: catch bounce early
+            if bounce >= min_correction and abs(l_recent - recent_low) / recent_low < self.SR_PROXIMITY_PCT:
                 pattern_found = None
                 for candle_count in self.CANDLE_COUNTS:
                     if consecutive_down >= candle_count:
@@ -688,9 +694,10 @@ class ReversalScalper:
             else:
                 if consecutive_up >= 2:
                     pullback = (h2 - live_price) / h2
-                    if pullback < self.CORRECTION_PCT:
+                    min_correction = self.CORRECTION_PCT if consecutive_up < 3 else self.CORRECTION_PCT * 0.5
+                    if pullback < min_correction:
                         failure_reason = "Waiting for pullback to begin"
-                        wait_price = h2 * (1 - self.CORRECTION_PCT)
+                        wait_price = h2 * (1 - min_correction)
                         wait_direction = "down"
                     else:
                         if abs(h2 - recent_high) / recent_high > self.SR_PROXIMITY_PCT:
@@ -703,9 +710,10 @@ class ReversalScalper:
                             failure_reason = f"✅ Ready: {consecutive_up}-candle pattern (supports: {active_patterns})"
                 elif consecutive_down >= 2:
                     bounce = (live_price - l2) / l2
-                    if bounce < self.CORRECTION_PCT:
+                    min_correction = self.CORRECTION_PCT if consecutive_down < 3 else self.CORRECTION_PCT * 0.5
+                    if bounce < min_correction:
                         failure_reason = "Waiting for bounce to begin"
-                        wait_price = l2 * (1 + self.CORRECTION_PCT)
+                        wait_price = l2 * (1 + min_correction)
                         wait_direction = "up"
                     else:
                         if abs(l2 - recent_low) / recent_low > self.SR_PROXIMITY_PCT:
