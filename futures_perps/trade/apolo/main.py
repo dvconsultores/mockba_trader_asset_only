@@ -1072,9 +1072,6 @@ class ReversalScalper:
             f"• SL: {sl:.6f} (-{sl_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
             f"• TP: {tp:.6f} (+{tp_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
             f"• Risk/Reward: {(tp_distance_pct / sl_distance_pct):.2f}:1"
-            f"• TP: {tp:.6f} (+{self.TP_PCT*100:.1f}%)\n"
-            f"• SL: {sl:.6f} (-{sl_dist*100:.1f}%)\n"
-            f"• RR: 1:{(sl_dist/self.TP_PCT):.1f}"
         )
         
         result['resume_of_analysis'] = "\n".join(display_lines)
