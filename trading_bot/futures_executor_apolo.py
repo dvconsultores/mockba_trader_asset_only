@@ -13,7 +13,7 @@ from trading_bot.send_bot_message import send_bot_message
 from base58 import b58decode
 from base64 import urlsafe_b64encode
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from db.db_ops import get_setting
+from db.db_ops import get_setting, get_trades_today, increment_trades_today
 import asyncio
 
 
@@ -292,11 +292,22 @@ def calculate_position_size_with_margin_cap(
     return qty
 
 rate_limiter = RateLimiter(max_calls=10, period=1)
+
+# ✅ Daily trade limit
+MAX_TRADES_PER_DAY = 1
+
 def place_futures_order(signal: dict):
     """
     Creates and submits a BRACKET order with TAKE_PROFIT and STOP_LOSS child orders.
     """
     rate_limiter()  # ✅ global rate limit
+
+    # ✅ Check daily trade limit
+    trades_today = get_trades_today()
+    if trades_today >= MAX_TRADES_PER_DAY:
+        logger.warning(f"⛔ Daily trade limit reached ({trades_today}/{MAX_TRADES_PER_DAY}). Skipping order.")
+        send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"⛔ Daily limit reached ({trades_today}/{MAX_TRADES_PER_DAY}). No more trades today.")
+        return None
 
     logger.info("Placing order with signal_dict: %s", signal)
 
@@ -529,6 +540,10 @@ def place_futures_order(signal: dict):
     )
     send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), msg)
     logger.info(f"✅ Order created for {symbol} | {side_str} lev={leverage} qty={qty} @~{live_price} | TP={tp_trigger} SL={sl_trigger}")
+
+    # ✅ Increment daily trade counter
+    new_count = increment_trades_today()
+    logger.info(f"📊 Daily trades: {new_count}/{MAX_TRADES_PER_DAY}")
 
 
 def get_user_statistics():

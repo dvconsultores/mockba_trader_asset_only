@@ -110,11 +110,11 @@ class ReversalScalper:
         # === TIME FILTER PARAMETERS (UTC-4) ===
         # Mon-Fri: 6am-12pm | Sun: 8am-10am | Sat: off
         self.PREFERRED_WINDOWS = {
-            'Monday':    [(6, 12)],
-            'Tuesday':   [(6, 12)],
-            'Wednesday': [(6, 12)],
-            'Thursday':  [(6, 12)],
-            'Friday':    [(6, 12)],
+            'Monday':    [(6, 11)],
+            'Tuesday':   [(6, 11)],
+            'Wednesday': [(6, 11)],
+            'Thursday':  [(6, 11)],
+            'Friday':    [(6, 11)],
         }
         
         # === LIVE PRICE VALIDATION ===
@@ -312,83 +312,55 @@ class ReversalScalper:
     
     def _detect_reversal_pattern(self, df: pd.DataFrame, live_price: float) -> Optional[Dict]:
         """
-        Detect 2, 3, or 4 consecutive candle reversal patterns at S/R.
+        SIMPLIFIED: Detect 2-3 consecutive candles + reversal candle.
         
-        Anticipatory entry: enters at start of pullback/bounce (0.01% correction = very early).
-        Supports multiple candle patterns to catch more signals.
+        Entry logic:
+        - 2+ candles same direction (up or down)
+        - Current candle is opposite color (reversal confirmation)
+        - No S/R proximity or pullback % required
         """
         if len(df) < 10:
             return None
             
         closes = df['close'].values
+        opens = df['open'].values
         highs = df['high'].values
         lows = df['low'].values
         
         consecutive_up, consecutive_down = self._count_consecutive_candles(closes)
         avg_range = np.mean([highs[i] - lows[i] for i in range(-20, -1)])
-        recent_high = np.max(highs[-10:])
-        recent_low = np.min(lows[-10:])
         
-        # === PATTERN: 2+ candles UP → look for SHORT reversal ===
-        # Support 2, 3, or 4 candle reversals
-        if consecutive_up >= 2:
-            h_recent = highs[-1]
-            pullback = (h_recent - live_price) / h_recent
-            
-            # Strong setup: 3+ candles need less correction confirmation
-            min_correction = self.CORRECTION_PCT if consecutive_up < 3 else self.CORRECTION_PCT * 0.5
-            
-            # Anticipatory entry: catch pullback early
-            if pullback >= min_correction and abs(h_recent - recent_high) / recent_high < self.SR_PROXIMITY_PCT:
-                pattern_found = None
-                for candle_count in self.CANDLE_COUNTS:
-                    if consecutive_up >= candle_count:
-                        pattern_found = candle_count
-                        break
-                
-                if pattern_found:
-                    return {
-                        'side': 'SELL',
-                        'entry': live_price,
-                        'reason': f'{consecutive_up} up candles (reversal anticipation) + pullback at resistance',
-                        'details': {
-                            'consecutive': consecutive_up,
-                            'pattern': pattern_found,
-                            'pullback_pct': pullback * 100,
-                            'candle_range': h_recent - lows[-1],
-                            'avg_range': avg_range
-                        }
-                    }
+        # Current candle direction (for reversal confirmation)
+        current_is_bullish = closes[-1] > opens[-1]
+        current_is_bearish = closes[-1] < opens[-1]
         
-        # === PATTERN: 2+ candles DOWN → look for LONG reversal ===
-        if consecutive_down >= 2:
-            l_recent = lows[-1]
-            bounce = (live_price - l_recent) / l_recent
-            
-            # Strong setup: 3+ candles need less correction confirmation
-            min_correction = self.CORRECTION_PCT if consecutive_down < 3 else self.CORRECTION_PCT * 0.5
-            
-            # Anticipatory entry: catch bounce early
-            if bounce >= min_correction and abs(l_recent - recent_low) / recent_low < self.SR_PROXIMITY_PCT:
-                pattern_found = None
-                for candle_count in self.CANDLE_COUNTS:
-                    if consecutive_down >= candle_count:
-                        pattern_found = candle_count
-                        break
-                
-                if pattern_found:
-                    return {
-                        'side': 'BUY',
-                        'entry': live_price,
-                        'reason': f'{consecutive_down} down candles (reversal anticipation) + bounce at support',
-                        'details': {
-                            'consecutive': consecutive_down,
-                            'pattern': pattern_found,
-                            'bounce_pct': bounce * 100,
-                            'candle_range': highs[-1] - l_recent,
-                            'avg_range': avg_range
-                        }
-                    }
+        # === PATTERN: 2+ candles UP + bearish reversal candle → SHORT ===
+        if consecutive_up >= 2 and current_is_bearish:
+            return {
+                'side': 'SELL',
+                'entry': live_price,
+                'reason': f'{consecutive_up} up candles + bearish reversal',
+                'details': {
+                    'consecutive': consecutive_up,
+                    'pattern': min(consecutive_up, 4),
+                    'candle_range': highs[-1] - lows[-1],
+                    'avg_range': avg_range
+                }
+            }
+        
+        # === PATTERN: 2+ candles DOWN + bullish reversal candle → LONG ===
+        if consecutive_down >= 2 and current_is_bullish:
+            return {
+                'side': 'BUY',
+                'entry': live_price,
+                'reason': f'{consecutive_down} down candles + bullish reversal',
+                'details': {
+                    'consecutive': consecutive_down,
+                    'pattern': min(consecutive_down, 4),
+                    'candle_range': highs[-1] - lows[-1],
+                    'avg_range': avg_range
+                }
+            }
         
         return None
     
@@ -632,7 +604,7 @@ class ReversalScalper:
         max_notional = safe_qty * live_price
         max_margin = max_notional / leverage
         lines = [
-            f"📚 Order Book (top {self.OB_DEPTH}):",
+            f"📚 Order Book (reference only):",
             f"• Bids: {obi_details['bids']:.0f} | Asks: {obi_details['asks']:.0f}",
             f"• Imbalance: {obi_details['imbalance_pct']:+.1f}%",
             f"• OBI Ratio: {obi:.2f} → {direction}",
@@ -655,115 +627,56 @@ class ReversalScalper:
             'TREND_DOWN': '🔻',
         }.get(regime, '❓')
         
-        lines = [f"{regime_emoji} Regime: {regime} {slope_emoji}"]
+        lines = [f"{regime_emoji} Regime: {regime} {slope_emoji} (reference only)"]
         lines.append(f"• Slope 5m: {slope_5m*100:+.3f}%/candle")
         if slope_1h is not None:
             lines.append(f"• Slope 1h: {slope_1h*100:+.3f}%/candle")
-        if regime in ['TREND_UP', 'TREND_DOWN']:
-            lines.append(f"• ℹ️ 1H slope > 0.18% = Trend detected (reversals disabled)")
         return "\n".join(lines)
     
     def _format_pattern_display(self, pattern: Optional[Dict], live_price: float, regime: str, df: pd.DataFrame) -> str:
-        """Format pattern detection with anticipatory entry info."""
-        failure_reason = None
-        wait_price = None
-        wait_direction = None
-        recent_high = None
-        recent_low = None
-        min_correction_entry = None
+        """Format pattern detection - simplified for 2-3 candles + reversal strategy."""
+        if len(df) < 10:
+            return "🔍 Reversal pattern: Insufficient data"
+            
+        closes = df['close'].values
+        opens = df['open'].values
+        consecutive_up, consecutive_down = self._count_consecutive_candles(closes)
         
-        if len(df) >= 10:
-            closes = df['close'].values
-            highs = df['high'].values
-            lows = df['low'].values
-            h2, l2 = highs[-1], lows[-1]
-            consecutive_up, consecutive_down = self._count_consecutive_candles(closes)
-            
-            if closes[-1] > closes[-2]:
-                min_correction_entry = h2 * (1 - self.CORRECTION_PCT)
-            elif closes[-1] < closes[-2]:
-                min_correction_entry = l2 * (1 + self.CORRECTION_PCT)
-            
-            avg_range = np.mean([highs[i] - lows[i] for i in range(-20, -1)])
-            candle2_range = h2 - l2
-            recent_high = np.max(highs[-10:])
-            recent_low = np.min(lows[-10:])
-            
-            if consecutive_up < 2 and consecutive_down < 2:
-                failure_reason = f"Need 2+ candles same direction (up: {consecutive_up}, down: {consecutive_down})"
-            else:
-                if consecutive_up >= 2:
-                    pullback = (h2 - live_price) / h2
-                    min_correction = self.CORRECTION_PCT if consecutive_up < 3 else self.CORRECTION_PCT * 0.5
-                    if pullback < min_correction:
-                        failure_reason = "Waiting for pullback to begin"
-                        wait_price = h2 * (1 - min_correction)
-                        wait_direction = "down"
-                    else:
-                        if abs(h2 - recent_high) / recent_high > self.SR_PROXIMITY_PCT:
-                            failure_reason = "Pullback confirmed, but not at resistance"
-                            wait_price = recent_high
-                            wait_direction = "up"
-                        else:
-                            # Show how many candle patterns are active
-                            active_patterns = [c for c in self.CANDLE_COUNTS if consecutive_up >= c]
-                            failure_reason = f"✅ Ready: {consecutive_up}-candle pattern (supports: {active_patterns})"
-                elif consecutive_down >= 2:
-                    bounce = (live_price - l2) / l2
-                    min_correction = self.CORRECTION_PCT if consecutive_down < 3 else self.CORRECTION_PCT * 0.5
-                    if bounce < min_correction:
-                        failure_reason = "Waiting for bounce to begin"
-                        wait_price = l2 * (1 + min_correction)
-                        wait_direction = "up"
-                    else:
-                        if abs(l2 - recent_low) / recent_low > self.SR_PROXIMITY_PCT:
-                            failure_reason = "Bounce confirmed, but not at support"
-                            wait_price = recent_low
-                            wait_direction = "down"
-                        else:
-                            # Show how many candle patterns are active
-                            active_patterns = [c for c in self.CANDLE_COUNTS if consecutive_down >= c]
-                            failure_reason = f"✅ Ready: {consecutive_down}-candle pattern (supports: {active_patterns})"
+        # Current candle direction
+        current_is_bullish = closes[-1] > opens[-1]
+        current_is_bearish = closes[-1] < opens[-1]
+        current_dir = "🟢 bullish" if current_is_bullish else "🔴 bearish" if current_is_bearish else "⚪ doji"
         
         lines = []
         if pattern is not None:
             side_emoji = "🔴 SHORT" if pattern['side'] == 'SELL' else "🟢 LONG"
             lines.append(f"✅ Pattern detected: {side_emoji}")
-            lines.append(f"• Reason: {pattern['reason']}")
-            lines.append(f"• Suggested entry: {live_price:.6f}")
-            if min_correction_entry is not None:
-                lines.append(f"• 🎯 Minimum correction to enter: {min_correction_entry:.6f} ({self.CORRECTION_PCT*100:.3f}%)")
+            lines.append(f"• {pattern['reason']}")
+            lines.append(f"• Entry: {live_price:.6f}")
             if 'details' in pattern:
                 details = pattern['details']
-                if 'pattern' in details:
-                    lines.append(f"• Pattern type: {details['pattern']}-candle reversal")
-                if 'pullback_pct' in details:
-                    lines.append(f"• Pullback started: {details['pullback_pct']:.3f}%")
-                if 'bounce_pct' in details:
-                    lines.append(f"• Bounce started: {details['bounce_pct']:.3f}%")
+                lines.append(f"• Pattern: {details.get('consecutive', '?')}-candle reversal")
         else:
             lines.append("🔍 Reversal pattern: NOT DETECTED")
-            if failure_reason:
-                lines.append(f"• Status: {failure_reason}")
-            if min_correction_entry is not None:
-                lines.append(f"• 🎯 Minimum correction to enter: {min_correction_entry:.6f} ({self.CORRECTION_PCT*100:.3f}%)")
-            if wait_price:
-                lines.append(f"• 🎯 Wait for price {wait_direction} to {wait_price:.6f}")
-            if recent_high and consecutive_up >= 2:
-                lines.append(f"• 📊 Recent resistance (10 candles): {recent_high:.6f}")
-            elif recent_low and consecutive_down >= 2:
-                lines.append(f"• 📊 Recent support (10 candles): {recent_low:.6f}")
-        return "\n".join(lines)
+            lines.append(f"• Consecutive up: {consecutive_up} | down: {consecutive_down}")
+            lines.append(f"• Current candle: {current_dir}")
+            if consecutive_up >= 2 and not current_is_bearish:
+                lines.append(f"• ⏳ Have {consecutive_up} up candles, waiting for bearish reversal candle")
+            elif consecutive_down >= 2 and not current_is_bullish:
+                lines.append(f"• ⏳ Have {consecutive_down} down candles, waiting for bullish reversal candle")
+            elif consecutive_up < 2 and consecutive_down < 2:
+                lines.append("• Need 2+ consecutive candles same direction first")
+        return "\\n".join(lines)
     
     def _format_manipulation_display(self, warnings: List[str]) -> Optional[str]:
-        """Format manipulation warnings for Telegram display."""
+        """Format manipulation warnings for Telegram display (reference only, not blocking)."""
         if not warnings:
             return None
-        lines = ["🔍 Manipulation Checks:"]
+        lines = ["🔍 Manipulation Checks (reference only):"]
         for w in warnings:
             lines.append(f"• {w}")
         if len(warnings) >= 2:
-            lines.append("🚫 High risk - consider skipping trade")
+            lines.append("⚠️ High risk signals detected (FYI)")
         return "\n".join(lines)
     
     def analyze_signal(self, asset: str, interval: str = '5m') -> Dict:
@@ -938,23 +851,10 @@ class ReversalScalper:
         #     result['resume_of_analysis'] = "\n".join(display_lines)
         #     return result
         
-        # Manipulation warnings block 2-candle pattern but NOT spike reversal
-        # (volume spike + OB divergence ARE the spike reversal confirmation)
-        if len(manipulation_warnings) >= 2 and spike_reversal is None:
-            result['rejection_reasons'].append("Multiple manipulation signals detected")
-            display_lines.append("🚫 ❌ Trade blocked: Too many manipulation warnings")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            
-            # === LOG REJECTED SIGNAL ===
-            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
-            save_signal_to_history(
-                asset=asset, regime=regime, obi=obi, pattern_type=None,
-                approved=False, rejection_reasons=result['rejection_reasons'],
-                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
-                candle_count=max(consecutive_up, consecutive_down)
-            )
-            
-            return result
+        # ✅ CHANGED: Manipulation warnings are now REFERENCE ONLY (display, don't block)
+        # User prefers simple price action without filters
+        if len(manipulation_warnings) >= 2:
+            display_lines.append("⚠️ ℹ️ Manipulation signals detected (reference only, not blocking)")
         
         # Choose the active signal: spike reversal takes priority in HIGH_VOL,
         # then 2+ candle pattern, then engulfing, then pin bar, then spike

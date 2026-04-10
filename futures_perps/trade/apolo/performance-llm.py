@@ -63,7 +63,7 @@ def _is_preferred_window(timestamp_ms: Any) -> bool:
     if day_name == 'Sunday':
         return 8 <= hour < 10
     elif day_name in ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']:
-        return 6 <= hour < 12
+        return 6 <= hour < 11
     else:
         return False
 
