@@ -333,7 +333,8 @@ def _build_llm_prompt(
         "5) STRATEGY PATTERN: Is the 2-candle reversal pattern detecting valid setups? Missed opportunities?",
         "6) FEE IMPACT: Avg win=$3.61, avg fee=$0.45 = 12.5% fee drag. Propose minimum profit threshold?",
         "7) POSITION SIZING: Do larger quantities correlate with larger losses? Suggest dynamic sizing?",
-        "8) REGIME PARAMETERS: Adjust ONLY if trade data clearly justifies improvement",
+        "8) REGIME SHIFT TRAP: Did the plan degrade because market structure changed, not just because of discipline or execution drift? Evaluate whether results suggest the strategy is fighting the last regime.",
+        "9) REGIME PARAMETERS: Adjust ONLY if trade data clearly justifies improvement",
         "",
         "=== OUTPUT FORMAT ===",
         "Return ONLY valid JSON (no markdown, no extra text) with this EXACT schema:",
@@ -347,6 +348,7 @@ def _build_llm_prompt(
         '  "strategy_used_analysis": "string - pattern detection effectiveness",',
         '  "fee_impact_analysis": "string - fee drag assessment + recommendation",',
         '  "position_size_analysis": "string - sizing vs PnL correlation",',
+        '  "regime_shift_analysis": "string - whether volatility/liquidity regime changes likely degraded the plan",',
         '  "comparison_past_vs_current_strategy": "string - would current code have prevented losses?",',
         '  "strategy_improvements": ["string - actionable improvement 1", "improvement 2", ...],',
         '  "code_change_proposals": [',
@@ -488,6 +490,7 @@ def _build_md_report(output: dict[str, Any]) -> str:
         ("strategy_used_analysis", "Strategy Pattern Analysis"),
         ("fee_impact_analysis", "Fee Impact Analysis"),
         ("position_size_analysis", "Position Size Analysis"),
+        ("regime_shift_analysis", "Regime Shift Analysis"),
         ("comparison_past_vs_current_strategy", "Past vs Current Strategy"),
     ]:
         val = llm_parsed.get(field, "")
