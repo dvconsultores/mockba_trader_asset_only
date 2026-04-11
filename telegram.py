@@ -214,6 +214,7 @@ def callback_handler(call):
             'set_asset': set_asset,
             'asset_add': ask_add_asset,
             'asset_remove': ask_remove_asset,
+            'set_exchange': set_exchange,
             'set_interval': set_interval,
             'set_take_profit': set_take_profit,
             'set_stop_loss': set_stop_loss,
@@ -246,13 +247,14 @@ def settings(m):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     labels = {
+        "set_exchange": "🔄 Exchange (DEX/CEX)",
         "manage_assets": "💰 Manage Assets",
         "set_current_asset": "🎯 Current Asset",
         "set_interval": "⏱️ Interval",
         "set_take_profit": "📈 Take Profit",
-        "set_stop_loss": "📉 Stop Loss",
+        "set_stop_loss": "📉 Stop Loss (DEX only)",
         "set_auto_trade": "🤖 Auto Trade",
-        "set_leverage": "⚖️ Leverage"
+        "set_leverage": "⚖️ Leverage (DEX only)"
     }
     
     markup = InlineKeyboardMarkup()
@@ -369,6 +371,29 @@ def set_current_asset(m):
                InlineKeyboardButton(translate("Next: Interval ➡️", cid), callback_data="set_interval"))
     
     bot.send_message(cid, translate("Select Current Asset:", cid), reply_markup=markup)
+
+def set_exchange(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+    
+    current = get_setting("exchange") or "dex"
+    markup = InlineKeyboardMarkup()
+    dex_status = "✅" if current == "dex" else "  "
+    cex_status = "✅" if current == "cex" else "  "
+    markup.add(
+        InlineKeyboardButton(f"{dex_status} 🌐 DEX (Orderly Futures)", callback_data="set_val:exchange:dex"),
+        InlineKeyboardButton(f"{cex_status} 💱 CEX (Binance Spot)", callback_data="set_val:exchange:cex")
+    )
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Next: Assets ➡️", cid), callback_data="manage_assets"))
+    
+    msg = translate("Select Exchange:", cid)
+    if current == "dex":
+        msg += "\n🌐 DEX: Orderly futures (leverage, SL/TP)"
+    else:
+        msg += "\n💱 CEX: Binance spot (BUY only, no SL, no leverage)"
+    bot.send_message(cid, msg, reply_markup=markup)
 
 def ask_remove_asset(m):
     if m.chat.type != 'private': return
@@ -671,6 +696,11 @@ def ListSettings(m):
     message_lines.append("⚙️ BOT SETTINGS\n")
     message_lines.append("═══════════════════\n\n")
     
+    # Show exchange first
+    exchange = settings.get("exchange", "dex")
+    exchange_label = "🌐 DEX (Orderly Futures)" if exchange == "dex" else "💱 CEX (Binance Spot)"
+    message_lines.append(f"🔄 Exchange: {exchange_label}\n\n")
+    
     message_lines.append("⏰ Trading:\n")
     trading_keys = [
         ("🌟", "current_asset", "Current Asset"),
@@ -685,8 +715,12 @@ def ListSettings(m):
             value = settings[key]
             if key in ["take_profit", "stop_loss"]:
                 value = f"{value}%"
+                if key == "stop_loss" and exchange == "cex":
+                    value += " (N/A for spot)"
             elif key == "leverage":
                 value = f"{value}x"
+                if exchange == "cex":
+                    value += " (N/A for spot)"
             message_lines.append(f"{emoji} {label}: {value}\n")
     
     message_lines.append("\n⚙️ Configuration:\n")

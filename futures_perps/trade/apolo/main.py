@@ -31,11 +31,20 @@ from futures_perps.trade.apolo.historical_data import (
     get_orderbook,
     get_market_trades
 )
+from futures_perps.trade.apolo.binance_data import (
+    get_historical_data_binance,
+    get_orderbook_binance,
+    get_binance_price,
+    get_binance_market_trades,
+    get_binance_symbol
+)
 from trading_bot.futures_executor_apolo import (
     place_futures_order, 
     get_close_price, 
-    ORDERLY_ACCOUNT_ID
+    ORDERLY_ACCOUNT_ID,
+    get_user_statistics
 )
+from trading_bot.spot_executor_binance import place_spot_order, has_open_orders_binance
 from trading_bot.send_bot_message import send_bot_message
 
 # Initialize database tables on startup
@@ -681,6 +690,8 @@ class ReversalScalper:
     
     def analyze_signal(self, asset: str, interval: str = '5m') -> Dict:
         """Main analysis function - orchestrates all checks and returns decision."""
+        exchange = get_setting("exchange") or "dex"
+        
         result = {
             'approved': False,
             'symbol': asset,
@@ -688,6 +699,7 @@ class ReversalScalper:
             'entry': 0.0,
             'stop_loss': 0.0,
             'take_profit': 0.0,
+            'exchange': exchange,
             'resume_of_analysis': '',
             'rejection_reasons': [],
             'debug_info': {}
@@ -695,11 +707,18 @@ class ReversalScalper:
 
         # === STEP 1: FETCH ALL DATA IN PARALLEL ===
         with ThreadPoolExecutor(max_workers=min(5, self.MAX_WORKERS)) as pool:
-            f_df_5m = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='5m', limit=100)
-            f_df_1h = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='1h', limit=100)
-            f_live = pool.submit(get_close_price, ORDERLY_ACCOUNT_ID, asset, interval)
-            f_orderbook = pool.submit(get_orderbook, asset, self.OB_DEPTH)
-            f_trades = pool.submit(get_market_trades, asset, 50)
+            if exchange == "cex":
+                f_df_5m = pool.submit(get_historical_data_binance, symbol=asset, interval='5m', limit=100)
+                f_df_1h = pool.submit(get_historical_data_binance, symbol=asset, interval='1h', limit=100)
+                f_live = pool.submit(get_binance_price, asset)
+                f_orderbook = pool.submit(get_orderbook_binance, asset, self.OB_DEPTH)
+                f_trades = pool.submit(get_binance_market_trades, asset, 50)
+            else:
+                f_df_5m = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='5m', limit=100)
+                f_df_1h = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='1h', limit=100)
+                f_live = pool.submit(get_close_price, ORDERLY_ACCOUNT_ID, asset, interval)
+                f_orderbook = pool.submit(get_orderbook, asset, self.OB_DEPTH)
+                f_trades = pool.submit(get_market_trades, asset, 50)
             df_5m = f_df_5m.result()
             df_1h = f_df_1h.result()
             live_price = f_live.result()
@@ -747,25 +766,41 @@ class ReversalScalper:
         
         # === STEP 6: BUILD DEBUG DISPLAY ===
         regime = regime_info['regime']
+        exchange_label = "💱 CEX (Binance Spot)" if exchange == "cex" else "🌐 DEX (Orderly Futures)"
+        display_symbol = get_binance_symbol(asset) if exchange == "cex" else asset
         display_lines = [
-            f"📊 {asset} | {interval} | Price: {live_price:.6f}",
+            f"📊 {display_symbol} | {interval} | Price: {live_price:.6f} | {exchange_label}",
             "",
             self._format_obi_display(obi, obi_details, live_price, orderbook, market_trades),
             "",
             self._format_regime_display(regime_info),
             "",
-            f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n"
-            + (lambda sl_pct, tp_pct: (
-                f"• SL will be: {live_price - live_price*sl_pct:.6f} (-{sl_pct*100:.2f}%)\n"
-                f"• TP will be: {live_price + live_price*tp_pct:.6f} (+{tp_pct*100:.2f}%)"
-            ))(
-                max(atr * self.SL_ATR_MULTIPLIER / live_price, self.SL_PCT_MIN),
-                max(atr * self.TP_ATR_MULTIPLIER / live_price, self.TP_PCT)
-            ),
+        ]
+        
+        if exchange == "cex":
+            tp_pct = max(atr * self.TP_ATR_MULTIPLIER / live_price, self.TP_PCT)
+            display_lines.append(
+                f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n"
+                f"• TP will be: {live_price + live_price*tp_pct:.6f} (+{tp_pct*100:.2f}%)\n"
+                f"• No SL (spot - can hold)"
+            )
+        else:
+            display_lines.append(
+                f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n"
+                + (lambda sl_pct, tp_pct: (
+                    f"• SL will be: {live_price - live_price*sl_pct:.6f} (-{sl_pct*100:.2f}%)\n"
+                    f"• TP will be: {live_price + live_price*tp_pct:.6f} (+{tp_pct*100:.2f}%)"
+                ))(
+                    max(atr * self.SL_ATR_MULTIPLIER / live_price, self.SL_PCT_MIN),
+                    max(atr * self.TP_ATR_MULTIPLIER / live_price, self.TP_PCT)
+                )
+            )
+        
+        display_lines.extend([
             "",
             self._format_pattern_display(pattern, live_price, regime, df_5m),
             ""
-        ]
+        ])
         
         # Show spike reversal status
         if spike_reversal:
@@ -804,7 +839,7 @@ class ReversalScalper:
             display_lines.append("")
         
         # === STEP 7: APPLY FILTERS ===
-        if not self._is_preferred_time():
+        if exchange != "cex" and not self._is_preferred_time():
             result['rejection_reasons'].append("Outside preferred time window")
             display_lines.append("⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4) — TRADE BLOCKED")
             result['resume_of_analysis'] = "\n".join(display_lines)
@@ -886,6 +921,22 @@ class ReversalScalper:
             
             return result
         
+        # === CEX SPOT: Only BUY signals allowed (long-only, no shorting on spot) ===
+        if exchange == "cex" and active_signal['side'] == 'SELL':
+            result['rejection_reasons'].append("CEX spot: only BUY signals (long-only)")
+            display_lines.append("❌ SHORT signal rejected — Binance spot is long-only (BUY only)")
+            result['resume_of_analysis'] = "\n".join(display_lines)
+            
+            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+            save_signal_to_history(
+                asset=asset, regime=regime, obi=obi, pattern_type=active_signal.get('reason'),
+                approved=False, rejection_reasons=result['rejection_reasons'],
+                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
+                candle_count=max(consecutive_up, consecutive_down)
+            )
+            
+            return result
+        
         # OBI is reference only — counter-trend OBI logged as warning, not a blocker
         # In thin markets like Orderly, OBI is too volatile to use as hard filter
         side = active_signal['side']
@@ -927,7 +978,19 @@ class ReversalScalper:
         # === ATR-Based SL/TP (adapts to volatility) ===
         atr = self._calculate_atr(df_5m, period=14)
         
-        if atr > 0:
+        if exchange == "cex":
+            # CEX Spot: TP only, no SL (can hold position indefinitely)
+            if atr > 0:
+                tp = entry + (atr * self.TP_ATR_MULTIPLIER)
+                tp_pct = abs(tp - entry) / entry
+                tp_pct = max(tp_pct, self.TP_PCT)
+                tp = entry * (1 + tp_pct)
+                atr_based = True
+            else:
+                tp = entry * (1 + self.TP_PCT)
+                atr_based = False
+            sl = 0  # No stop loss for spot
+        elif atr > 0:
             # Use ATR for adaptive stops (tight SL to preserve capital)
             if side == 'BUY':
                 tp = entry + (atr * self.TP_ATR_MULTIPLIER)
@@ -962,17 +1025,27 @@ class ReversalScalper:
             'stop_loss': round(sl, 6),
         })
         
-        sl_distance_pct = abs(sl - entry) / entry * 100
         tp_distance_pct = abs(tp - entry) / entry * 100
         
-        display_lines.append(
-            f"✅ ✅ ✅ TRADE APPROVED ✅ ✅ ✅\n"
-            f"• Signal: {active_signal['reason']}\n"
-            f"• Entry: {entry:.6f}\n"
-            f"• SL: {sl:.6f} (-{sl_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
-            f"• TP: {tp:.6f} (+{tp_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
-            f"• Risk/Reward: {(tp_distance_pct / sl_distance_pct):.2f}:1"
-        )
+        if exchange == "cex":
+            display_lines.append(
+                f"✅ ✅ ✅ TRADE APPROVED (Binance Spot) ✅ ✅ ✅\n"
+                f"• Signal: {active_signal['reason']}\n"
+                f"• Entry: {entry:.6f}\n"
+                f"• TP: {tp:.6f} (+{tp_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
+                f"• No SL (spot - can hold)\n"
+                f"• Mode: 🟢 BUY only (long-only spot)"
+            )
+        else:
+            sl_distance_pct = abs(sl - entry) / entry * 100
+            display_lines.append(
+                f"✅ ✅ ✅ TRADE APPROVED ✅ ✅ ✅\n"
+                f"• Signal: {active_signal['reason']}\n"
+                f"• Entry: {entry:.6f}\n"
+                f"• SL: {sl:.6f} (-{sl_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
+                f"• TP: {tp:.6f} (+{tp_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
+                f"• Risk/Reward: {(tp_distance_pct / sl_distance_pct):.2f}:1"
+            )
         
         result['resume_of_analysis'] = "\n".join(display_lines)
         logger.info(f"✅ Signal approved: {side} @ {entry} for {asset}")
@@ -1006,20 +1079,31 @@ def process_signal(asset_override: str = None) -> str:
     try:
         asset = asset_override or get_setting("current_asset")
         interval = get_setting("interval") or "5m"
+        exchange = get_setting("exchange") or "dex"
         scalper = ReversalScalper()
         result = scalper.analyze_signal(asset, interval)
         output = result['resume_of_analysis']
         if result['approved'] and get_setting("auto_trade") in ["True", "Automatic"]:
-            order_payload = {
-                "symbol": result['symbol'],
-                "side": result['side'],
-                "entry": result['entry'],
-                "take_profit": result['take_profit'],
-                "stop_loss": result['stop_loss'],
-                "leverage": int(get_setting("leverage") or 5)
-            }
-            place_futures_order(order_payload)
-            logger.info(f"🚀 Order placed: {order_payload}")
+            if exchange == "cex":
+                order_payload = {
+                    "symbol": result['symbol'],
+                    "side": result['side'],
+                    "entry": result['entry'],
+                    "take_profit": result['take_profit'],
+                }
+                place_spot_order(order_payload)
+                logger.info(f"🚀 Binance spot order placed: {order_payload}")
+            else:
+                order_payload = {
+                    "symbol": result['symbol'],
+                    "side": result['side'],
+                    "entry": result['entry'],
+                    "take_profit": result['take_profit'],
+                    "stop_loss": result['stop_loss'],
+                    "leverage": int(get_setting("leverage") or 5)
+                }
+                place_futures_order(order_payload)
+                logger.info(f"🚀 Orderly futures order placed: {order_payload}")
             
             # Increment daily trade counter
             trades_count = increment_trades_today()
@@ -1039,9 +1123,17 @@ def autotrade():
 
             if mode == "Signal":
                 scalper = ReversalScalper()
-                if not scalper._is_preferred_time():
+                exchange = get_setting("exchange") or "dex"
+                if exchange != "cex" and not scalper._is_preferred_time():
                     logger.info("⏰ Signal Mode: outside preferred window — sleeping 60s")
                     time.sleep(60)
+                    continue
+                if exchange == "cex" and has_open_orders_binance():
+                    time.sleep(30)
+                    continue
+                if exchange == "dex" and get_user_statistics() > 0:
+                    logger.info("📋 DEX has open position(s) — skipping pattern search")
+                    time.sleep(30)
                     continue
                 asset = get_setting("current_asset")
                 interval = get_setting("interval") or "5m"
@@ -1059,25 +1151,43 @@ def autotrade():
 
             elif mode == "Automatic":
                 scalper = ReversalScalper()
-                if not scalper._is_preferred_time():
+                exchange = get_setting("exchange") or "dex"
+                if exchange != "cex" and not scalper._is_preferred_time():
                     logger.info("⏰ Automatic Mode: outside preferred window — sleeping 60s")
                     time.sleep(60)
+                    continue
+                if exchange == "cex" and has_open_orders_binance():
+                    time.sleep(30)
+                    continue
+                if exchange == "dex" and get_user_statistics() > 0:
+                    logger.info("📋 DEX has open position(s) — skipping pattern search")
+                    time.sleep(30)
                     continue
                 asset = get_setting("current_asset")
                 interval = get_setting("interval") or "5m"
                 if asset:
                     result = scalper.analyze_signal(asset, interval)
                     if result.get("approved"):
-                        order_payload = {
-                            "symbol": result['symbol'],
-                            "side": result['side'],
-                            "entry": result['entry'],
-                            "take_profit": result['take_profit'],
-                            "stop_loss": result['stop_loss'],
-                            "leverage": int(get_setting("leverage") or 5)
-                        }
-                        place_futures_order(order_payload)
-                        logger.info(f"🚀 Order placed: {order_payload}")
+                        if exchange == "cex":
+                            order_payload = {
+                                "symbol": result['symbol'],
+                                "side": result['side'],
+                                "entry": result['entry'],
+                                "take_profit": result['take_profit'],
+                            }
+                            place_spot_order(order_payload)
+                            logger.info(f"🚀 Binance spot order placed: {order_payload}")
+                        else:
+                            order_payload = {
+                                "symbol": result['symbol'],
+                                "side": result['side'],
+                                "entry": result['entry'],
+                                "take_profit": result['take_profit'],
+                                "stop_loss": result['stop_loss'],
+                                "leverage": int(get_setting("leverage") or 5)
+                            }
+                            place_futures_order(order_payload)
+                            logger.info(f"🚀 Orderly futures order placed: {order_payload}")
                         trades_count = increment_trades_today()
                         msg = (
                             f"🚀 ORDER EXECUTED\n"

@@ -73,6 +73,7 @@ def initialize_database_tables():
             ('stop_loss', '0.2'),
             ('auto_trade', 'False'),
             ('leverage', '10'),
+            ('exchange', 'dex'),  # 'dex' (Orderly futures) or 'cex' (Binance spot)
         ]
         for key, value in default_settings:
             cur.execute("""
