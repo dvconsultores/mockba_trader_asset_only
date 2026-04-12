@@ -51,6 +51,7 @@ from trading_bot.send_bot_message import send_bot_message
 initialize_database_tables()
 
 _LAST_SIGNAL_ALERTS: Dict[str, float] = {}
+_LAST_EXCHANGE_SCAN_AT: Dict[str, float] = {"dex": 0.0, "cex": 0.0}
 
 
 def _get_exchange_mode(exchange: str) -> str:
@@ -65,14 +66,24 @@ def _get_exchange_mode(exchange: str) -> str:
     return "False"
 
 
-def _should_send_signal_alert(asset: str, side: str, reason: str, cooldown_seconds: int = 300) -> bool:
+def _should_send_signal_alert(exchange: str, asset: str, side: str, signal_reason: str, cooldown_seconds: int = 300) -> bool:
     """Debounce repeated signal alerts across autotrade polling cycles."""
     now = time.time()
-    key = f"{asset}:{side}:{reason}"
+    key = f"{exchange}:{asset}:{side}:{signal_reason}"
     last_sent_at = _LAST_SIGNAL_ALERTS.get(key, 0)
     if now - last_sent_at < cooldown_seconds:
         return False
     _LAST_SIGNAL_ALERTS[key] = now
+    return True
+
+
+def _should_run_exchange_cycle(exchange: str, interval_seconds: int) -> bool:
+    """Throttle exchange analysis loops independently."""
+    now = time.time()
+    last_run_at = _LAST_EXCHANGE_SCAN_AT.get(exchange, 0)
+    if now - last_run_at < interval_seconds:
+        return False
+    _LAST_EXCHANGE_SCAN_AT[exchange] = now
     return True
 
 
@@ -1039,6 +1050,7 @@ class ReversalScalper:
         result.update({
             'approved': True,
             'side': side,
+            'signal_reason': active_signal.get('reason', 'Unknown'),
             'entry': round(entry, 6),
             'take_profit': round(tp, 6),
             'stop_loss': round(sl, 6),
@@ -1164,12 +1176,12 @@ def autotrade():
             scalper = ReversalScalper()
 
             # DEX cycle
-            if dex_mode in ("Signal", "Automatic"):
+            if dex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("dex", 30):
                 if scalper._is_preferred_time():
                     dex_result = scalper.analyze_signal(asset, interval, exchange_override="dex")
                     if dex_result.get("approved"):
                         if dex_mode == "Signal":
-                            if _should_send_signal_alert(asset, dex_result['side'], dex_result.get('resume_of_analysis', '')):
+                            if _should_send_signal_alert("dex", asset, dex_result['side'], dex_result.get('signal_reason', 'Unknown')):
                                 send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 DEX SIGNAL ALERT\n{dex_result['resume_of_analysis']}")
                                 logger.info(f"📡 DEX signal alert sent for {asset}")
                         else:
@@ -1187,11 +1199,11 @@ def autotrade():
                     logger.info("⏰ DEX mode active but outside preferred window")
 
             # CEX cycle
-            if cex_mode in ("Signal", "Automatic"):
+            if cex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("cex", 60):
                 cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
                 if cex_result.get("approved"):
                     if cex_mode == "Signal":
-                        if _should_send_signal_alert(asset, cex_result['side'], cex_result.get('resume_of_analysis', '')):
+                        if _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
                             send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
                             logger.info(f"📡 CEX signal alert sent for {asset}")
                     else:
