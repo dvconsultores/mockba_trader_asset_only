@@ -22,7 +22,5 @@ RUN useradd --create-home --shell /bin/bash appuser && \
     chown -R appuser:appuser /app && \
     chmod +x /app/scripts/init_data.sh
 
-USER appuser
-
 # Run the Telegram bot (which spawns trade/monitor threads)
 CMD ["/bin/bash", "-lc", "./scripts/init_data.sh && python forever.py"]
