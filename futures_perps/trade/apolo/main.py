@@ -51,6 +51,18 @@ from trading_bot.send_bot_message import send_bot_message
 initialize_database_tables()
 
 
+def _get_exchange_mode(exchange: str) -> str:
+    """Return mode for exchange.
+
+    Modes: False, Signal, Automatic.
+    """
+    key = "auto_trade_dex" if exchange == "dex" else "auto_trade_cex"
+    mode = get_setting(key)
+    if mode in ("False", "Signal", "Automatic", "True"):
+        return "Automatic" if mode == "True" else mode
+    return "False"
+
+
 class ReversalScalper:
     """
     Hard-coded reversal strategy with regime filter, order book imbalance,
@@ -675,7 +687,7 @@ class ReversalScalper:
                 lines.append(f"• ⏳ Have {consecutive_down} down candles, waiting for bullish reversal candle")
             elif consecutive_up < 2 and consecutive_down < 2:
                 lines.append("• Need 2+ consecutive candles same direction first")
-        return "\\n".join(lines)
+        return "\n".join(lines)
     
     def _format_manipulation_display(self, warnings: List[str]) -> Optional[str]:
         """Format manipulation warnings for Telegram display (reference only, not blocking)."""
@@ -688,9 +700,9 @@ class ReversalScalper:
             lines.append("⚠️ High risk signals detected (FYI)")
         return "\n".join(lines)
     
-    def analyze_signal(self, asset: str, interval: str = '5m') -> Dict:
+    def analyze_signal(self, asset: str, interval: str = '5m', exchange_override: str = None) -> Dict:
         """Main analysis function - orchestrates all checks and returns decision."""
-        exchange = get_setting("exchange") or "dex"
+        exchange = exchange_override or get_setting("exchange") or "dex"
         
         result = {
             'approved': False,
@@ -777,14 +789,7 @@ class ReversalScalper:
             "",
         ]
         
-        if exchange == "cex":
-            tp_pct = max(atr * self.TP_ATR_MULTIPLIER / live_price, self.TP_PCT)
-            display_lines.append(
-                f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n"
-                f"• TP will be: {live_price + live_price*tp_pct:.6f} (+{tp_pct*100:.2f}%)\n"
-                f"• No SL (spot - can hold)"
-            )
-        else:
+        if exchange != "cex":
             display_lines.append(
                 f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n"
                 + (lambda sl_pct, tp_pct: (
@@ -945,11 +950,11 @@ class ReversalScalper:
         elif side == 'SELL' and obi > 1.0:
             display_lines.append(f"📚 ℹ️ OBI {obi:.2f} (bullish book, thin market—reference only)")
         
-        # === CHECK DAILY TRADES LIMIT ===
+        # === CHECK DAILY TRADES LIMIT (DEX only, CEX unlimited) ===
         trades_today = get_trades_today()
         max_trades = self.MAX_TRADES_PER_DAY
         
-        if trades_today >= max_trades and get_setting("auto_trade") == "Automatic":
+        if exchange != "cex" and trades_today >= max_trades and _get_exchange_mode("dex") == "Automatic":
             result['rejection_reasons'].append(f"Daily limit reached ({trades_today}/{max_trades})")
             display_lines.append(f"🚫 ❌ Daily trade limit reached: {trades_today}/{max_trades} trades\n• Resume trading tomorrow")
             result['resume_of_analysis'] = "\n".join(display_lines)
@@ -965,12 +970,13 @@ class ReversalScalper:
             
             return result
         
-        # Display trades count + reminder if approaching limit
-        display_lines.append(f"📊 Trades today: {trades_today}/{max_trades}")
-        if trades_today == max_trades - 1:
-            display_lines.append(f"⚠️ WARNING: This is your final trade for today!")
-        elif trades_today >= max_trades:
-            display_lines.append(f"🚫 Daily limit reached: {trades_today}/{max_trades}\n• Wait until tomorrow for more trades")
+        # Display trades count + reminder if approaching limit (DEX only)
+        if exchange != "cex":
+            display_lines.append(f"📊 Trades today: {trades_today}/{max_trades}")
+            if trades_today == max_trades - 1:
+                display_lines.append(f"⚠️ WARNING: This is your final trade for today!")
+            elif trades_today >= max_trades:
+                display_lines.append(f"🚫 Daily limit reached: {trades_today}/{max_trades}\n• Wait until tomorrow for more trades")
         
         # === STEP 8: ALL CHECKS PASSED - APPROVE TRADE ===
         entry = live_price
@@ -1033,7 +1039,6 @@ class ReversalScalper:
                 f"• Signal: {active_signal['reason']}\n"
                 f"• Entry: {entry:.6f}\n"
                 f"• TP: {tp:.6f} (+{tp_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
-                f"• No SL (spot - can hold)\n"
                 f"• Mode: 🟢 BUY only (long-only spot)"
             )
         else:
@@ -1074,16 +1079,16 @@ class ReversalScalper:
 
 
 # === BACKWARD-COMPATIBLE WRAPPER ===
-def process_signal(asset_override: str = None) -> str:
+def process_signal(asset_override: str = None, exchange_override: str = None) -> str:
     """Drop-in replacement - always returns full analysis for manual review."""
     try:
         asset = asset_override or get_setting("current_asset")
         interval = get_setting("interval") or "5m"
-        exchange = get_setting("exchange") or "dex"
+        exchange = exchange_override or get_setting("exchange") or "dex"
         scalper = ReversalScalper()
-        result = scalper.analyze_signal(asset, interval)
+        result = scalper.analyze_signal(asset, interval, exchange_override=exchange)
         output = result['resume_of_analysis']
-        if result['approved'] and get_setting("auto_trade") in ["True", "Automatic"]:
+        if result['approved'] and _get_exchange_mode(exchange) == "Automatic":
             if exchange == "cex":
                 order_payload = {
                     "symbol": result['symbol'],
@@ -1104,10 +1109,8 @@ def process_signal(asset_override: str = None) -> str:
                 }
                 place_futures_order(order_payload)
                 logger.info(f"🚀 Orderly futures order placed: {order_payload}")
-            
-            # Increment daily trade counter
-            trades_count = increment_trades_today()
-            output += f"\n\n🚀 ORDER EXECUTED AUTOMATICALLY\n📊 Daily trade count: {trades_count}"
+
+            output += "\n\n🚀 ORDER EXECUTED AUTOMATICALLY"
         return output
     except Exception as e:
         logger.exception("Error in process_signal")
@@ -1115,91 +1118,74 @@ def process_signal(asset_override: str = None) -> str:
 
 
 def autotrade():
-    """Main autotrade loop - runs continuously when auto_trade = 'Automatic' or 'Signal'."""
+    """Main autotrade loop - supports independent modes for DEX and CEX."""
     logger.info("🤖 Starting hard-coded autotrade loop...")
     while True:
         try:
-            mode = get_setting("auto_trade")
+            dex_mode = _get_exchange_mode("dex")
+            cex_mode = _get_exchange_mode("cex")
+            active_any = dex_mode in ("Signal", "Automatic") or cex_mode in ("Signal", "Automatic")
 
-            if mode == "Signal":
-                scalper = ReversalScalper()
-                exchange = get_setting("exchange") or "dex"
-                if exchange != "cex" and not scalper._is_preferred_time():
-                    logger.info("⏰ Signal Mode: outside preferred window — sleeping 60s")
-                    time.sleep(60)
-                    continue
-                if exchange == "cex" and has_open_orders_binance():
-                    time.sleep(30)
-                    continue
-                if exchange == "dex" and get_user_statistics() > 0:
-                    logger.info("📋 DEX has open position(s) — skipping pattern search")
-                    time.sleep(30)
-                    continue
-                asset = get_setting("current_asset")
-                interval = get_setting("interval") or "5m"
-                if asset:
-                    result = scalper.analyze_signal(asset, interval)
-                    if result.get("approved"):
-                        msg = (
-                            f"📡 SIGNAL ALERT\n"
-                            f"{result['resume_of_analysis']}"
-                        )
-                        send_bot_message(msg)
-                        logger.info(f"📡 Signal alert sent for {asset}")
+            if not active_any:
+                time.sleep(60)
+                continue
+
+            asset = get_setting("current_asset")
+            interval = get_setting("interval") or "5m"
+            if not asset:
                 time.sleep(30)
                 continue
 
-            elif mode == "Automatic":
-                scalper = ReversalScalper()
-                exchange = get_setting("exchange") or "dex"
-                if exchange != "cex" and not scalper._is_preferred_time():
-                    logger.info("⏰ Automatic Mode: outside preferred window — sleeping 60s")
-                    time.sleep(60)
-                    continue
-                if exchange == "cex" and has_open_orders_binance():
-                    time.sleep(30)
-                    continue
-                if exchange == "dex" and get_user_statistics() > 0:
-                    logger.info("📋 DEX has open position(s) — skipping pattern search")
-                    time.sleep(30)
-                    continue
-                asset = get_setting("current_asset")
-                interval = get_setting("interval") or "5m"
-                if asset:
-                    result = scalper.analyze_signal(asset, interval)
-                    if result.get("approved"):
-                        if exchange == "cex":
+            scalper = ReversalScalper()
+
+            # DEX cycle
+            if dex_mode in ("Signal", "Automatic"):
+                if scalper._is_preferred_time():
+                    if get_user_statistics() > 0:
+                        logger.info("📋 DEX has open position(s) — skipping pattern search")
+                    else:
+                        dex_result = scalper.analyze_signal(asset, interval, exchange_override="dex")
+                        if dex_result.get("approved"):
+                            if dex_mode == "Signal":
+                                send_bot_message(f"📡 DEX SIGNAL ALERT\n{dex_result['resume_of_analysis']}")
+                                logger.info(f"📡 DEX signal alert sent for {asset}")
+                            else:
+                                order_payload = {
+                                    "symbol": dex_result['symbol'],
+                                    "side": dex_result['side'],
+                                    "entry": dex_result['entry'],
+                                    "take_profit": dex_result['take_profit'],
+                                    "stop_loss": dex_result['stop_loss'],
+                                    "leverage": int(get_setting("leverage") or 5)
+                                }
+                                place_futures_order(order_payload)
+                                logger.info(f"🚀 Orderly futures order placed: {order_payload}")
+                                send_bot_message(f"🚀 DEX ORDER EXECUTED\n{dex_result['resume_of_analysis']}")
+                else:
+                    logger.info("⏰ DEX mode active but outside preferred window")
+
+            # CEX cycle
+            if cex_mode in ("Signal", "Automatic"):
+                if has_open_orders_binance():
+                    logger.info("📋 Binance has open order(s) — skipping pattern search")
+                else:
+                    cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
+                    if cex_result.get("approved"):
+                        if cex_mode == "Signal":
+                            send_bot_message(f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
+                            logger.info(f"📡 CEX signal alert sent for {asset}")
+                        else:
                             order_payload = {
-                                "symbol": result['symbol'],
-                                "side": result['side'],
-                                "entry": result['entry'],
-                                "take_profit": result['take_profit'],
+                                "symbol": cex_result['symbol'],
+                                "side": cex_result['side'],
+                                "entry": cex_result['entry'],
+                                "take_profit": cex_result['take_profit'],
                             }
                             place_spot_order(order_payload)
                             logger.info(f"🚀 Binance spot order placed: {order_payload}")
-                        else:
-                            order_payload = {
-                                "symbol": result['symbol'],
-                                "side": result['side'],
-                                "entry": result['entry'],
-                                "take_profit": result['take_profit'],
-                                "stop_loss": result['stop_loss'],
-                                "leverage": int(get_setting("leverage") or 5)
-                            }
-                            place_futures_order(order_payload)
-                            logger.info(f"🚀 Orderly futures order placed: {order_payload}")
-                        trades_count = increment_trades_today()
-                        msg = (
-                            f"🚀 ORDER EXECUTED\n"
-                            f"{result['resume_of_analysis']}\n\n"
-                            f"📈 Daily trade count: {trades_count}"
-                        )
-                        send_bot_message(msg)
-                        logger.info(f"🤖 Automatic trade executed for {asset}")
-                time.sleep(30)
-                continue
-            else:
-                time.sleep(60)
+                            send_bot_message(f"🚀 CEX ORDER EXECUTED\n{cex_result['resume_of_analysis']}")
+
+            time.sleep(30)
         except Exception as e:
             logger.error(f"Autotrade loop error: {e}")
             time.sleep(60)

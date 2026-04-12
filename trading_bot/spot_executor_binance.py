@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from logs.log_config import apolo_trader_logger as logger
 from trading_bot.send_bot_message import send_bot_message
-from db.db_ops import get_setting, get_trades_today, increment_trades_today
+from db.db_ops import get_setting, increment_trades_today
 from futures_perps.trade.apolo.binance_data import get_binance_symbol
 
 load_dotenv()
@@ -23,9 +23,6 @@ load_dotenv()
 BINANCE_BASE_URL = "https://api.binance.com"
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
-
-MAX_TRADES_PER_DAY = 1
-
 
 def _sign(params: dict) -> str:
     """Generate HMAC SHA256 signature for Binance."""
@@ -150,16 +147,6 @@ def place_spot_order(signal: dict):
     """
     if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
         logger.error("❌ BINANCE_API_KEY or BINANCE_SECRET_KEY not set!")
-        return None
-
-    # Check daily limit
-    trades_today = get_trades_today()
-    if trades_today >= MAX_TRADES_PER_DAY:
-        logger.warning(f"⛔ Daily trade limit reached ({trades_today}/{MAX_TRADES_PER_DAY})")
-        send_bot_message(
-            int(os.getenv("TELEGRAM_CHAT_ID")),
-            f"⛔ Daily limit reached ({trades_today}/{MAX_TRADES_PER_DAY}). No more trades today."
-        )
         return None
 
     symbol = signal['symbol']
@@ -295,6 +282,6 @@ def place_spot_order(signal: dict):
     logger.info(f"✅ Binance spot: BUY {filled_qty} @ {avg_price} → TP SELL @ {tp_price}")
 
     new_count = increment_trades_today()
-    logger.info(f"📊 Daily trades: {new_count}/{MAX_TRADES_PER_DAY}")
+    logger.info(f"📊 Daily trades today: {new_count}")
 
     return buy_result

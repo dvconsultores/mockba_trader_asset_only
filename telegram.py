@@ -180,7 +180,7 @@ def callback_handler(call):
 
     # Determine if we should remove buttons immediately (long tasks) or later (UI transitions)
     immediate_remove = False
-    if call.data.startswith("exec_sig:"):
+    if call.data.startswith("exec_sig:") or call.data.startswith("exec_sig_dex:") or call.data.startswith("exec_sig_cex:"):
         immediate_remove = True
     
     if immediate_remove:
@@ -193,18 +193,31 @@ def callback_handler(call):
     if call.data.startswith("rm_asset:"):
         asset = call.data.split(":", 1)[1]
         confirm_remove_asset(call.message, asset)
+    elif call.data.startswith("exec_sig_dex:"):
+        asset = call.data.split(":", 1)[1]
+        execute_signal(call.message, asset=asset, exchange="dex")
+    elif call.data.startswith("exec_sig_cex:"):
+        asset = call.data.split(":", 1)[1]
+        execute_signal(call.message, asset=asset, exchange="cex")
     elif call.data.startswith("exec_sig:"):
         asset = call.data.split(":", 1)[1]
-        execute_signal(call.message, asset)
+        execute_signal(call.message, asset=asset)
     elif call.data.startswith("set_val:"):
         _, key, val = call.data.split(":", 2)
         upsert_setting(key, val)
 
         bot.send_message(cid, translate(f"✅ {key} set to {val}.", cid))
-    elif call.data == "auto_trade_auto":
-        upsert_setting("auto_trade", "Automatic")
-        bot.send_message(cid, translate("✅ Auto Trade set to Automatic.", cid))
-        bot.send_message(cid, translate(f"📊 Running on: {get_setting('asset')}", cid))
+    elif call.data.startswith("set_mode:"):
+        _, exchange, mode = call.data.split(":", 2)
+        if exchange not in ("dex", "cex") or mode not in ("False", "Signal", "Automatic"):
+            bot.send_message(cid, translate("❌ Invalid auto-trade mode selection.", cid))
+            return
+
+        mode_key = "auto_trade_dex" if exchange == "dex" else "auto_trade_cex"
+        upsert_setting(mode_key, mode)
+
+        exchange_label = "🌐 DEX" if exchange == "dex" else "💱 CEX"
+        bot.send_message(cid, translate(f"✅ {exchange_label} mode set to: {mode}", cid))
     else:
         options = {
             'List': command_list,
@@ -224,7 +237,7 @@ def callback_handler(call):
             'set_auto_trade': set_auto_trade,
             'set_leverage': set_leverage,
             'ListSettings': ListSettings,
-            'ProcessSignal': execute_signal,
+            'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance
         }
         func = options.get(call.data)
@@ -247,7 +260,6 @@ def settings(m):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     labels = {
-        "set_exchange": "🔄 Exchange (DEX/CEX)",
         "manage_assets": "💰 Manage Assets",
         "set_current_asset": "🎯 Current Asset",
         "set_interval": "⏱️ Interval",
@@ -481,14 +493,24 @@ def set_auto_trade(m):
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
     
+    dex_mode = get_setting("auto_trade_dex") or "False"
+    cex_mode = get_setting("auto_trade_cex") or "False"
+
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton("❌ OFF", callback_data="set_val:auto_trade:False"),
-               InlineKeyboardButton("🤖 Automatic", callback_data="auto_trade_auto"))
-    markup.add(InlineKeyboardButton("📡 Signal Mode", callback_data="set_val:auto_trade:Signal"))
+    markup.row(
+        InlineKeyboardButton(f"🌐 DEX OFF {'✅' if dex_mode == 'False' else ''}", callback_data="set_mode:dex:False"),
+        InlineKeyboardButton(f"📡 DEX Signal {'✅' if dex_mode == 'Signal' else ''}", callback_data="set_mode:dex:Signal"),
+        InlineKeyboardButton(f"🤖 DEX Auto {'✅' if dex_mode == 'Automatic' else ''}", callback_data="set_mode:dex:Automatic")
+    )
+    markup.row(
+        InlineKeyboardButton(f"💱 CEX OFF {'✅' if cex_mode == 'False' else ''}", callback_data="set_mode:cex:False"),
+        InlineKeyboardButton(f"📡 CEX Signal {'✅' if cex_mode == 'Signal' else ''}", callback_data="set_mode:cex:Signal"),
+        InlineKeyboardButton(f"🤖 CEX Auto {'✅' if cex_mode == 'Automatic' else ''}", callback_data="set_mode:cex:Automatic")
+    )
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
     
-    bot.send_message(cid, translate("Select Auto Trade:", cid), reply_markup=markup)
+    bot.send_message(cid, translate("Select Auto Trade mode for each exchange:", cid), reply_markup=markup)
 
 def set_leverage(m):
     if m.chat.type != 'private': return
@@ -644,7 +666,25 @@ def execute_trade_performance(m):
     except Exception as e:
         bot.send_message(cid, translate(f"Error analyzing trades performance: {str(e)}", cid))
 
-def execute_signal(m, asset=None):
+def pick_exchange_for_signal(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    asset = get_setting("current_asset")
+    if not asset:
+        bot.send_message(cid, translate("❌ No current asset set. Please configure one first.", cid))
+        return
+
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton("🌐 DEX (Orderly Futures)", callback_data=f"exec_sig_dex:{asset}"),
+        InlineKeyboardButton("💱 CEX (Binance Spot)", callback_data=f"exec_sig_cex:{asset}")
+    )
+    bot.send_message(cid, translate(f"Select exchange for {asset}:", cid), reply_markup=markup)
+
+
+def execute_signal(m, asset=None, exchange=None):
     if m.chat.type != 'private': return
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
@@ -656,11 +696,13 @@ def execute_signal(m, asset=None):
             return
 
     interval = get_setting("interval")
+    exchange_label = "DEX" if exchange == "dex" else "CEX" if exchange == "cex" else ""
+    exchange_suffix = f" ({exchange_label})" if exchange_label else ""
 
-    bot.send_message(cid, translate(f"Processing signal for {asset} interval {interval} ...", cid))
+    bot.send_message(cid, translate(f"Processing signal for {asset} interval {interval}{exchange_suffix} ...", cid))
     time.sleep(1)
     try:
-        result = run_process_signal(asset_override=asset)  # Pass the selected asset
+        result = run_process_signal(asset_override=asset, exchange_override=exchange)
     except Exception as e:
         result = f"Error: {str(e)}"
 
@@ -696,49 +738,52 @@ def ListSettings(m):
     message_lines.append("⚙️ BOT SETTINGS\n")
     message_lines.append("═══════════════════\n\n")
     
-    # Show exchange first
+    # Show current exchange
     exchange = settings.get("exchange", "dex")
     exchange_label = "🌐 DEX (Orderly Futures)" if exchange == "dex" else "💱 CEX (Binance Spot)"
-    message_lines.append(f"🔄 Exchange: {exchange_label}\n\n")
+    message_lines.append(f"🔄 Active Exchange: {exchange_label}\n\n")
     
-    message_lines.append("⏰ Trading:\n")
-    trading_keys = [
+    # Shared settings
+    message_lines.append("📋 Shared Settings:\n")
+    shared_keys = [
         ("🌟", "current_asset", "Current Asset"),
         ("⏱️", "interval", "Interval"),
         ("🎯", "take_profit", "Take Profit"),
+    ]
+    for emoji, key, label in shared_keys:
+        if key in settings:
+            value = settings[key]
+            if key == "take_profit":
+                value = f"{value}%"
+            message_lines.append(f"{emoji} {label}: {value}\n")
+
+    dex_mode = settings.get("auto_trade_dex", "False")
+    cex_mode = settings.get("auto_trade_cex", "False")
+    message_lines.append(f"🤖 Auto Mode DEX: {dex_mode}\n")
+    message_lines.append(f"🤖 Auto Mode CEX: {cex_mode}\n")
+    
+    # DEX-only settings
+    message_lines.append("\n🌐 DEX Only (Orderly Futures):\n")
+    dex_keys = [
         ("🛡️", "stop_loss", "Stop Loss"),
         ("⚖️", "leverage", "Leverage"),
     ]
-    
-    for emoji, key, label in trading_keys:
+    for emoji, key, label in dex_keys:
         if key in settings:
             value = settings[key]
-            if key in ["take_profit", "stop_loss"]:
+            if key == "stop_loss":
                 value = f"{value}%"
-                if key == "stop_loss" and exchange == "cex":
-                    value += " (N/A for spot)"
             elif key == "leverage":
                 value = f"{value}x"
-                if exchange == "cex":
-                    value += " (N/A for spot)"
             message_lines.append(f"{emoji} {label}: {value}\n")
+    message_lines.append("📊 Daily trade limit: 1/day\n")
     
-    message_lines.append("\n⚙️ Configuration:\n")
-    config_keys = [
-        ("🤖", "auto_trade", "Auto Trade")
-    ]
-    
-    for emoji, key, label in config_keys:
-        if key in settings:
-            value = settings[key]
-            if key == "auto_trade": # add for automatic option
-                if value == "Automatic":
-                    value = "🤖 Automatic (30s auto-trade)"
-                elif value == "Signal":
-                    value = "📡 Signal Mode (30s alerts)"
-                else:
-                    value = "❌ OFF"
-            message_lines.append(f"{emoji} {label}: {value}\n")
+    # CEX-only settings
+    message_lines.append("\n💱 CEX Only (Binance Spot):\n")
+    message_lines.append("🛡️ Stop Loss: N/A (can hold)\n")
+    message_lines.append("⚖️ Leverage: N/A (spot)\n")
+    message_lines.append("📊 Daily trades: Unlimited\n")
+    message_lines.append("🟢 Mode: BUY only (long-only)\n")
     
     # Add timestamp
     from datetime import datetime
