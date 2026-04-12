@@ -1148,7 +1148,7 @@ def autotrade():
                         dex_result = scalper.analyze_signal(asset, interval, exchange_override="dex")
                         if dex_result.get("approved"):
                             if dex_mode == "Signal":
-                                send_bot_message(f"📡 DEX SIGNAL ALERT\n{dex_result['resume_of_analysis']}")
+                                send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 DEX SIGNAL ALERT\n{dex_result['resume_of_analysis']}")
                                 logger.info(f"📡 DEX signal alert sent for {asset}")
                             else:
                                 order_payload = {
@@ -1161,7 +1161,7 @@ def autotrade():
                                 }
                                 place_futures_order(order_payload)
                                 logger.info(f"🚀 Orderly futures order placed: {order_payload}")
-                                send_bot_message(f"🚀 DEX ORDER EXECUTED\n{dex_result['resume_of_analysis']}")
+                                send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"🚀 DEX ORDER EXECUTED\n{dex_result['resume_of_analysis']}")
                 else:
                     logger.info("⏰ DEX mode active but outside preferred window")
 
@@ -1173,7 +1173,7 @@ def autotrade():
                     cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
                     if cex_result.get("approved"):
                         if cex_mode == "Signal":
-                            send_bot_message(f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
+                            send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
                             logger.info(f"📡 CEX signal alert sent for {asset}")
                         else:
                             order_payload = {
@@ -1184,7 +1184,7 @@ def autotrade():
                             }
                             place_spot_order(order_payload)
                             logger.info(f"🚀 Binance spot order placed: {order_payload}")
-                            send_bot_message(f"🚀 CEX ORDER EXECUTED\n{cex_result['resume_of_analysis']}")
+                            send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"🚀 CEX ORDER EXECUTED\n{cex_result['resume_of_analysis']}")
 
             time.sleep(30)
         except Exception as e:
