@@ -738,11 +738,6 @@ def ListSettings(m):
     message_lines.append("⚙️ BOT SETTINGS\n")
     message_lines.append("═══════════════════\n\n")
     
-    # Show current exchange
-    exchange = settings.get("exchange", "dex")
-    exchange_label = "🌐 DEX (Orderly Futures)" if exchange == "dex" else "💱 CEX (Binance Spot)"
-    message_lines.append(f"🔄 Active Exchange: {exchange_label}\n\n")
-    
     # Shared settings
     message_lines.append("📋 Shared Settings:\n")
     shared_keys = [
@@ -780,9 +775,6 @@ def ListSettings(m):
     
     # CEX-only settings
     message_lines.append("\n💱 CEX Only (Binance Spot):\n")
-    message_lines.append("🛡️ Stop Loss: N/A (can hold)\n")
-    message_lines.append("⚖️ Leverage: N/A (spot)\n")
-    message_lines.append("📊 Daily trades: Unlimited\n")
     message_lines.append("🟢 Mode: BUY only (long-only)\n")
     
     # Add timestamp
