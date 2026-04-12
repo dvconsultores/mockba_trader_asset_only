@@ -50,6 +50,8 @@ from trading_bot.send_bot_message import send_bot_message
 # Initialize database tables on startup
 initialize_database_tables()
 
+_LAST_SIGNAL_ALERTS: Dict[str, float] = {}
+
 
 def _get_exchange_mode(exchange: str) -> str:
     """Return mode for exchange.
@@ -61,6 +63,17 @@ def _get_exchange_mode(exchange: str) -> str:
     if mode in ("False", "Signal", "Automatic", "True"):
         return "Automatic" if mode == "True" else mode
     return "False"
+
+
+def _should_send_signal_alert(asset: str, side: str, reason: str, cooldown_seconds: int = 300) -> bool:
+    """Debounce repeated signal alerts across autotrade polling cycles."""
+    now = time.time()
+    key = f"{asset}:{side}:{reason}"
+    last_sent_at = _LAST_SIGNAL_ALERTS.get(key, 0)
+    if now - last_sent_at < cooldown_seconds:
+        return False
+    _LAST_SIGNAL_ALERTS[key] = now
+    return True
 
 
 class ReversalScalper:
@@ -1137,54 +1150,59 @@ def autotrade():
                 time.sleep(30)
                 continue
 
+            has_dex_position = get_user_statistics() > 0 if dex_mode in ("Signal", "Automatic") else False
+            has_cex_order = has_open_orders_binance() if cex_mode in ("Signal", "Automatic") else False
+
+            if has_dex_position or has_cex_order:
+                if has_dex_position:
+                    logger.info("📋 DEX has open position(s) — skipping pattern search")
+                if has_cex_order:
+                    logger.info("📋 Binance has open order(s) — skipping pattern search")
+                time.sleep(30)
+                continue
+
             scalper = ReversalScalper()
 
             # DEX cycle
             if dex_mode in ("Signal", "Automatic"):
                 if scalper._is_preferred_time():
-                    if get_user_statistics() > 0:
-                        logger.info("📋 DEX has open position(s) — skipping pattern search")
-                    else:
-                        dex_result = scalper.analyze_signal(asset, interval, exchange_override="dex")
-                        if dex_result.get("approved"):
-                            if dex_mode == "Signal":
+                    dex_result = scalper.analyze_signal(asset, interval, exchange_override="dex")
+                    if dex_result.get("approved"):
+                        if dex_mode == "Signal":
+                            if _should_send_signal_alert(asset, dex_result['side'], dex_result.get('resume_of_analysis', '')):
                                 send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 DEX SIGNAL ALERT\n{dex_result['resume_of_analysis']}")
                                 logger.info(f"📡 DEX signal alert sent for {asset}")
-                            else:
-                                order_payload = {
-                                    "symbol": dex_result['symbol'],
-                                    "side": dex_result['side'],
-                                    "entry": dex_result['entry'],
-                                    "take_profit": dex_result['take_profit'],
-                                    "stop_loss": dex_result['stop_loss'],
-                                    "leverage": int(get_setting("leverage") or 5)
-                                }
-                                place_futures_order(order_payload)
-                                logger.info(f"🚀 Orderly futures order placed: {order_payload}")
-                                send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"🚀 DEX ORDER EXECUTED\n{dex_result['resume_of_analysis']}")
+                        else:
+                            order_payload = {
+                                "symbol": dex_result['symbol'],
+                                "side": dex_result['side'],
+                                "entry": dex_result['entry'],
+                                "take_profit": dex_result['take_profit'],
+                                "stop_loss": dex_result['stop_loss'],
+                                "leverage": int(get_setting("leverage") or 5)
+                            }
+                            place_futures_order(order_payload)
+                            logger.info(f"🚀 Orderly futures order placed: {order_payload}")
                 else:
                     logger.info("⏰ DEX mode active but outside preferred window")
 
             # CEX cycle
             if cex_mode in ("Signal", "Automatic"):
-                if has_open_orders_binance():
-                    logger.info("📋 Binance has open order(s) — skipping pattern search")
-                else:
-                    cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
-                    if cex_result.get("approved"):
-                        if cex_mode == "Signal":
+                cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
+                if cex_result.get("approved"):
+                    if cex_mode == "Signal":
+                        if _should_send_signal_alert(asset, cex_result['side'], cex_result.get('resume_of_analysis', '')):
                             send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
                             logger.info(f"📡 CEX signal alert sent for {asset}")
-                        else:
-                            order_payload = {
-                                "symbol": cex_result['symbol'],
-                                "side": cex_result['side'],
-                                "entry": cex_result['entry'],
-                                "take_profit": cex_result['take_profit'],
-                            }
-                            place_spot_order(order_payload)
-                            logger.info(f"🚀 Binance spot order placed: {order_payload}")
-                            send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"🚀 CEX ORDER EXECUTED\n{cex_result['resume_of_analysis']}")
+                    else:
+                        order_payload = {
+                            "symbol": cex_result['symbol'],
+                            "side": cex_result['side'],
+                            "entry": cex_result['entry'],
+                            "take_profit": cex_result['take_profit'],
+                        }
+                        place_spot_order(order_payload)
+                        logger.info(f"🚀 Binance spot order placed: {order_payload}")
 
             time.sleep(30)
         except Exception as e:
