@@ -6,7 +6,8 @@ from contextlib import contextmanager
 from datetime import datetime
 
 from logs.log_config import apolo_trader_logger as logger
-DB_PATH = "data/trading.db"
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.path.join(PROJECT_ROOT, "data", "trading.db")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 @contextmanager
