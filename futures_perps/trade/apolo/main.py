@@ -1151,7 +1151,7 @@ def autotrade():
                 continue
 
             has_dex_position = get_user_statistics() > 0 if dex_mode in ("Signal", "Automatic") else False
-            has_cex_order = has_open_orders_binance() if cex_mode in ("Signal", "Automatic") else False
+            has_cex_order = has_open_orders_binance(fail_safe=True) if cex_mode in ("Signal", "Automatic") else False
 
             if has_dex_position or has_cex_order:
                 if has_dex_position:

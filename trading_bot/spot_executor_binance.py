@@ -81,11 +81,14 @@ def get_binance_exchange_info(symbol: str) -> dict:
         return None
 
 
-def has_open_orders_binance(symbol: str = None) -> bool:
+def has_open_orders_binance(symbol: str = None, fail_safe: bool = False) -> bool:
     """Check if there are any open limit orders on Binance.
     Returns True if pending orders exist, False otherwise.
     """
     if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
+        if fail_safe:
+            logger.warning("⚠️ Binance API keys missing — fail-safe assumes open orders exist")
+            return True
         return False
 
     params = {"timestamp": int(time.time() * 1000)}
@@ -102,6 +105,9 @@ def has_open_orders_binance(symbol: str = None) -> bool:
         )
         if r.status_code != 200:
             logger.error(f"❌ Binance open orders check error: {r.status_code}")
+            if fail_safe:
+                logger.warning("⚠️ Binance open-order check failed — fail-safe suppressing signals")
+                return True
             return False
 
         orders = r.json()
@@ -111,6 +117,9 @@ def has_open_orders_binance(symbol: str = None) -> bool:
         return False
     except Exception as e:
         logger.error(f"❌ Binance open orders error: {e}")
+        if fail_safe:
+            logger.warning("⚠️ Binance open-order exception — fail-safe suppressing signals")
+            return True
         return False
 
 
