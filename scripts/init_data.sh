@@ -19,4 +19,13 @@ fi
 # Keep directory/file writable for current user
 chmod u+rwX "$DATA_DIR" "$DB_FILE"
 
+# Apply DB migration for signal_history.exchange when available
+if command -v python >/dev/null 2>&1; then
+  (
+    cd "$PROJECT_ROOT" && \
+    python -c "from db.db_ops import initialize_database_tables; initialize_database_tables()" && \
+    python -m db.migrations.003_add_signal_history_exchange || true
+  )
+fi
+
 echo "Data bootstrap complete."

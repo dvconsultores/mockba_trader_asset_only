@@ -852,7 +852,7 @@ class ReversalScalper:
             # === LOG REJECTED SIGNAL ===
             consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
             save_signal_to_history(
-                asset=asset, regime=regime, obi=obi, pattern_type=None,
+                asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=None,
                 approved=False, rejection_reasons=result['rejection_reasons'],
                 manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
                 candle_count=max(consecutive_up, consecutive_down)
@@ -869,7 +869,7 @@ class ReversalScalper:
             # === LOG REJECTED SIGNAL ===
             consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
             save_signal_to_history(
-                asset=asset, regime=regime, obi=obi, pattern_type=None,
+                asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=None,
                 approved=False, rejection_reasons=result['rejection_reasons'],
                 manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
                 candle_count=max(consecutive_up, consecutive_down)
@@ -918,7 +918,7 @@ class ReversalScalper:
             # === LOG REJECTED SIGNAL ===
             consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
             save_signal_to_history(
-                asset=asset, regime=regime, obi=obi, pattern_type=None,
+                asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=None,
                 approved=False, rejection_reasons=result['rejection_reasons'],
                 manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
                 candle_count=max(consecutive_up, consecutive_down)
@@ -934,7 +934,7 @@ class ReversalScalper:
             
             consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
             save_signal_to_history(
-                asset=asset, regime=regime, obi=obi, pattern_type=active_signal.get('reason'),
+                asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=active_signal.get('reason'),
                 approved=False, rejection_reasons=result['rejection_reasons'],
                 manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
                 candle_count=max(consecutive_up, consecutive_down)
@@ -962,7 +962,7 @@ class ReversalScalper:
             # === LOG REJECTED SIGNAL ===
             consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
             save_signal_to_history(
-                asset=asset, regime=regime, obi=obi, pattern_type=active_signal.get('reason') if active_signal else None,
+                asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=active_signal.get('reason') if active_signal else None,
                 approved=False, rejection_reasons=result['rejection_reasons'],
                 manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
                 candle_count=max(consecutive_up, consecutive_down)
@@ -1059,6 +1059,7 @@ class ReversalScalper:
         consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
         signal_id = save_signal_to_history(
             asset=asset,
+            exchange=exchange,
             regime=regime,
             obi=obi,
             pattern_type=active_signal.get('reason', 'Unknown'),

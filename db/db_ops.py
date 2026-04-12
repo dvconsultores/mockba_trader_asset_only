@@ -49,6 +49,7 @@ def initialize_database_tables():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 asset TEXT NOT NULL,
+                exchange TEXT DEFAULT 'unknown',
                 regime TEXT,
                 obi REAL,
                 pattern_type TEXT,
@@ -82,6 +83,8 @@ def initialize_database_tables():
                 INSERT OR IGNORE INTO settings (key, value)
                 VALUES (?, ?);
             """, (key, value))
+
+        _ensure_signal_history_schema(cur)
         
         conn.commit()
         
@@ -184,6 +187,18 @@ def _ensure_trades_daily_schema(cur):
         )
         cur.connection.commit()
 
+
+def _ensure_signal_history_schema(cur):
+    """Ensure signal_history has expected columns for current analytics."""
+    cur.execute("PRAGMA table_info(signal_history)")
+    columns = [row[1] for row in cur.fetchall()]
+
+    if columns and 'exchange' not in columns:
+        cur.execute(
+            "ALTER TABLE signal_history ADD COLUMN exchange TEXT DEFAULT 'unknown'"
+        )
+        cur.connection.commit()
+
 def get_trades_today() -> int:
     """Get today's positive trade count."""
     today = get_today_date_utc4()
@@ -218,6 +233,7 @@ def increment_trades_today() -> int:
 
 def save_signal_to_history(
     asset: str,
+    exchange: str,
     regime: str,
     obi: float,
     pattern_type: str | None,
@@ -244,15 +260,16 @@ def save_signal_to_history(
     
     with get_db_connection() as conn:
         cur = conn.cursor()
+        _ensure_signal_history_schema(cur)
         cur.execute("""
             INSERT INTO signal_history (
-                asset, regime, obi, pattern_type, approved, side,
+                asset, exchange, regime, obi, pattern_type, approved, side,
                 entry_price, stop_loss, take_profit,
                 rejection_reasons, manipulation_warnings,
                 atr, live_price, candle_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
-            asset, regime, obi, pattern_type, int(approved), side,
+            asset, exchange, regime, obi, pattern_type, int(approved), side,
             entry_price, stop_loss, take_profit,
             rejection_str, manipulation_str,
             atr, live_price, candle_count
