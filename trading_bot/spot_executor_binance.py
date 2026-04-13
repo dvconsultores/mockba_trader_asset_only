@@ -91,9 +91,10 @@ def has_open_orders_binance(symbol: str = None, fail_safe: bool = False) -> bool
             return True
         return False
 
+    binance_symbol = get_binance_symbol(symbol) if symbol else None
     params = {"timestamp": int(time.time() * 1000)}
-    if symbol:
-        params["symbol"] = get_binance_symbol(symbol)
+    if binance_symbol:
+        params["symbol"] = binance_symbol
     params["signature"] = _sign(params)
 
     try:
@@ -104,7 +105,35 @@ def has_open_orders_binance(symbol: str = None, fail_safe: bool = False) -> bool
             timeout=10
         )
         if r.status_code != 200:
-            logger.error(f"❌ Binance open orders check error: {r.status_code}")
+            error_body = (r.text or "")[:300]
+            logger.error(f"❌ Binance open orders check error: {r.status_code} {error_body}")
+
+            # Some assets are valid in analysis but not in Binance spot openOrders(symbol).
+            # Retry once without symbol to avoid false blocking.
+            if binance_symbol and r.status_code == 400:
+                body_lower = error_body.lower()
+                if "invalid symbol" in body_lower or '"code":-1121' in body_lower:
+                    logger.warning(
+                        f"⚠️ Binance symbol {binance_symbol} rejected in openOrders; retrying without symbol filter"
+                    )
+                    retry_params = {"timestamp": int(time.time() * 1000)}
+                    retry_params["signature"] = _sign(retry_params)
+                    retry_resp = requests.get(
+                        f"{BINANCE_BASE_URL}/api/v3/openOrders",
+                        params=retry_params,
+                        headers=_headers(),
+                        timeout=10
+                    )
+                    if retry_resp.status_code == 200:
+                        orders = retry_resp.json()
+                        if orders:
+                            logger.info(f"📋 Binance has {len(orders)} open order(s) — skipping pattern search")
+                            return True
+                        return False
+                    logger.error(
+                        f"❌ Binance open orders retry error: {retry_resp.status_code} {(retry_resp.text or '')[:300]}"
+                    )
+
             if fail_safe:
                 logger.warning("⚠️ Binance open-order check failed — fail-safe suppressing signals")
                 return True
