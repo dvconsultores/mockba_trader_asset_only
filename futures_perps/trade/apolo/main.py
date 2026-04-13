@@ -1116,6 +1116,11 @@ def process_signal(asset_override: str = None, exchange_override: str = None) ->
         output = result['resume_of_analysis']
         if result['approved'] and _get_exchange_mode(exchange) == "Automatic":
             if exchange == "cex":
+                if has_open_orders_binance(fail_safe=True):
+                    logger.info("📋 Binance has open order(s) — automatic CEX execution skipped")
+                    output += "\n\n📋 Binance has open order(s) — CEX automatic execution skipped"
+                    return output
+
                 order_payload = {
                     "symbol": result['symbol'],
                     "side": result['side'],
@@ -1163,7 +1168,7 @@ def autotrade():
                 continue
 
             has_dex_position = get_user_statistics() > 0 if dex_mode in ("Signal", "Automatic") else False
-            has_cex_order = has_open_orders_binance(symbol=asset, fail_safe=False) if cex_mode in ("Signal", "Automatic") else False
+            has_cex_order = has_open_orders_binance(fail_safe=True) if cex_mode in ("Signal", "Automatic") else False
 
             if has_dex_position or has_cex_order:
                 if has_dex_position:
@@ -1202,6 +1207,11 @@ def autotrade():
             if cex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("cex", 60):
                 cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
                 if cex_result.get("approved"):
+                    if has_open_orders_binance(fail_safe=True):
+                        logger.info("📋 Binance has open order(s) — skipping CEX signal/auto action")
+                        time.sleep(30)
+                        continue
+
                     if cex_mode == "Signal":
                         if _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
                             send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
