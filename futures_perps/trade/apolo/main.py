@@ -155,11 +155,11 @@ class ReversalScalper:
         # === TIME FILTER PARAMETERS (UTC-4) ===
         # Mon-Fri: 6am-12pm | Sun: 8am-10am | Sat: off
         self.PREFERRED_WINDOWS = {
-            'Monday':    [(6, 11)],
-            'Tuesday':   [(6, 11)],
-            'Wednesday': [(6, 11)],
-            'Thursday':  [(6, 11)],
-            'Friday':    [(6, 11)],
+            'Monday':    [(6, 12)],
+            'Tuesday':   [(6, 12)],
+            'Wednesday': [(6, 12)],
+            'Thursday':  [(6, 12)],
+            'Friday':    [(6, 12)],
         }
         
         # === LIVE PRICE VALIDATION ===
