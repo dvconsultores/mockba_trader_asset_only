@@ -24,7 +24,8 @@ if command -v python >/dev/null 2>&1; then
   (
     cd "$PROJECT_ROOT" && \
     python -c "from db.db_ops import initialize_database_tables; initialize_database_tables()" && \
-    python -m db.migrations.003_add_signal_history_exchange || true
+    python -m db.migrations.003_add_signal_history_exchange && \
+    python -m db.migrations.004_add_cex_capital_setting || true
   )
 fi
 

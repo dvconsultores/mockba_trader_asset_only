@@ -75,7 +75,8 @@ def initialize_database_tables():
             ('stop_loss', '0.3'),
             ('auto_trade_dex', 'False'),
             ('auto_trade_cex', 'False'),
-            ('leverage', '10'),
+            ('cex_capital', '10'),  # USDT amount per Binance spot position
+            ('leverage', '1000'),
             ('exchange', 'dex'),  # 'dex' (Orderly futures) or 'cex' (Binance spot)
         ]
         for key, value in default_settings:

@@ -175,13 +175,22 @@ def place_spot_order(signal: dict):
         logger.error(f"❌ Insufficient USDT balance: {balance}")
         return None
 
-    # Position sizing: use risk_level % of balance
+    # Position sizing for CEX: fixed USDT capital per position
     try:
-        risk_pct = float(get_setting('risk_level') or 10)
+        configured_capital = float(get_setting('cex_capital') or 0)
     except (TypeError, ValueError):
-        risk_pct = 10.0
+        configured_capital = 0.0
 
-    trade_amount = balance * (risk_pct / 100)
+    if configured_capital <= 0:
+        # Backward-compatible fallback for old DBs
+        try:
+            risk_pct = float(get_setting('risk_level') or 10)
+        except (TypeError, ValueError):
+            risk_pct = 10.0
+        trade_amount = balance * (risk_pct / 100)
+    else:
+        trade_amount = configured_capital
+
     trade_amount = max(trade_amount, info['min_notional'])
     trade_amount = min(trade_amount, balance)
 

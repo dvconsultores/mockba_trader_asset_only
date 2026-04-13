@@ -235,6 +235,7 @@ def callback_handler(call):
             'set_min_tp': set_take_profit,
             'set_min_sl': set_stop_loss,
             'set_auto_trade': set_auto_trade,
+            'set_cex_capital': set_cex_capital,
             'set_leverage': set_leverage,
             'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
@@ -266,6 +267,7 @@ def settings(m):
         "set_take_profit": "📈 Take Profit",
         "set_stop_loss": "📉 Stop Loss (DEX only)",
         "set_auto_trade": "🤖 Auto Trade",
+        "set_cex_capital": "💵 CEX Capital (USDT)",
         "set_leverage": "⚖️ Leverage (DEX only)"
     }
     
@@ -304,6 +306,9 @@ def upsert_assets(m):
     elif gp1 == "leverage":
         if not is_integer(valor) or not (1 <= int(valor) <= 50):
             valid, error_msg = False, "Leverage must be integer 1–50"
+    elif gp1 == "cex_capital":
+        if not is_float(valor) or float(valor) <= 0:
+            valid, error_msg = False, "CEX capital must be a positive number in USDT"
     elif gp1 == "auto_trade":
         if valor not in ("True", "False"):
             valid, error_msg = False, "Auto Trade must be 'True' or 'False'"
@@ -508,9 +513,27 @@ def set_auto_trade(m):
         InlineKeyboardButton(f"🤖 CEX Auto {'✅' if cex_mode == 'Automatic' else ''}", callback_data="set_mode:cex:Automatic")
     )
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
+               InlineKeyboardButton(translate("Next: CEX Capital ➡️", cid), callback_data="set_cex_capital"))
     
     bot.send_message(cid, translate("Select Auto Trade mode for each exchange:", cid), reply_markup=markup)
+
+def set_cex_capital(m):
+    if m.chat.type != 'private': return
+    global gp1; gp1 = "cex_capital"
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    current = get_setting("cex_capital") or "10"
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
+
+    bot.send_message(
+        cid,
+        translate(f"Enter CEX capital in USDT per Binance position. Current: {current}", cid),
+        reply_markup=markup
+    )
+    bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
 
 def set_leverage(m):
     if m.chat.type != 'private': return
@@ -776,6 +799,8 @@ def ListSettings(m):
     # CEX-only settings
     message_lines.append("\n💱 CEX Only (Binance Spot):\n")
     message_lines.append("🟢 Mode: BUY only (long-only)\n")
+    cex_capital = settings.get("cex_capital", "10")
+    message_lines.append(f"💵 Capital per position: {cex_capital} USDT\n")
     
     # Add timestamp
     from datetime import datetime
