@@ -1174,7 +1174,7 @@ def autotrade():
                 if has_dex_position:
                     logger.info("📋 DEX has open position(s) — skipping pattern search")
                 if has_cex_order:
-                    logger.info("📋 Binance has open order(s) — skipping pattern search")
+                    logger.info("📋 Open orders ongoing, can't send signal right now")
                 time.sleep(30)
                 continue
 
@@ -1208,7 +1208,7 @@ def autotrade():
                 cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
                 if cex_result.get("approved"):
                     if has_open_orders_binance(fail_safe=True):
-                        logger.info("📋 Binance has open order(s) — skipping CEX signal/auto action")
+                        logger.info("📋 Open orders ongoing, can't send signal right now")
                         time.sleep(30)
                         continue
 
