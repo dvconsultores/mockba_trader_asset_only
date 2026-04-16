@@ -616,10 +616,10 @@ class ReversalScalper:
         """Calculate deviation between last candle close and current live price."""
         return abs(live_price - candle_close) / candle_close
     
-    def _format_obi_display(self, obi: float, obi_details: Dict, live_price: float, orderbook: Dict, market_trades: List = None) -> str:
+    def _format_obi_display(self, obi: float, obi_details: Dict, live_price: float, orderbook: Dict, market_trades: List = None, exchange: str = "dex") -> str:
         """Format order book info for Telegram (NO markdown)."""
         direction = "🟢 BULLISH" if obi > 1.0 else "🔴 BEARISH" if obi < 1.0 else "⚪ NEUTRAL"
-        leverage = int(get_setting("leverage") or 5)
+        leverage = 1 if exchange == "cex" else int(get_setting("leverage") or 5)
         # Zero-impact max: smallest best level (fits entirely in top-of-book)
         best_bid_qty = 0.0
         best_ask_qty = 0.0
@@ -653,10 +653,14 @@ class ReversalScalper:
             f"• Bids: {obi_details['bids']:.0f} | Asks: {obi_details['asks']:.0f}",
             f"• Imbalance: {obi_details['imbalance_pct']:+.1f}%",
             f"• OBI Ratio: {obi:.2f} → {direction}",
-            f"• 🟢 No-impact max: {zero_impact_notional:.0f} USDC ({zero_impact_margin:.0f} margin @ {leverage}x)",
-            f"• 💰 Safe max: {max_notional:.0f} USDC ({max_margin:.0f} margin @ {leverage}x)",
-            f"• 📈 {trade_label}",
         ]
+        if exchange == "cex":
+            lines.append(f"• 🟢 No-impact max: {zero_impact_notional:.0f} USDC (spot, no leverage)")
+            lines.append(f"• 💰 Safe max: {max_notional:.0f} USDC (spot, no leverage)")
+        else:
+            lines.append(f"• 🟢 No-impact max: {zero_impact_notional:.0f} USDC ({zero_impact_margin:.0f} margin @ {leverage}x)")
+            lines.append(f"• 💰 Safe max: {max_notional:.0f} USDC ({max_margin:.0f} margin @ {leverage}x)")
+        lines.append(f"• 📈 {trade_label}")
         return "\n".join(lines)
     
     def _format_regime_display(self, regime_info: Dict) -> str:
@@ -807,7 +811,7 @@ class ReversalScalper:
         display_lines = [
             f"📊 {display_symbol} | {interval} | Price: {live_price:.6f} | {exchange_label}",
             "",
-            self._format_obi_display(obi, obi_details, live_price, orderbook, market_trades),
+            self._format_obi_display(obi, obi_details, live_price, orderbook, market_trades, exchange=exchange),
             "",
             self._format_regime_display(regime_info),
             "",
@@ -1170,19 +1174,13 @@ def autotrade():
             has_dex_position = get_user_statistics() > 0 if dex_mode in ("Signal", "Automatic") else False
             has_cex_order = has_open_orders_binance(fail_safe=True) if cex_mode in ("Signal", "Automatic") else False
 
-            if has_dex_position or has_cex_order:
-                if has_dex_position:
-                    logger.info("📋 DEX has open position(s) — skipping pattern search")
-                if has_cex_order:
-                    logger.info("📋 Open orders ongoing, can't send signal right now")
-                time.sleep(30)
-                continue
-
             scalper = ReversalScalper()
 
             # DEX cycle
             if dex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("dex", 30):
-                if scalper._is_preferred_time():
+                if has_dex_position:
+                    logger.info("📋 DEX has open position(s) — skipping DEX pattern search")
+                elif scalper._is_preferred_time():
                     dex_result = scalper.analyze_signal(asset, interval, exchange_override="dex")
                     if dex_result.get("approved"):
                         if dex_mode == "Signal":
@@ -1205,26 +1203,24 @@ def autotrade():
 
             # CEX cycle
             if cex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("cex", 60):
-                cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
-                if cex_result.get("approved"):
-                    if has_open_orders_binance(fail_safe=True):
-                        logger.info("📋 Open orders ongoing, can't send signal right now")
-                        time.sleep(30)
-                        continue
-
-                    if cex_mode == "Signal":
-                        if _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
-                            send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
-                            logger.info(f"📡 CEX signal alert sent for {asset}")
-                    else:
-                        order_payload = {
-                            "symbol": cex_result['symbol'],
-                            "side": cex_result['side'],
-                            "entry": cex_result['entry'],
-                            "take_profit": cex_result['take_profit'],
-                        }
-                        place_spot_order(order_payload)
-                        logger.info(f"🚀 Binance spot order placed: {order_payload}")
+                if has_cex_order:
+                    logger.info("📋 CEX has open order(s) — skipping CEX pattern search")
+                else:
+                    cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
+                    if cex_result.get("approved"):
+                        if cex_mode == "Signal":
+                            if _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
+                                send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
+                                logger.info(f"📡 CEX signal alert sent for {asset}")
+                        else:
+                            order_payload = {
+                                "symbol": cex_result['symbol'],
+                                "side": cex_result['side'],
+                                "entry": cex_result['entry'],
+                                "take_profit": cex_result['take_profit'],
+                            }
+                            place_spot_order(order_payload)
+                            logger.info(f"🚀 Binance spot order placed: {order_payload}")
 
             time.sleep(30)
         except Exception as e:
