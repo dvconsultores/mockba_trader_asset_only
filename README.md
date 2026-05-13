@@ -36,7 +36,7 @@ REDIS_URL=tu_url_de_redis  # Opcional, para cachear traducciones
 
 ### 2. Archivo de Plantilla de Prompt LLM
 
-El archivo `llm_prompt_template.txt` se encuentra en `futures_perps/trade/apolo/` y contiene tu plantilla de prompt personalizada para el análisis LLM. Este archivo se puede editar sin reconstruir.
+El archivo `llm_prompt_template.txt` se encuentra en `futures_perps/trade/trade/` y contiene tu plantilla de prompt personalizada para el análisis LLM. Este archivo se puede editar sin reconstruir.
 
 Ejemplo de plantilla básica:
 
@@ -77,7 +77,7 @@ El bot utiliza SQLite para configuraciones. Las tablas de la base de datos se in
 4. Para el bot de trading, ejecuta:
 
    ```bash
-   python futures_perps/trade/apolo/main.py
+   python futures_perps/trade/trade/main.py
    ```
 
 ### Opción 2: Despliegue con Docker
@@ -121,7 +121,7 @@ El bot utiliza SQLite para configuraciones. Las tablas de la base de datos se in
 
 ## Estructura del Proyecto
 
-- `futures_perps/trade/apolo/main.py`: Lógica principal del bot
+- `futures_perps/trade/trade/main.py`: Lógica principal del bot
 - `telegram.py`: Bot de Telegram para control manual
 - `db/db_ops.py`: Operaciones de base de datos SQLite
 - `logs/`: Directorio de logs
@@ -134,7 +134,7 @@ El bot utiliza SQLite para configuraciones. Las tablas de la base de datos se in
 
 - **Error de Conexión a Apolo**: Verifica tus claves API y permisos.
 - **Error de LLM**: Asegúrate de que DEEP_SEEK_API_KEY sea válida.
-- **Archivo No Encontrado**: Asegúrate de que `llm_prompt_template.txt` exista en `futures_perps/trade/apolo/`.
+- **Archivo No Encontrado**: Asegúrate de que `llm_prompt_template.txt` exista en `futures_perps/trade/trade/`.
 - **Errores de Importación de Python**: Ejecuta `pip install -r requirements.txt` y limpia `__pycache__` si es necesario.
 
 # 🤖 Guía Completa de Configuración

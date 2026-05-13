@@ -26,12 +26,12 @@ if str(PROJECT_ROOT) not in sys.path:
 # === IMPORTS FROM YOUR EXISTING PROJECT ===
 from db.db_ops import get_setting, initialize_database_tables, get_trades_today, increment_trades_today, save_signal_to_history
 from logs.log_config import apolo_trader_logger as logger
-from futures_perps.trade.apolo.historical_data import (
+from futures_perps.trade.trade.historical_data import (
     get_historical_data_limit_apolo, 
     get_orderbook,
     get_market_trades
 )
-from futures_perps.trade.apolo.binance_data import (
+from futures_perps.trade.trade.binance_data import (
     get_historical_data_binance,
     get_orderbook_binance,
     get_binance_price,

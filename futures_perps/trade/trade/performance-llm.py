@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from logs.log_config import apolo_trader_logger as logger
-from futures_perps.trade.apolo.get_trades import get_trades
+from futures_perps.trade.trade.get_trades import get_trades
 
 # Parameters to extract from main.py
 REGIME_FILTER_PARAMETER_KEYS = [

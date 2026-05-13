@@ -15,7 +15,7 @@ from db.db_ops import (
     upsert_setting, get_all_settings, initialize_database_tables, get_setting,
     add_asset, remove_asset, get_asset_list
 )
-from futures_perps.trade.apolo.main import process_signal as run_process_signal, autotrade
+from futures_perps.trade.trade.main import process_signal as run_process_signal, autotrade
 import json
 from datetime import timedelta
 # Load environment variables
@@ -34,7 +34,7 @@ def _load_analyze_trade_performance():
         os.path.dirname(__file__),
         "futures_perps",
         "trade",
-        "apolo",
+        "trade",
         "performance-llm.py",
     )
     spec = importlib.util.spec_from_file_location("performance_llm", module_path)

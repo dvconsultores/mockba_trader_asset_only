@@ -106,4 +106,4 @@ venv.bak/
 .mypy_cache/
 .dmypy.json
 dmypy.json
-futures_perps/trade/apolo/llm_prompt_template.txt
+futures_perps/trade/trade/llm_prompt_template.txt
