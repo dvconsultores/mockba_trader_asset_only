@@ -119,7 +119,7 @@ def _print_arbitrage_signal(asset_label: str, prices: dict[str, Optional[float]]
 
 def main() -> None:
     # You can add one or multiple assets here: BTCUSDT, NEARUSDT, ETHUSDT, etc.
-    assets = ["BTCUSDT", "NEARUSDT"]
+    assets = ["BTCUSDT"]
 
     # Example token-only input supported as well: "BTC" -> BTCUSDT by default.
     token = "BTC"
