@@ -15,7 +15,7 @@ from db.db_ops import (
     upsert_setting, get_all_settings, initialize_database_tables, get_setting,
     add_asset, remove_asset, get_asset_list
 )
-from futures_perps.trade.trade.main import process_signal as run_process_signal, autotrade
+from trade.main import process_signal as run_process_signal, autotrade
 import json
 from datetime import timedelta
 # Load environment variables
@@ -32,8 +32,6 @@ TELEGRAM_MAX_MESSAGE_LEN = 4096
 def _load_analyze_trade_performance():
     module_path = os.path.join(
         os.path.dirname(__file__),
-        "futures_perps",
-        "trade",
         "trade",
         "performance-llm.py",
     )

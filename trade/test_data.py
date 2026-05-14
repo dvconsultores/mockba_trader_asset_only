@@ -17,11 +17,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from futures_perps.trade.trade.historical_data import (
+from trade.historical_data import (
     get_historical_data_limit_apolo,
     get_orderbook,
 )
-from futures_perps.trade.trade.main import ReversalScalper
+from trade.main import ReversalScalper
 from db.db_ops import get_setting, initialize_database_tables
 from logs.log_config import apolo_trader_logger as logger
 

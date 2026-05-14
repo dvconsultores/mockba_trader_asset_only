@@ -12,7 +12,7 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
 @contextmanager
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row  # enables dict-like access
     try:
         yield conn
@@ -63,6 +63,21 @@ def initialize_database_tables():
                 atr REAL,
                 live_price REAL,
                 candle_count INTEGER
+            );
+        """)
+
+        # remove old discovered chains table and use manual wallet mapping table
+        cur.execute("DROP TABLE IF EXISTS asset_chains;")
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS dex_asset_wallets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dex TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                wallet TEXT NOT NULL,
+                chain TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(dex, asset, chain)
             );
         """)
 
@@ -308,3 +323,72 @@ def get_signal_history(limit: int = 100, approved_only: bool = False):
             row_dict['manipulation_warnings'] = json.loads(row['manipulation_warnings'])
             result.append(row_dict)
         return result
+
+
+# === MANUAL DEX/ASSET/WALLET/CHAIN MAPPING ===
+
+def upsert_dex_asset_wallet(dex: str, asset: str, wallet: str, chain: str):
+    """Insert or update manual mapping for dex/asset/chain -> wallet."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO dex_asset_wallets (dex, asset, wallet, chain, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(dex, asset, chain) DO UPDATE SET
+                wallet = excluded.wallet,
+                updated_at = CURRENT_TIMESTAMP;
+        """, (dex.lower(), asset.upper(), wallet.strip(), chain.upper()))
+        conn.commit()
+
+
+def get_dex_asset_wallet(dex: str, asset: str, chain: str) -> str | None:
+    """Get wallet by dex/asset/chain."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT wallet
+            FROM dex_asset_wallets
+            WHERE dex = ? AND asset = ? AND chain = ?
+        """, (dex.lower(), asset.upper(), chain.upper()))
+        row = cur.fetchone()
+        return row['wallet'] if row else None
+
+
+def get_latest_dex_asset_wallet(dex: str, asset: str) -> tuple[str, str] | None:
+    """Get latest configured (chain, wallet) by dex and asset, regardless of chain."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT chain, wallet
+            FROM dex_asset_wallets
+            WHERE dex = ? AND asset = ?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+        """, (dex.lower(), asset.upper()))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return row['chain'], row['wallet']
+
+
+def get_dex_asset_chains(dex: str, asset: str) -> list:
+    """Get all configured chains by dex and asset."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT chain
+            FROM dex_asset_wallets
+            WHERE dex = ? AND asset = ?
+            ORDER BY chain
+        """, (dex.lower(), asset.upper()))
+        rows = cur.fetchall()
+        return [row['chain'] for row in rows]
+
+
+def clear_dex_asset_wallets():
+    """Delete all manual dex/asset/wallet/chain mappings."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM dex_asset_wallets")
+        conn.commit()
+        logger.info("✓ Cleared dex_asset_wallets table")

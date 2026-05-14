@@ -16,7 +16,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from logs.log_config import apolo_trader_logger as logger
 from trading_bot.send_bot_message import send_bot_message
 from db.db_ops import get_setting, increment_trades_today
-from futures_perps.trade.trade.binance_data import get_binance_symbol
+from trade.binance_data import get_binance_symbol
 
 load_dotenv()
 

@@ -1,0 +1,34 @@
+{
+  "timestamp": "jue 14 may 2026 17:03:36 -04",
+  "total_common_pairs": 344,
+  "total_sampled": 100,
+  "profitable_2plus_percent": 0,
+  "average_spread": 0.15205520067935643,
+  "top_3_opportunities": {
+    "SYNUSDT": {
+      "binance_price": 0.0547,
+      "bitget_price": 0.0551,
+      "spread_bitget_to_binance": 0.7312614259597888,
+      "spread_binance_to_bitget": -0.7259528130671588,
+      "best_direction": "Sell Bitget \u2192 Buy Binance",
+      "best_spread": 0.7312614259597888
+    },
+    "AUDIOUSDT": {
+      "binance_price": 0.02095,
+      "bitget_price": 0.0211,
+      "spread_bitget_to_binance": 0.7159904534606245,
+      "spread_binance_to_bitget": -0.7109004739336532,
+      "best_direction": "Sell Bitget \u2192 Buy Binance",
+      "best_spread": 0.7159904534606245
+    },
+    "USUALUSDT": {
+      "binance_price": 0.01571,
+      "bitget_price": 0.0156,
+      "spread_bitget_to_binance": -0.7001909611712221,
+      "spread_binance_to_bitget": 0.7051282051281986,
+      "best_direction": "Sell Binance \u2192 Buy Bitget",
+      "best_spread": 0.7051282051281986
+    }
+  },
+  "analysis": "1. **Top 3 pairs with 2%+ spread:** None found. Highest spread is 0.73% (SYNUSDT).  \n2. **Reason:** All 100 assets have spreads below 1%; none meet the 2% threshold.  \n3. **Risk level:** Low (but no actionable arbitrage exists per filter)."
+}

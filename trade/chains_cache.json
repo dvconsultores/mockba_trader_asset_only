@@ -1,0 +1,47 @@
+{
+  "binance": {
+    "BAR": [
+      "CHZ2"
+    ],
+    "USDT": [
+      "BSC",
+      "NEAR",
+      "AVAXC",
+      "APT",
+      "ARBITRUM",
+      "STATEMINT",
+      "CELO",
+      "ETH",
+      "KAVAEVM",
+      "KAIA",
+      "OPTIMISM",
+      "PLASMA",
+      "MATIC",
+      "SCROLL",
+      "SOL",
+      "XTZ",
+      "TON",
+      "TRX",
+      "OPBNB"
+    ]
+  },
+  "bitget": {
+    "BAR": [
+      "CAP20"
+    ],
+    "USDT": [
+      "ERC20",
+      "TRC20",
+      "BEP20",
+      "ArbitrumOne",
+      "SOL",
+      "Optimism",
+      "Polygon",
+      "AVAXC-Chain",
+      "TON",
+      "Aptos",
+      "Morph",
+      "Plasma"
+    ]
+  }
+}
