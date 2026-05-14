@@ -77,7 +77,7 @@ def get_trades(symbol_filter: str = "NEAR_USDC") -> list[dict[str, Any]]:
 		if symbol_filter in str(trade.get("symbol", ""))
 	]
 
-	project_root = Path(__file__).resolve().parents[3]
+	project_root = Path(__file__).resolve().parents[1]
 	output_path = project_root / "data" / "all_trades.json"
 	output_path.parent.mkdir(parents=True, exist_ok=True)
 
