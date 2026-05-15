@@ -1,5 +1,6 @@
 /.env
 data/
+data/trading.db
 
 # Python
 __pycache__/
