@@ -670,13 +670,14 @@ def execute_spread_llm_analyzer(m):
         # Analysis block
         analysis_title_idx = next((i for i, ln in enumerate(lines) if ln.strip() == "Analysis:"), None)
         if analysis_title_idx is not None:
-            start_idx = max(analysis_title_idx - 1, 0)
             analysis_end = next(
                 (i for i, ln in enumerate(lines[analysis_title_idx + 1:], start=analysis_title_idx + 1)
                  if "Results saved to" in ln),
                 len(lines),
             )
-            analysis_block = "\n".join(lines[start_idx:analysis_end]).strip()
+            analysis_lines = lines[analysis_title_idx:analysis_end]
+            analysis_lines = [ln for ln in analysis_lines if not ln.strip().startswith("====")]
+            analysis_block = "\n".join(analysis_lines).strip()
             if analysis_block:
                 send_text_message_chunked(cid, analysis_block)
     except Exception as e:
