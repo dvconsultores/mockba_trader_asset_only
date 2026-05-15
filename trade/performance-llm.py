@@ -408,7 +408,7 @@ def _call_llm(prompt: str) -> str:
         or os.getenv("OPENAI_API_KEY")
         or os.getenv("LLM_API_KEY")
     )
-    model = os.getenv("LLM_MODEL", "deepseek-chat")
+    model = os.getenv("LLM_MODEL", "deepseek-v4-pro")
     api_url = os.getenv("LLM_API_URL", "https://api.deepseek.com/v1/chat/completions").strip()
     
     if not api_key:

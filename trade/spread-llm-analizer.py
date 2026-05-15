@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()  # Load environment variables from .env file
 
 BINANCE_SYMBOLS_URL = "https://api.binance.com/api/v3/exchangeInfo"
-BITGET_SYMBOLS_URL = "https://api.bitget.com/api/v2/public/spot/symbols"
+BITGET_SYMBOLS_URL = "https://api.bitget.com/api/v2/spot/public/symbols"
 BITGET_TICKERS_URL = "https://api.bitget.com/api/v2/spot/market/tickers"
 BINANCE_PRICE_URL = "https://api.binance.com/api/v3/ticker/price"
 BITGET_PRICE_URL = "https://api.bitget.com/api/v2/spot/market/tickers"
@@ -148,7 +148,7 @@ def analyze_with_deepseek(spreads_data: dict) -> str:
     avg_spread = sum([d["best_spread"] for d in spreads_data.values()]) / len(spreads_data) if spreads_data else 0
     data_text += f"Average spread: {avg_spread:.4f}%\n"
 
-    prompt = f"""Analyze this arbitrage data between Bitget and Binance. Filter for 2%+ spreads only. Be VERY brief.
+    prompt = f"""Analyze this arbitrage data between Bitget and Binance. Filter for 1.5%+ spreads only. Be VERY brief.
 
 {data_text}
 
@@ -168,9 +168,9 @@ Keep it under 200 words."""
                 "Content-Type": "application/json",
             },
             json={
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-pro",
                 "messages": [{"role": "user", "content": prompt}],
-                "temperature": 0.7,
+                "temperature": 0.5,
             },
             timeout=30,
         )
@@ -226,10 +226,10 @@ def main() -> None:
     print("Split Capital Strategy Recommendation (2%+ spreads)")
     print("=" * 60)
     
-    # Show how split capital works with 2%+ spreads
-    profitable_pairs = [(s, d) for s, d in sorted_spreads if d["best_spread"] >= 2.0]
+    # Show how split capital works with 1.5%+ spreads
+    profitable_pairs = [(s, d) for s, d in sorted_spreads if d["best_spread"] >= 1.5]
     if profitable_pairs:
-        print(f"\nPairs with 2%+ spread: {len(profitable_pairs)}")
+        print(f"\nPairs with 1.5%+ spread: {len(profitable_pairs)}")
         print("\nExample with $200 capital ($100 each exchange):")
         example_symbol, example_data = profitable_pairs[0]
         spread = example_data["best_spread"]
@@ -240,7 +240,7 @@ def main() -> None:
         print(f"  Minus fees (~$0.20) -> Net profit: ${profit_net:.2f}")
         print(f"  Trades/day (3-4 spreads): ${profit_net * 3.5:.2f}")
     else:
-        print("\nNo pairs with 2%+ spread currently.")
+        print("\nNo pairs with 1.5%+ spread currently.")
         print("Waiting for better opportunities...")
     
     print("\n" + "=" * 60)
@@ -255,7 +255,7 @@ def main() -> None:
         "timestamp": str(os.popen("date").read().strip()),
         "total_common_pairs": len(common_symbols),
         "total_sampled": len(spreads),
-        "profitable_2plus_percent": len([d for d in spreads.values() if d["best_spread"] >= 2.0]),
+        "profitable_1_5plus_percent": len([d for d in spreads.values() if d["best_spread"] >= 1.5]),
         "average_spread": sum([d["best_spread"] for d in spreads.values()]) / len(spreads) if spreads else 0,
         "top_3_opportunities": top_3_data,
         "analysis": analysis,

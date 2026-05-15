@@ -22,8 +22,6 @@ def _build_symbol_for_exchange(base: str, quote: str, exchange: str) -> str:
 
 
 
-
-
 def _safe_get_json(url: str, params: dict) -> Optional[dict]:
     try:
         response = requests.get(url, params=params, timeout=10)
@@ -52,9 +50,6 @@ def _get_bitget_price(symbol: str) -> Optional[float]:
 
     price = rows[0].get("lastPr")
     return float(price) if price is not None else None
-
-
-
 
 
 def _collect_prices(base: str, quote: str) -> dict[str, Optional[float]]:
@@ -147,10 +142,10 @@ def _print_arbitrage_signal(asset_label: str, prices: dict[str, Optional[float]]
 
 def main() -> None:
     # You can add one or multiple assets here: BTCUSDT, NEARUSDT, ETHUSDT, etc.
-    assets = ["SYNUSDT"]
+    assets = ["POWRUSDT"]
 
     # Trade amount for slippage analysis (in USDT)
-    trade_amount = 45
+    trade_amount = 100
     
     # Ask to execute if profitable
     ask_execute = True

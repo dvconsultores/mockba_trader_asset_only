@@ -55,6 +55,7 @@ MIN_DEPTH_MULTIPLIER = 1.0  # require Bitget bid depth >= MIN_DEPTH_MULTIPLIER *
 
 
 _BINANCE_TIME_OFFSET_MS = 0  # local_ms + offset = server_ms
+_BINANCE_TIMESTAMP_SAFETY_MS = 1500  # keep signed requests slightly behind server time
 
 
 def _binance_signature(query_string: str) -> str:
@@ -67,9 +68,15 @@ def _binance_signature(query_string: str) -> str:
 
 
 def _binance_timestamp() -> int:
-    """Return current timestamp adjusted to Binance server time."""
+    """Return Binance server timestamp for signed requests."""
     global _BINANCE_TIME_OFFSET_MS
-    return int(time.time() * 1000) + _BINANCE_TIME_OFFSET_MS
+    try:
+        r = requests.get(f"{BINANCE_BASE}/time", timeout=5)
+        r.raise_for_status()
+        server_ms = int(r.json().get("serverTime", 0))
+        return server_ms - _BINANCE_TIMESTAMP_SAFETY_MS
+    except Exception:
+        return int(time.time() * 1000) + _BINANCE_TIME_OFFSET_MS - _BINANCE_TIMESTAMP_SAFETY_MS
 
 
 def _refresh_binance_time_offset() -> None:
@@ -1002,20 +1009,48 @@ def bitget_get_balance(asset: str) -> Optional[float]:
         return None
 
 
-def binance_get_withdraw_fee(asset: str, chain: str) -> Optional[float]:
-    """Return per-withdrawal fee for `asset` on `chain` from Binance config/getall."""
-    try:
+def _binance_get_capital_config() -> Optional[List[Dict]]:
+    """Fetch Binance capital config with one clock-resync retry on -1021."""
+    endpoint = "https://api.binance.com/sapi/v1/capital/config/getall"
+    headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
+
+    for attempt in range(2):
         timestamp = _binance_timestamp()
         params = {"timestamp": timestamp, "recvWindow": 10000}
         query_string = "&".join(f"{k}={v}" for k, v in params.items())
         params["signature"] = _binance_signature(query_string)
-        headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
-        r = requests.get(
-            "https://api.binance.com/sapi/v1/capital/config/getall",
-            params=params, headers=headers, timeout=10,
-        )
-        r.raise_for_status()
-        for coin in r.json():
+
+        r = requests.get(endpoint, params=params, headers=headers, timeout=10)
+
+        # Binance can format JSON with/without spaces; parse error code robustly.
+        err_code = None
+        if r.status_code >= 400:
+            try:
+                err_code = r.json().get("code")
+            except Exception:
+                err_code = None
+
+        if err_code == -1021 and attempt == 0:
+            logger.warning("Binance timestamp ahead (-1021) on capital config; resyncing clock and retrying once")
+            _refresh_binance_time_offset()
+            continue
+
+        if r.status_code >= 400:
+            raise RuntimeError(f"Binance capital config failed: status={r.status_code}, body={r.text[:300]}")
+
+        data = r.json()
+        return data if isinstance(data, list) else None
+
+    return None
+
+
+def binance_get_withdraw_fee(asset: str, chain: str) -> Optional[float]:
+    """Return per-withdrawal fee for `asset` on `chain` from Binance config/getall."""
+    try:
+        rows = _binance_get_capital_config()
+        if not rows:
+            return None
+        for coin in rows:
             if coin.get("coin") == asset:
                 for n in coin.get("networkList", []):
                     if n.get("network", "").upper() == chain.upper():
@@ -1033,17 +1068,10 @@ def binance_get_min_withdraw_fee_usdt(asset: str = "USDT") -> Optional[float]:
     so use the cheapest available as the optimistic estimate.
     """
     try:
-        timestamp = _binance_timestamp()
-        params = {"timestamp": timestamp, "recvWindow": 10000}
-        query_string = "&".join(f"{k}={v}" for k, v in params.items())
-        params["signature"] = _binance_signature(query_string)
-        headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
-        r = requests.get(
-            "https://api.binance.com/sapi/v1/capital/config/getall",
-            params=params, headers=headers, timeout=10,
-        )
-        r.raise_for_status()
-        for coin in r.json():
+        rows = _binance_get_capital_config()
+        if not rows:
+            return None
+        for coin in rows:
             if coin.get("coin") == asset:
                 fees = [
                     float(n.get("withdrawFee", 0))
@@ -1061,17 +1089,10 @@ def binance_get_min_withdraw_fee_usdt(asset: str = "USDT") -> Optional[float]:
 def binance_is_withdrawable(asset: str, chain: str) -> bool:
     """True if Binance allows withdrawal of `asset` on `chain` right now."""
     try:
-        timestamp = _binance_timestamp()
-        params = {"timestamp": timestamp, "recvWindow": 10000}
-        query_string = "&".join(f"{k}={v}" for k, v in params.items())
-        params["signature"] = _binance_signature(query_string)
-        headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
-        r = requests.get(
-            "https://api.binance.com/sapi/v1/capital/config/getall",
-            params=params, headers=headers, timeout=10,
-        )
-        r.raise_for_status()
-        for coin in r.json():
+        rows = _binance_get_capital_config()
+        if not rows:
+            return False
+        for coin in rows:
             if coin.get("coin") == asset:
                 for n in coin.get("networkList", []):
                     if n.get("network", "").upper() == chain.upper():
