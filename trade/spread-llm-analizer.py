@@ -197,68 +197,27 @@ def main() -> None:
         return
 
     spreads = calculate_spreads(common_symbols, sample_size=100)
-def main() -> None:
-    print("Fetching trading symbols from exchanges...")
-    binance_symbols = fetch_binance_symbols()
-    bitget_symbols = fetch_bitget_symbols()
-
-    print(f"Binance USDT pairs: {len(binance_symbols)}")
-    print(f"Bitget USDT pairs: {len(bitget_symbols)}")
-
-    common_symbols = binance_symbols & bitget_symbols
-    print(f"Common pairs: {len(common_symbols)}")
-
-    if not common_symbols:
-        print("No common symbols found!")
-        return
-
-    spreads = calculate_spreads(common_symbols, sample_size=100)
     print(f"\nSuccessfully sampled {len(spreads)} pairs")
 
     sorted_spreads = sorted(spreads.items(), key=lambda x: x[1]["best_spread"], reverse=True)
-    
+
+    top_profitable = [(s, d) for s, d in sorted_spreads if d["best_spread"] > 1.5][:3]
     print("\nTop 3 opportunities:")
-    for idx, (symbol, data) in enumerate(sorted_spreads[:3], 1):
+    if not top_profitable:
+        print("\n  No opportunities above 1.5%")
+    for idx, (symbol, data) in enumerate(top_profitable, 1):
         print(f"\n  {idx}. {symbol}: {data['best_spread']:.4f}% - {data['best_direction']}")
         print(f"     Binance: ${data['binance_price']:.8f}  |  Bitget: ${data['bitget_price']:.8f}")
 
-    print("\n" + "=" * 60)
-    print("Split Capital Strategy Recommendation (2%+ spreads)")
-    print("=" * 60)
-    
-    # Show how split capital works with 1.5%+ spreads
-    profitable_pairs = [(s, d) for s, d in sorted_spreads if d["best_spread"] >= 1.5]
-    if profitable_pairs:
-        print(f"\nPairs with 1.5%+ spread: {len(profitable_pairs)}")
-        print("\nExample with $200 capital ($100 each exchange):")
-        example_symbol, example_data = profitable_pairs[0]
-        spread = example_data["best_spread"]
-        profit_gross = 100 * (spread / 100)
-        profit_net = profit_gross - 0.20
-        print(f"  Pair: {example_symbol} ({spread:.2f}% spread)")
-        print(f"  Sell $100 on one exchange -> Get ${100 + profit_gross:.2f}")
-        print(f"  Minus fees (~$0.20) -> Net profit: ${profit_net:.2f}")
-        print(f"  Trades/day (3-4 spreads): ${profit_net * 3.5:.2f}")
-    else:
-        print("\nNo pairs with 1.5%+ spread currently.")
-        print("Waiting for better opportunities...")
-    
-    print("\n" + "=" * 60)
-    print("Analysis:")
-    print("=" * 60)
-    analysis = analyze_with_deepseek(spreads)
-    print(analysis)
-
     # Save results
-    top_3_data = {symbol: data for symbol, data in sorted_spreads[:3]}
+    top_3_data = {symbol: data for symbol, data in top_profitable}
     results = {
         "timestamp": str(os.popen("date").read().strip()),
         "total_common_pairs": len(common_symbols),
         "total_sampled": len(spreads),
-        "profitable_1_5plus_percent": len([d for d in spreads.values() if d["best_spread"] >= 1.5]),
+        "profitable_over_1_5_percent": len([d for d in spreads.values() if d["best_spread"] > 1.5]),
         "average_spread": sum([d["best_spread"] for d in spreads.values()]) / len(spreads) if spreads else 0,
         "top_3_opportunities": top_3_data,
-        "analysis": analysis,
     }
 
     with open("spread_analysis_results.json", "w") as f:

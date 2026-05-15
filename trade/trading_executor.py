@@ -50,7 +50,7 @@ BITGET_SELL_FEE = 0.10   # ~0.1% of $100 trade
 WITHDRAWAL_FEE = 0.30    # USDT BEP20 default; replaced dynamically per asset/chain at runtime
 
 # Slippage / liquidity guards
-SLIPPAGE_REJECT_PCT = 0.5   # reject if effective Binance buy price is >0.5% above bitget sell price closure
+SLIPPAGE_REJECT_PCT = 0.2   # reject if effective Binance buy price is >0.5% above bitget sell price closure
 MIN_DEPTH_MULTIPLIER = 1.0  # require Bitget bid depth >= MIN_DEPTH_MULTIPLIER * qty_to_sell at sell price
 
 
@@ -1115,7 +1115,11 @@ def bitget_get_chain_info(asset: str, chain: str) -> Optional[Dict]:
             if coin.get("coin", "").upper() != asset.upper():
                 continue
             for c in coin.get("chains", []) or []:
-                if (c.get("chain") or "").upper() == chain.upper():
+                c_chain = (c.get("chain") or "").upper()
+                if c_chain == chain.upper():
+                    return c
+                if _normalize_chain_pair(chain, c_chain):
+                    logger.info(f"Bitget chain alias resolved for {asset}: requested {chain.upper()} -> {c_chain}")
                     return c
         return None
     except Exception as e:
@@ -1527,11 +1531,16 @@ def buy_bitget_sell_binance(base_asset: str, bitget_price: float, binance_price:
         return None
     logger.info(f"  USDT return: chain={usdt_chain}, wallet={bitget_usdt_addr}")
 
+    # Normalize Bitget chain labels (e.g., BEP20) to Binance network codes (e.g., BSC)
+    usdt_chain_binance = _BITGET_TO_BINANCE_CHAIN.get(usdt_chain, usdt_chain)
+    if usdt_chain_binance != usdt_chain:
+        logger.info(f"  Binance chain alias resolved for USDT return: {usdt_chain} -> {usdt_chain_binance}")
+
     # Binance must allow USDT withdrawal on the return chain
-    if not binance_is_withdrawable("USDT", usdt_chain):
-        logger.error(f"✗ Pre-flight: Binance USDT withdrawal disabled on {usdt_chain}. Aborting.")
+    if not binance_is_withdrawable("USDT", usdt_chain_binance):
+        logger.error(f"✗ Pre-flight: Binance USDT withdrawal disabled on {usdt_chain_binance}. Aborting.")
         return None
-    logger.info(f"  ✓ Binance USDT withdrawable on {usdt_chain}")
+    logger.info(f"  ✓ Binance USDT withdrawable on {usdt_chain_binance}")
 
     # Bitget must hold enough USDT for the buy
     bitget_usdt_bal = bitget_get_balance("USDT")
@@ -1553,11 +1562,11 @@ def buy_bitget_sell_binance(base_asset: str, bitget_price: float, binance_price:
     bg_wd_fee_usd = bg_wd_fee_units * bitget_price
     logger.info(f"  Bitget withdraw fee {base_asset}/{chain}: {bg_wd_fee_units} ({bg_wd_fee_usd:.2f} USD)")
 
-    bin_wd_fee_usdt = binance_get_withdraw_fee("USDT", usdt_chain)
+    bin_wd_fee_usdt = binance_get_withdraw_fee("USDT", usdt_chain_binance)
     if bin_wd_fee_usdt is None:
         bin_wd_fee_usdt = WITHDRAWAL_FEE
-        logger.warning(f"  ⚠ Using fallback Binance USDT withdraw fee on {usdt_chain}")
-    logger.info(f"  Binance USDT withdraw fee on {usdt_chain}: {bin_wd_fee_usdt}")
+        logger.warning(f"  ⚠ Using fallback Binance USDT withdraw fee on {usdt_chain_binance}")
+    logger.info(f"  Binance USDT withdraw fee on {usdt_chain_binance}: {bin_wd_fee_usdt}")
 
     # Slippage guard: VWAP buy on Bitget vs limit sell price on Binance
     sell_price = binance_price * 0.99
@@ -1679,9 +1688,9 @@ def buy_bitget_sell_binance(base_asset: str, bitget_price: float, binance_price:
     if usdt_balance > max(1.0, bin_wd_fee_usdt + 0.5):
         amount_to_send = round(usdt_balance - bin_wd_fee_usdt, 4)
         logger.info(
-            f"Withdrawing ${amount_to_send:.4f} USDT (balance ${usdt_balance:.2f} - fee {bin_wd_fee_usdt}) to Bitget via {usdt_chain}..."
+            f"Withdrawing ${amount_to_send:.4f} USDT (balance ${usdt_balance:.2f} - fee {bin_wd_fee_usdt}) to Bitget via {usdt_chain_binance}..."
         )
-        withdraw_usdt_result = binance_withdraw("USDT", bitget_usdt_addr, amount_to_send, usdt_chain)
+        withdraw_usdt_result = binance_withdraw("USDT", bitget_usdt_addr, amount_to_send, usdt_chain_binance)
         if withdraw_usdt_result:
             logger.info(f"✓ USDT withdrawal initiated")
         else:

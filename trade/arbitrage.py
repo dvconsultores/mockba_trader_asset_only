@@ -4,6 +4,7 @@ from typing import Optional, Tuple
 
 BINANCE_URL = "https://api.binance.com/api/v3/ticker/price"
 BITGET_URL = "https://api.bitget.com/api/v2/spot/market/tickers"
+ANALYSIS_SELL_HAIRCUT_PCT = 0.7
 
 
 def _parse_asset(asset: str, default_quote: str = "USDT") -> Tuple[str, str]:
@@ -96,7 +97,8 @@ def _print_arbitrage_signal(asset_label: str, prices: dict[str, Optional[float]]
 
     qty_bought = trade_amount / min_price
     qty_after_withdrawal = qty_bought - wd_fee_units
-    gross_revenue = qty_after_withdrawal * max_price
+    effective_sell_price = max_price * (1 - ANALYSIS_SELL_HAIRCUT_PCT / 100)
+    gross_revenue = qty_after_withdrawal * effective_sell_price
 
     total_fees = trading_fee_buy + trading_fee_sell + withdrawal_fee
     net_profit = gross_revenue - trade_amount - total_fees
@@ -104,7 +106,7 @@ def _print_arbitrage_signal(asset_label: str, prices: dict[str, Optional[float]]
     print(f"\nProfit Calculation (${trade_amount:.0f} trade):")
     print(f"  Buy {qty_bought:.4f} @ ${min_price:.8f} = ${trade_amount:.2f}")
     print(f"  Fees: ${total_fees:.2f} (withdraw ${withdrawal_fee:.2f} + trading ${trading_fee_buy + trading_fee_sell:.2f})")
-    print(f"  Sell {qty_after_withdrawal:.4f} @ ${max_price:.8f} = ${gross_revenue:.2f}")
+    print(f"  Sell {qty_after_withdrawal:.4f} @ ${effective_sell_price:.8f} = ${gross_revenue:.2f} (haircut {ANALYSIS_SELL_HAIRCUT_PCT:.1f}%)")
     print(f"\n  Net Profit: ${net_profit:.2f}")
     
     # Assessment
@@ -142,7 +144,7 @@ def _print_arbitrage_signal(asset_label: str, prices: dict[str, Optional[float]]
 
 def main() -> None:
     # You can add one or multiple assets here: BTCUSDT, NEARUSDT, ETHUSDT, etc.
-    assets = ["POWRUSDT"]
+    assets = ["AUDIOUSDT"]
 
     # Trade amount for slippage analysis (in USDT)
     trade_amount = 100

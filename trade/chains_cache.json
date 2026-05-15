@@ -23,6 +23,13 @@
       "TON",
       "TRX",
       "OPBNB"
+    ],
+    "SOPH": [
+      "BSC",
+      "SOPH"
+    ],
+    "ACM": [
+      "CHZ2"
     ]
   },
   "bitget": {
@@ -42,6 +49,12 @@
       "Aptos",
       "Morph",
       "Plasma"
+    ],
+    "SOPH": [
+      "ERC20"
+    ],
+    "ACM": [
+      "CAP20"
     ]
   }
 }

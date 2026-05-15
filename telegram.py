@@ -643,43 +643,17 @@ def execute_spread_llm_analyzer(m):
         out = output_buffer.getvalue()
         lines = out.splitlines()
 
-        # Progress block
-        progress_lines = []
-        for prefix in (
-            "Binance USDT pairs:",
-            "Bitget USDT pairs:",
-            "Common pairs:",
-            "Sampling spreads for",
-        ):
-            found = next((ln for ln in lines if ln.strip().startswith(prefix)), None)
-            if found:
-                progress_lines.append(found.strip())
-        if progress_lines:
-            send_text_message_chunked(cid, "\n".join(progress_lines))
-
-        # Top opportunities block
+        # Send only sampled + top opportunities block
         sampled_idx = next((i for i, ln in enumerate(lines) if "Successfully sampled" in ln), None)
-        top_idx = next((i for i, ln in enumerate(lines) if ln.strip() == "Top 3 opportunities:"), None)
-        sep_idx = next((i for i, ln in enumerate(lines) if ln.strip().startswith("====")), None)
-        if sampled_idx is not None and top_idx is not None:
-            end_idx = sep_idx if sep_idx is not None and sep_idx > top_idx else len(lines)
-            top_block = "\n".join(lines[sampled_idx:end_idx]).strip()
-            if top_block:
-                send_text_message_chunked(cid, top_block)
-
-        # Analysis block
-        analysis_title_idx = next((i for i, ln in enumerate(lines) if ln.strip() == "Analysis:"), None)
-        if analysis_title_idx is not None:
-            analysis_end = next(
-                (i for i, ln in enumerate(lines[analysis_title_idx + 1:], start=analysis_title_idx + 1)
+        if sampled_idx is not None:
+            end_idx = next(
+                (i for i, ln in enumerate(lines[sampled_idx + 1:], start=sampled_idx + 1)
                  if "Results saved to" in ln),
                 len(lines),
             )
-            analysis_lines = lines[analysis_title_idx:analysis_end]
-            analysis_lines = [ln for ln in analysis_lines if not ln.strip().startswith("====")]
-            analysis_block = "\n".join(analysis_lines).strip()
-            if analysis_block:
-                send_text_message_chunked(cid, analysis_block)
+            top_block = "\n".join(lines[sampled_idx:end_idx]).strip()
+            if top_block:
+                send_text_message_chunked(cid, top_block)
     except Exception as e:
         bot.send_message(cid, translate(f"Error running spread LLM analyzer: {str(e)}", cid))
 

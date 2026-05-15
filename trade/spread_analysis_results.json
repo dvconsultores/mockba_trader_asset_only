@@ -1,34 +1,17 @@
 {
-  "timestamp": "vie 15 may 2026 14:37:04 -04",
+  "timestamp": "vie 15 may 2026 16:49:46 -04",
   "total_common_pairs": 344,
   "total_sampled": 100,
-  "profitable_1_5plus_percent": 1,
-  "average_spread": 0.20453287518602306,
+  "profitable_over_1_5_percent": 1,
+  "average_spread": 0.17419585975287355,
   "top_3_opportunities": {
-    "POWRUSDT": {
-      "binance_price": 0.065,
-      "bitget_price": 0.0636,
-      "spread_bitget_to_binance": -2.1538461538461515,
-      "spread_binance_to_bitget": 2.2012578616352174,
-      "best_direction": "Sell Binance \u2192 Buy Bitget",
-      "best_spread": 2.2012578616352174
-    },
-    "ACMUSDT": {
-      "binance_price": 0.409,
-      "bitget_price": 0.414,
-      "spread_bitget_to_binance": 1.2224938875305635,
-      "spread_binance_to_bitget": -1.207729468599035,
+    "AUDIOUSDT": {
+      "binance_price": 0.02049,
+      "bitget_price": 0.0208,
+      "spread_bitget_to_binance": 1.5129331381161433,
+      "spread_binance_to_bitget": -1.4903846153846048,
       "best_direction": "Sell Bitget \u2192 Buy Binance",
-      "best_spread": 1.2224938875305635
-    },
-    "LAYERUSDT": {
-      "binance_price": 0.0942,
-      "bitget_price": 0.0949,
-      "spread_bitget_to_binance": 0.7430997876857667,
-      "spread_binance_to_bitget": -0.7376185458377158,
-      "best_direction": "Sell Bitget \u2192 Buy Binance",
-      "best_spread": 0.7430997876857667
+      "best_spread": 1.5129331381161433
     }
-  },
-  "analysis": "**1. Top 3 pairs with 2%+ spread**  \nOnly one pair meets the threshold:  \n- **POWRUSDT** \u2014 2.20% (Sell Binance \u2192 Buy Bitget)\n\n*(No other spreads exceed 2% in the provided list.)*\n\n**2. One-line reason**  \nThin order books and low liquidity on Bitget for POWR cause a persistent price premium over Binance.\n\n**3. Risk level**  \n**Medium** \u2014 transfer delays, slippage on the illiquid Bitget side, and withdrawal fees can erode the spread quickly."
+  }
 }
