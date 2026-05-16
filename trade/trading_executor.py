@@ -1303,8 +1303,7 @@ def buy_binance_sell_bitget(base_asset: str, binance_price: float, bitget_price:
         logger.warning(f"  ⚠ Using fallback Bitget USDT withdraw fee on {usdt_chain}")
     logger.info(f"  Bitget USDT withdraw fee on {usdt_chain}: {bg_wd_fee_usdt}")
 
-    # Slippage guard: VWAP buy on Binance vs limit sell price on Bitget
-    sell_price = bitget_price * 0.99  # limit price (1% below ticker for fast fill)
+    # Slippage guard: VWAP buy on Binance vs executable sell price on Bitget
     bin_book = binance_get_orderbook(symbol, limit=50)
     if not bin_book or not bin_book.get("asks"):
         logger.error("✗ Pre-flight: cannot read Binance order book. Aborting.")
@@ -1314,6 +1313,18 @@ def buy_binance_sell_bitget(base_asset: str, binance_price: float, bitget_price:
         logger.error("✗ Pre-flight: insufficient Binance ask depth for trade size. Aborting.")
         return None
     vwap_price, vwap_qty = vwap_pair
+    # Use real-time Bitget top bid as sell anchor (executable side of the book)
+    bg_book = bitget_get_orderbook(symbol, limit=50)
+    if not bg_book or not bg_book.get("bids"):
+        logger.error("✗ Pre-flight: cannot read Bitget order book. Aborting.")
+        return None
+    try:
+        sell_price = float(bg_book["bids"][0][0])
+    except (IndexError, TypeError, ValueError):
+        logger.error("✗ Pre-flight: invalid Bitget bid book data. Aborting.")
+        return None
+    logger.info(f"  Bitget top bid (real-time): ${sell_price:.8f} (used as limit sell price)")
+
     effective_spread_pct = (sell_price - vwap_price) / vwap_price * 100
     logger.info(
         f"  Binance VWAP buy: ${vwap_price:.8f} ({vwap_qty:.4f} {base_asset}); "
@@ -1327,10 +1338,6 @@ def buy_binance_sell_bitget(base_asset: str, binance_price: float, bitget_price:
 
     # Liquidity guard: Bitget bid depth at >= sell_price must cover qty_to_sell
     qty_to_sell_est = vwap_qty - bin_wd_fee_units
-    bg_book = bitget_get_orderbook(symbol, limit=50)
-    if not bg_book or not bg_book.get("bids"):
-        logger.error("✗ Pre-flight: cannot read Bitget order book. Aborting.")
-        return None
     bid_depth = cumulative_bid_qty_at_or_above(bg_book["bids"], sell_price)
     logger.info(f"  Bitget bid depth >= ${sell_price:.8f}: {bid_depth:.4f} {base_asset} (need {qty_to_sell_est:.4f})")
     if bid_depth < qty_to_sell_est * MIN_DEPTH_MULTIPLIER:

@@ -175,9 +175,7 @@ def command_list(m):
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("⚙️ Settings", cid), callback_data="Settings"))
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
-    markup.row(InlineKeyboardButton(translate("📊 Spread LLM Analyzer", cid), callback_data="SpreadLLMAnalyzer"))
     markup.row(InlineKeyboardButton(translate(" List All Settings", cid), callback_data="ListSettings"))
-    
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
 
 
@@ -257,7 +255,7 @@ def callback_handler(call):
             'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
-            'SpreadLLMAnalyzer': execute_spread_llm_analyzer,
+            # 'SpreadLLMAnalyzer': execute_spread_llm_analyzer,  # LLM option removed
         }
         func = options.get(call.data)
         if func:
