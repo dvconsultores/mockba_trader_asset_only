@@ -691,6 +691,16 @@ def bitget_get_deposit_address(asset: str, chain: str) -> Optional[str]:
                 return address
         except Exception as e:
             body = response.text if response is not None else ""
+            try:
+                err_code = response.json().get("code") if response is not None else None
+            except Exception:
+                err_code = None
+            if str(err_code) == "40018" or "Invalid IP" in body:
+                logger.error(
+                    "✗ Bitget deposit address lookup denied by API key IP whitelist. "
+                    f"Run from a whitelisted IP or add a manual wallet mapping for bitget/{asset}."
+                )
+                return None
             logger.warning(
                 f"Deposit address lookup failed for {asset} on chain {chain_candidate}: {e} | response={body}"
             )

@@ -1,8 +1,10 @@
 import os
 import json
+import logging
 import requests
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()  # Load environment variables from .env file
@@ -22,6 +24,18 @@ SPREAD_MIN_PCT = float(SPREAD_MIN_PCT_RAW)
 MIN_LIQUIDITY_24H_USDT = float(os.getenv("MIN_LIQUIDITY_24H_USDT", "1000000"))
 MIN_TOP_BOOK_NOTIONAL_USDT = float(os.getenv("MIN_TOP_BOOK_NOTIONAL_USDT", "2000"))
 
+LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "arbitrage.log"
+
+logger = logging.getLogger("spread_analyzer")
+if not logger.handlers:
+    logger.setLevel(logging.INFO)
+    file_handler = logging.FileHandler(LOG_FILE)
+    file_handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    logger.addHandler(file_handler)
+    logger.propagate = False
+
 
 def _safe_get_json(url: str, params: dict | None = None) -> Optional[dict]:
     try:
@@ -29,7 +43,7 @@ def _safe_get_json(url: str, params: dict | None = None) -> Optional[dict]:
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"Error fetching {url}: {e}")
+        logger.error(f"Error fetching {url}: {e}")
         return None
 
 
@@ -231,6 +245,7 @@ def calculate_spreads(common_symbols: set[str], sample_size: int = 50, max_worke
     spreads = {}
     symbols_list = list(common_symbols)[:sample_size]
     workers = max_workers or DEFAULT_MAX_WORKERS
+    logger.info(f"Spread analyzer: scanning {len(symbols_list)} symbols (workers={workers})")
 
     # print(f"Sampling spreads for {len(symbols_list)} symbols with {workers} workers...")
 
@@ -245,7 +260,7 @@ def calculate_spreads(common_symbols: set[str], sample_size: int = 50, max_worke
             binance_quote_volumes and binance_top_book_notionals and bitget_liquidity
         )
         if liquidity_filter_enabled:
-            print(
+            logger.info(
                 f"Liquidity filter: 24h volume >= ${MIN_LIQUIDITY_24H_USDT:,.0f}, "
                 f"top-book notional >= ${MIN_TOP_BOOK_NOTIONAL_USDT:,.0f}"
             )
@@ -288,10 +303,11 @@ def calculate_spreads(common_symbols: set[str], sample_size: int = 50, max_worke
                 "best_spread": max(spread_bitget_to_binance, spread_binance_to_bitget),
             }
         if liquidity_filter_enabled:
-            print(f"Liquidity filter excluded {skipped_liquidity} symbols")
+            logger.info(f"Liquidity filter excluded {skipped_liquidity} symbols")
+        logger.info(f"Spread analyzer: computed spreads for {len(spreads)} symbols")
         return spreads
 
-    print("  Bulk price fetch unavailable, falling back to threaded per-symbol requests...")
+    logger.warning("Bulk price fetch unavailable, falling back to threaded per-symbol requests...")
 
     processed = 0
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -300,12 +316,13 @@ def calculate_spreads(common_symbols: set[str], sample_size: int = 50, max_worke
         for future in as_completed(futures):
             processed += 1
             if processed % 10 == 0 or processed == len(symbols_list):
-                print(f"  Processed {processed}/{len(symbols_list)}")
+                logger.info(f"Processed {processed}/{len(symbols_list)}")
 
             symbol, data = future.result()
             if data:
                 spreads[symbol] = data
 
+    logger.info(f"Spread analyzer: computed spreads for {len(spreads)} symbols")
     return spreads
 
 
@@ -325,57 +342,70 @@ def get_best_spread_asset(
     trade_direction: str = "binance_to_bitget",
 ) -> Optional[str]:
     """Return the single best symbol by spread, or None if no symbol meets threshold."""
+    logger.info(f"Spread analyzer: fetching symbols for direction={trade_direction}")
     binance_symbols = fetch_binance_symbols()
     bitget_symbols = fetch_bitget_symbols()
     common_symbols = binance_symbols & bitget_symbols
+    logger.info(
+        f"Spread analyzer: binance={len(binance_symbols)} bitget={len(bitget_symbols)} "
+        f"common={len(common_symbols)}"
+    )
     if not common_symbols:
+        logger.warning("Spread analyzer: no common symbols found")
         return None
 
     workers = max_workers or int(os.getenv("SPREAD_MAX_WORKERS", str(DEFAULT_MAX_WORKERS)))
     spreads = calculate_spreads(common_symbols, sample_size=sample_size, max_workers=workers)
     if not spreads:
+        logger.warning("Spread analyzer: no spreads available after scan")
         return None
 
     threshold = SPREAD_MIN_PCT if min_spread_pct is None else min_spread_pct
-    print(f"Spread threshold: {threshold:g}%")
+    logger.info(f"Spread threshold: {threshold:g}%")
     best_symbol, best_data = max(
         spreads.items(),
         key=lambda x: _direction_spread(x[1], trade_direction),
     )
-    if _direction_spread(best_data, trade_direction) >= threshold:
+    best_direction_spread = _direction_spread(best_data, trade_direction)
+    logger.info(
+        f"Spread analyzer: best candidate {best_symbol} direction_spread={best_direction_spread:.4f}%"
+    )
+    if best_direction_spread >= threshold:
+        logger.info(f"Spread analyzer: selected {best_symbol}")
         return best_symbol
+    logger.info("Spread analyzer: no symbol met threshold")
     return None
 
 
 def main() -> None:
-    print("Fetching trading symbols from exchanges...")
+    logger.info("Fetching trading symbols from exchanges...")
     binance_symbols = fetch_binance_symbols()
     bitget_symbols = fetch_bitget_symbols()
 
-    print(f"Binance USDT pairs: {len(binance_symbols)}")
-    print(f"Bitget USDT pairs: {len(bitget_symbols)}")
+    logger.info(f"Binance USDT pairs: {len(binance_symbols)}")
+    logger.info(f"Bitget USDT pairs: {len(bitget_symbols)}")
 
     common_symbols = binance_symbols & bitget_symbols
-    print(f"Common pairs: {len(common_symbols)}")
+    logger.info(f"Common pairs: {len(common_symbols)}")
 
     if not common_symbols:
-        print("No common symbols found!")
+        logger.warning("No common symbols found!")
         return
 
     max_workers = int(os.getenv("SPREAD_MAX_WORKERS", str(DEFAULT_MAX_WORKERS)))
     spreads = calculate_spreads(common_symbols, sample_size=100, max_workers=max_workers)
-    print(f"\nSuccessfully sampled {len(spreads)} pairs")
+    logger.info(f"Successfully sampled {len(spreads)} pairs")
 
     sorted_spreads = sorted(spreads.items(), key=lambda x: x[1]["best_spread"], reverse=True)
 
     threshold = SPREAD_MIN_PCT
     top_profitable = [(s, d) for s, d in sorted_spreads if d["best_spread"] > threshold][:3]
-    print("\nTop 3 opportunities:")
+    logger.info("Top 3 opportunities:")
     if not top_profitable:
-        print(f"\n  No opportunities above {threshold}%")
+        logger.info(f"No opportunities above {threshold}%")
     for idx, (symbol, data) in enumerate(top_profitable, 1):
-        print(f"\n  {idx}. {symbol}: {data['best_spread']:.4f}% - {data['best_direction']}")
-        print(f"     Binance: ${data['binance_price']:.8f}  |  Bitget: ${data['bitget_price']:.8f}")
+        logger.info(f"{idx}. {symbol}: {data['best_spread']:.4f}% - {data['best_direction']}")
+        logger.info(f"   Binance: ${data['binance_price']:.8f}  |  Bitget: ${data['bitget_price']:.8f}")
 
     # Save results
     top_3_data = {symbol: data for symbol, data in top_profitable}
@@ -390,7 +420,7 @@ def main() -> None:
 
     with open("spread_analysis_results.json", "w") as f:
         json.dump(results, f, indent=2)
-    print("\nResults saved to spread_analysis_results.json")
+    logger.info("Results saved to spread_analysis_results.json")
 
 
 if __name__ == "__main__":

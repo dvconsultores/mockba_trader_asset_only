@@ -1,17 +1,8 @@
 {
-  "timestamp": "s\u00e1b 16 may 2026 17:15:12 -04",
+  "timestamp": "s\u00e1b 16 may 2026 18:56:18 -04",
   "total_common_pairs": 344,
-  "total_sampled": 9,
-  "profitable_over_spread_percent": 1,
-  "average_spread": 0.14370457418783553,
-  "top_3_opportunities": {
-    "ACEUSDT": {
-      "binance_price": 0.116,
-      "bitget_price": 0.1153,
-      "spread_bitget_to_binance": -0.6034482758620743,
-      "spread_binance_to_bitget": 0.6071118820468396,
-      "best_direction": "Sell Binance \u2192 Buy Bitget",
-      "best_spread": 0.6071118820468396
-    }
-  }
+  "total_sampled": 35,
+  "profitable_over_spread_percent": 0,
+  "average_spread": 0.11725173999408799,
+  "top_3_opportunities": {}
 }

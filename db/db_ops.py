@@ -100,11 +100,135 @@ def initialize_database_tables():
                 VALUES (?, ?);
             """, (key, value))
 
+        # create table arbitrage_compounding (track arbitrage cycles)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS arbitrage_compounding (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cycle_num INTEGER NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                asset TEXT NOT NULL,
+                direction TEXT NOT NULL DEFAULT 'binance_to_bitget',
+                capital_start REAL NOT NULL,
+                capital_end REAL NOT NULL,
+                gain REAL NOT NULL,
+                gain_pct REAL NOT NULL,
+                spread_pct REAL NOT NULL,
+                buy_price REAL NOT NULL,
+                sell_price REAL NOT NULL,
+                qty REAL NOT NULL,
+                buy_fee REAL NOT NULL,
+                sell_fee REAL NOT NULL,
+                status TEXT DEFAULT 'completed',
+                CHECK (direction IN ('binance_to_bitget', 'bitget_to_binance'))
+            );
+        """)
+
+        # create table arbitrage_cycle_steps (detailed step logging)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS arbitrage_cycle_steps (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cycle_num INTEGER NOT NULL,
+                step_order INTEGER NOT NULL,
+                step_name TEXT NOT NULL,
+                step_details TEXT,
+                direction TEXT DEFAULT 'binance_to_bitget',
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                status TEXT DEFAULT 'completed',
+                FOREIGN KEY (cycle_num) REFERENCES arbitrage_compounding(cycle_num)
+            );
+        """)
+
+        # create table ai_recommendations (store AI suggestions)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS ai_recommendations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                strategy TEXT NOT NULL,
+                recommendation_type TEXT NOT NULL,
+                asset TEXT,
+                parameter_name TEXT,
+                old_value REAL,
+                new_value REAL,
+                confidence_score REAL,
+                rationale TEXT,
+                implemented INTEGER DEFAULT 0,
+                result_gain REAL
+            );
+        """)
+
+        # create table performance_metrics (pre-computed stats)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS performance_metrics (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                period TEXT NOT NULL,
+                strategy TEXT NOT NULL,
+                asset TEXT,
+                total_trades INTEGER,
+                win_count INTEGER,
+                loss_count INTEGER,
+                win_rate REAL,
+                avg_gain REAL,
+                avg_loss REAL,
+                total_gain REAL,
+                roi_pct REAL,
+                sharpe_ratio REAL,
+                max_drawdown_pct REAL,
+                directional_bias TEXT
+            );
+        """)
+
+        # create table strategy_parameters (current settings for each strategy)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_parameters (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                strategy TEXT NOT NULL UNIQUE,
+                active INTEGER DEFAULT 1,
+                ai_version TEXT,
+                min_spread_pct REAL,
+                max_position_usdt REAL,
+                risk_limit_pct REAL,
+                time_window_start TEXT,
+                time_window_end TEXT,
+                custom_params TEXT
+            );
+        """)
+
+        # create table execution_errors (failed trades & recovery)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS execution_errors (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                strategy TEXT NOT NULL,
+                cycle_num INTEGER,
+                error_type TEXT NOT NULL,
+                error_message TEXT,
+                severity TEXT,
+                recovery_action TEXT,
+                resolved INTEGER DEFAULT 0
+            );
+        """)
+
+        # create table market_regimes (detected market conditions)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS market_regimes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                asset TEXT NOT NULL,
+                regime TEXT NOT NULL,
+                confidence REAL,
+                slope REAL,
+                volatility REAL,
+                duration_minutes INTEGER
+            );
+        """)
+
         _ensure_signal_history_schema(cur)
         
         conn.commit()
         
-        logger.info("✅ SQLite tables initialized (includes trades_daily for daily positive trades counter).")
+        logger.info("✅ SQLite tables initialized (includes autonomy tables for AI agents).")
 
 
 # Def to insert or update settings
