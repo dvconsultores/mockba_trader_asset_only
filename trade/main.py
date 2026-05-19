@@ -1209,10 +1209,7 @@ def autotrade():
                     cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
                     if cex_result.get("approved"):
                         if cex_mode == "Signal":
-                            cex_regime = ((cex_result.get('debug_info') or {}).get('regime') or {}).get('regime')
-                            if cex_regime in ('TREND_UP', 'TREND_DOWN'):
-                                logger.info(f"📋 CEX signal skipped in {cex_regime} regime")
-                            elif _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
+                            if _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
                                 send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
                                 logger.info(f"📡 CEX signal alert sent for {asset}")
                         else:
