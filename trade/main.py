@@ -8,7 +8,6 @@ Risk: 0.3% TP, 1.5-1.8% SL, max 3 trades/day
 ✅ DEBUG MODE: Full transparency on every decision
 ✅ MANIPULATION DETECTION: Volume spikes, OB divergence, spread anomalies
 """
-from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
@@ -93,12 +92,11 @@ class ReversalScalper:
     and manipulation detection.
     
     This class implements a rule-based trading system that:
-    1. Only trades during preferred time windows (Mon-Fri 6am-12pm, Sun 8-10am UTC-4)
-    2. Avoids trending markets using linear regression slope detection
-    3. Requires order book imbalance confirmation for each trade
-    4. Detects specific 2-candle reversal patterns at support/resistance
-    5. Flags potential manipulation signals (volume spikes, OB divergence, spread)
-    6. Uses multi-core processing for fast data fetching
+    1. Avoids trending markets using linear regression slope detection
+    2. Requires order book imbalance confirmation for each trade
+    3. Detects specific 2-candle reversal patterns at support/resistance
+    4. Flags potential manipulation signals (volume spikes, OB divergence, spread)
+    5. Uses multi-core processing for fast data fetching
     
     No LLM, no TensorFlow - pure deterministic logic for speed and reliability.
     """
@@ -152,16 +150,6 @@ class ReversalScalper:
         self.OBI_BEARISH_THRESHOLD = 1.0 / 1.10  # OBI < 0.909 = bearish (more asks than bids)
         self.OBI_IMBALANCE_PCT_THRESHOLD = 3.0  # Imbalance % > 3.0% = moderate strength signal
         
-        # === TIME FILTER PARAMETERS (UTC-4) ===
-        # Mon-Fri: 6am-12pm | Sun: 8am-10am | Sat: off
-        self.PREFERRED_WINDOWS = {
-            'Monday':    [(6, 12)],
-            'Tuesday':   [(6, 12)],
-            'Wednesday': [(6, 12)],
-            'Thursday':  [(6, 12)],
-            'Friday':    [(6, 12)],
-        }
-        
         # === LIVE PRICE VALIDATION ===
         self.LIVE_PRICE_MAX_DEVIATION = 0.002  # Max 0.2% deviation from candle close
         
@@ -177,19 +165,6 @@ class ReversalScalper:
         self.MAX_WORKERS = max(1, os.cpu_count() or 1)
         logger.info(f"🖥️  ReversalScalper initialized with {self.MAX_WORKERS} CPU cores")
         
-    def _get_user_time(self) -> datetime:
-        """Get current time in UTC-4 timezone (user's local time)."""
-        utc_now = datetime.now(timezone.utc)
-        return utc_now - timedelta(hours=4)
-    
-    def _is_preferred_time(self) -> bool:
-        """Check if current time is within preferred trading window."""
-        now = self._get_user_time()
-        day_name = now.strftime('%A')
-        hour = now.hour
-        windows = self.PREFERRED_WINDOWS.get(day_name, [])
-        return any(start <= hour < end for start, end in windows)
-    
     def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         """
         Calculate Average True Range (ATR) for adaptive stop loss.
@@ -872,22 +847,6 @@ class ReversalScalper:
             display_lines.append("")
         
         # === STEP 7: APPLY FILTERS ===
-        if exchange != "cex" and not self._is_preferred_time():
-            result['rejection_reasons'].append("Outside preferred time window")
-            display_lines.append("⏰ ❌ Outside preferred window (Mon-Fri 6am-12pm, Sun 8-10am UTC-4) — TRADE BLOCKED")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            
-            # === LOG REJECTED SIGNAL ===
-            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
-            save_signal_to_history(
-                asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=None,
-                approved=False, rejection_reasons=result['rejection_reasons'],
-                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
-                candle_count=max(consecutive_up, consecutive_down)
-            )
-            
-            return result
-        
         price_dev = self._validate_live_price(last_close, live_price)
         if price_dev > self.LIVE_PRICE_MAX_DEVIATION:
             result['rejection_reasons'].append(f"Live price deviation {price_dev*100:.2f}%")
@@ -1180,7 +1139,7 @@ def autotrade():
             if dex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("dex", 30):
                 if has_dex_position:
                     logger.info("📋 DEX has open position(s) — skipping DEX pattern search")
-                elif scalper._is_preferred_time():
+                else:
                     dex_result = scalper.analyze_signal(asset, interval, exchange_override="dex")
                     if dex_result.get("approved"):
                         if dex_mode == "Signal":
@@ -1198,8 +1157,6 @@ def autotrade():
                             }
                             place_futures_order(order_payload)
                             logger.info(f"🚀 Orderly futures order placed: {order_payload}")
-                else:
-                    logger.info("⏰ DEX mode active but outside preferred window")
 
             # CEX cycle
             if cex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("cex", 60):
