@@ -18,9 +18,6 @@ dateparser==1.2.2
 deep-translator==1.11.4
 frozenlist==1.8.0
 h11==0.16.0
-fastapi==0.115.6
-sse-starlette==2.2.1
-uvicorn==0.34.0
 httpcore==1.0.9
 httpx==0.28.1
 idna==3.11
@@ -56,3 +53,6 @@ websockets==15.0.1
 xgboost==3.1.2
 scikit-learn==1.7.2
 yarl==1.22.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
+sse-starlette>=2.0.0
