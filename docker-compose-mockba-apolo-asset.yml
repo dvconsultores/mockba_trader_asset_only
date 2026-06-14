@@ -12,6 +12,7 @@ services:
     volumes:
       - ./.env:/app/.env
       - ./data:/app/data
+      - ./logs:/app/logs
 
   # ── Real-time log viewer → http://your-server:8080 ──────────────────
   dozzle:
