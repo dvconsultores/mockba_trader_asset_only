@@ -23,7 +23,7 @@ services:
     depends_on:
       - micro-mockba-asset-futures-bot
 
-  # ── Real-time log viewer (browser: http://your-server:8888) ──────────
+  # ── Real-time log viewer (browser: http://your-server:8080) ──────────
   dozzle:
     image: amir20/dozzle:latest
     container_name: dozzle-logs
@@ -34,6 +34,7 @@ services:
       - "8080:8080"
     environment:
       - DOZZLE_NO_ANALYTICS=true
+      - DOZZLE_FILTER=asset-futures
 
   watchtower:
     image: containrrr/watchtower

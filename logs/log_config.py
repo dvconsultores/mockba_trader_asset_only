@@ -30,16 +30,24 @@ apolo_logger = logging.getLogger('apolo_logger')
 if not apolo_logger.hasHandlers():
     apolo_logger.setLevel(logging.DEBUG)
 
-    # Apolo file handler
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+    # File handler — writes to logs/apolo.log (rotating, 5MB)
     apolo_handler = DateRotatingFileHandler(
         os.path.join(os.path.dirname(__file__), 'apolo.log'), 
         maxBytes=5*1024*1024, 
-        backupCount=5  # Changed from 0 to keep some backups
+        backupCount=5
     )
     apolo_handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     apolo_handler.setFormatter(formatter)
-    apolo_logger.addHandler(apolo_handler)  # ✅ CORRECT - adding to apolo logger
+    apolo_logger.addHandler(apolo_handler)
+
+    # Stdout handler — so Docker logs & Dozzle capture it natively
+    import sys
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setLevel(logging.INFO)  # INFO+ to stdout (DEBUG stays file-only)
+    stdout_handler.setFormatter(formatter)
+    apolo_logger.addHandler(stdout_handler)
 
 # Backward-compatible exported name used across the project.
 apolo_trader_logger = apolo_logger
