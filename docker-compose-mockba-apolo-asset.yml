@@ -10,6 +10,33 @@ services:
     volumes:
       - ./.env:/app/.env
       - ./data:/app/data
+      - ./apolo.log:/app/logs/apolo.log
+
+  # ── Dashboard API (FastAPI) — uses root Dockerfile ─────
+  dashboard:
+    build: .
+    container_name: mockba-dashboard-api
+    restart: always
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data:ro
+      - ./apolo.log:/app/apolo.log:ro
+    environment:
+      - DB_PATH=/app/data/trading.db
+      - LOG_PATH=/app/apolo.log
+      - MODEL_PATH=/app/data/signal_model.json
+    command: python -m uvicorn dashboard.main:app --host 0.0.0.0 --port 8080 --log-level info
+
+  # ── Dashboard UI (React + nginx) ─────────────────────────
+  dashboard-ui:
+    build: ./dashboard-ui
+    container_name: mockba-dashboard-ui
+    restart: always
+    ports:
+      - "85:80"
+    depends_on:
+      - dashboard
 
   watchtower:
     image: containrrr/watchtower

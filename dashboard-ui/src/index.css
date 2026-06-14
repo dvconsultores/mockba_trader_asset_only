@@ -1,0 +1,92 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Telegram Mini-App Color Scheme ──────────────────────── */
+/* bg: #171421  main text: #D0CFCC  borders: #2a2240          */
+/* keep red/yellow/cyan for status semantics                   */
+
+html {
+  -webkit-text-size-adjust: 100%;
+  -ms-text-size-adjust: 100%;
+  background: #171421;
+}
+
+body {
+  background: #171421;
+  color: #D0CFCC;
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow: hidden;
+  height: 100vh;
+  height: 100dvh;
+  touch-action: manipulation;
+}
+
+#root {
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Scrollbar (subtle) ──────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #171421;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2240;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3a3050;
+}
+
+/* ── Log Line Colors ────────────────────────────────────── */
+.log-info    { color: #D0CFCC; }
+.log-warning { color: #ffaa00; }
+.log-error   { color: #ff4444; }
+.log-approved { color: #D0CFCC; font-weight: bold; }
+.log-rejected { color: #ff6666; }
+.log-ml       { color: #66ccff; }
+
+/* ── Blinking Cursor ────────────────────────────────────── */
+.cursor::after {
+  content: '_';
+  animation: blink 1s step-end infinite;
+  color: #D0CFCC;
+}
+@keyframes blink {
+  50% { opacity: 0; }
+}
+
+/* ── Tab bar safe area (iPhone notch) ───────────────────── */
+.safe-bottom {
+  padding-bottom: max(8px, env(safe-area-inset-bottom, 8px));
+}
+
+/* ── Mobile (≤768px) ────────────────────────────────────── */
+@media (max-width: 768px) {
+  body {
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  ::-webkit-scrollbar {
+    width: 2px;
+    height: 2px;
+  }
+}
+
+/* ── Small Mobile (≤480px) ──────────────────────────────── */
+@media (max-width: 480px) {
+  body {
+    font-size: 10px;
+  }
+}
+
+

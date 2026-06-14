@@ -784,6 +784,21 @@ class ReversalScalper:
             lines.append("⚠️ High risk signals detected (FYI)")
         return "\n".join(lines)
     
+    def _log_round_summary(self, exchange: str, asset: str, price: float, regime: str,
+                           consecutive_up: int, consecutive_down: int,
+                           approved: bool, reasons: list, ml_score, ml_decision):
+        """Log ONE line per analysis round so logs show what happened every cycle."""
+        exch = exchange.upper()
+        cons = f"up={consecutive_up} down={consecutive_down}"
+        ml_str = ""
+        if ml_score is not None:
+            ml_str = f" | ML: {ml_score:.3f} ({ml_decision})"
+        if approved:
+            logger.info(f"📊 [{exch}] {asset} @ {price:.6f} | {regime} | {cons} | ✅ APPROVED{ml_str}")
+        else:
+            reason_str = ', '.join(reasons) if reasons else 'unknown'
+            logger.info(f"📊 [{exch}] {asset} @ {price:.6f} | {regime} | {cons} | ❌ REJECTED: {reason_str}{ml_str}")
+
     def analyze_signal(self, asset: str, interval: str = '5m', exchange_override: str = None) -> Dict:
         """Main analysis function - orchestrates all checks and returns decision."""
         exchange = exchange_override or get_setting("exchange") or "dex"
@@ -823,10 +838,14 @@ class ReversalScalper:
         
         if df_5m is None or len(df_5m) < 30:
             result['resume_of_analysis'] = "❌ Error: Insufficient 5m data"
+            result['rejection_reasons'].append("Insufficient 5m data")
+            self._log_round_summary(exchange, asset, 0, 'N/A', 0, 0, False, result['rejection_reasons'], None, None)
             return result
         last_close = df_5m['close'].iloc[-1]
         if live_price is None:
             result['resume_of_analysis'] = "❌ Error: Could not fetch live price"
+            result['rejection_reasons'].append("No live price")
+            self._log_round_summary(exchange, asset, last_close, 'N/A', 0, 0, False, result['rejection_reasons'], None, None)
             return result
         
         # === STEP 2: ALWAYS CALCULATE Order Book ===
@@ -942,7 +961,8 @@ class ReversalScalper:
                 manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
                 candle_count=max(consecutive_up, consecutive_down)
             )
-            
+            self._log_round_summary(exchange, asset, live_price, regime, consecutive_up, consecutive_down,
+                                    False, result['rejection_reasons'], None, None)
             return result
         
         # ✅ REMOVED: Trend filter — reversals trade in any regime now
@@ -977,6 +997,31 @@ class ReversalScalper:
             active_signal = pinbar
         elif spike_reversal is not None:
             active_signal = spike_reversal
+
+        # === ML GATE: run for ANY signal with a pattern (not just approved) ===
+        consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+        ml_score, ml_decision = None, None
+        if active_signal is not None:
+            side = active_signal['side']
+            entry = live_price
+            # Compute tentative SL/TP for ML features
+            if atr > 0:
+                if side == 'BUY':
+                    tentative_sl = entry - (atr * self.SL_ATR_MULTIPLIER)
+                    tentative_tp = entry + (atr * self.TP_ATR_MULTIPLIER)
+                else:
+                    tentative_sl = entry + (atr * self.SL_ATR_MULTIPLIER)
+                    tentative_tp = entry - (atr * self.TP_ATR_MULTIPLIER)
+            else:
+                tentative_sl = entry * (1 - self.SL_PCT_MIN) if side == 'BUY' else entry * (1 + self.SL_PCT_MIN)
+                tentative_tp = entry * (1 + self.TP_PCT) if side == 'BUY' else entry * (1 - self.TP_PCT)
+            ml_score, ml_decision, _ = _evaluate_ml_gate(
+                regime=regime, obi=obi, atr=atr, entry_price=entry,
+                side=side, stop_loss=tentative_sl, take_profit=tentative_tp,
+                candle_count=max(consecutive_up, consecutive_down),
+            )
+        result['ml_score'] = ml_score
+        result['ml_decision'] = ml_decision
         
         if active_signal is None:
             result['rejection_reasons'].append("No valid pattern")
@@ -984,14 +1029,14 @@ class ReversalScalper:
             result['resume_of_analysis'] = "\n".join(display_lines)
             
             # === LOG REJECTED SIGNAL ===
-            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
             save_signal_to_history(
                 asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=None,
                 approved=False, rejection_reasons=result['rejection_reasons'],
                 manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
                 candle_count=max(consecutive_up, consecutive_down)
             )
-            
+            self._log_round_summary(exchange, asset, live_price, regime, consecutive_up, consecutive_down,
+                                    False, result['rejection_reasons'], ml_score, ml_decision)
             return result
         
         # === CEX SPOT: Only BUY signals allowed (long-only, no shorting on spot) ===
@@ -1000,14 +1045,14 @@ class ReversalScalper:
             display_lines.append("❌ SHORT signal rejected — Binance spot is long-only (BUY only)")
             result['resume_of_analysis'] = "\n".join(display_lines)
             
-            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
             save_signal_to_history(
                 asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=active_signal.get('reason'),
                 approved=False, rejection_reasons=result['rejection_reasons'],
                 manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
                 candle_count=max(consecutive_up, consecutive_down)
             )
-            
+            self._log_round_summary(exchange, asset, live_price, regime, consecutive_up, consecutive_down,
+                                    False, result['rejection_reasons'], ml_score, ml_decision)
             return result
         
         # OBI is reference only — counter-trend OBI logged as warning, not a blocker
@@ -1094,21 +1139,13 @@ class ReversalScalper:
             )
         
         result['resume_of_analysis'] = "\n".join(display_lines)
-        logger.info(f"✅ Signal approved: {side} @ {entry} for {asset}")
 
-        # === STEP 9: ML GATE (score signal, reference-only in Signal mode) ===
-        consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
-        ml_score, ml_decision, ml_reason = _evaluate_ml_gate(
-            regime=regime, obi=obi, atr=atr, entry_price=entry,
-            side=side, stop_loss=sl, take_profit=tp,
-            candle_count=max(consecutive_up, consecutive_down) if len(df_5m) >= 10 else 0,
-        )
-        result['ml_score'] = ml_score
-        result['ml_decision'] = ml_decision
-
+        # === STEP 9: ML GATE (already evaluated above; apply decision now) ===
+        ml_reason = None
         if ml_decision == "approved":
             display_lines.append(f"🤖 ML Gate: score={ml_score:.3f} → APPROVED ✅")
         elif ml_decision == "rejected":
+            ml_reason = f"ML gate rejected: Score {ml_score:.3f} < threshold {_ML_THRESHOLD}"
             display_lines.append(f"🤖 ML Gate: score={ml_score:.3f} → REJECTED ❌ ({ml_reason})")
             if _get_exchange_mode(exchange) != "Automatic":
                 display_lines.append("  ℹ️ Signal mode — trade still allowed, ML verdict is reference")
@@ -1144,6 +1181,8 @@ class ReversalScalper:
         )
         logger.info(f"💾 Signal saved to DB with ID: {signal_id}")
         
+        self._log_round_summary(exchange, asset, live_price, regime, consecutive_up, consecutive_down,
+                                result['approved'], result['rejection_reasons'], ml_score, ml_decision)
         return result
 
 
