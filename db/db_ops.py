@@ -337,6 +337,34 @@ def _ensure_signal_history_schema(cur):
         cur.execute(
             "ALTER TABLE signal_history ADD COLUMN exchange TEXT DEFAULT 'unknown'"
         )
+
+    # ML feature columns (added by signal agent)
+    ml_columns = {
+        'slope_15m': 'REAL',
+        'slope_4h': 'REAL',
+        'slope_1d': 'REAL',
+        'dist_to_4h_high_pct': 'REAL',
+        'dist_to_4h_low_pct': 'REAL',
+        'dist_to_1d_high_pct': 'REAL',
+        'dist_to_1d_low_pct': 'REAL',
+        'tf_alignment_score': 'INTEGER',
+        'ml_score': 'REAL',
+        'ml_decision': 'TEXT',
+        'structural_sl': 'REAL',
+        # Outcome labeling columns
+        'realized_pnl': 'REAL',
+        'trade_outcome': 'TEXT',
+    }
+    for col_name, col_type in ml_columns.items():
+        if columns and col_name not in columns:
+            try:
+                cur.execute(
+                    f"ALTER TABLE signal_history ADD COLUMN {col_name} {col_type}"
+                )
+            except Exception:
+                pass  # column may already exist from concurrent migration
+
+    if any(c not in (columns or []) for c in ml_columns):
         cur.connection.commit()
 
 def get_trades_today() -> int:
@@ -386,7 +414,9 @@ def save_signal_to_history(
     manipulation_warnings: list | None = None,
     atr: float | None = None,
     live_price: float | None = None,
-    candle_count: int | None = None
+    candle_count: int | None = None,
+    ml_score: float | None = None,
+    ml_decision: str | None = None,
 ) -> int:
     """
     Save signal analysis to database.
@@ -406,13 +436,15 @@ def save_signal_to_history(
                 asset, exchange, regime, obi, pattern_type, approved, side,
                 entry_price, stop_loss, take_profit,
                 rejection_reasons, manipulation_warnings,
-                atr, live_price, candle_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                atr, live_price, candle_count,
+                ml_score, ml_decision
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             asset, exchange, regime, obi, pattern_type, int(approved), side,
             entry_price, stop_loss, take_profit,
             rejection_str, manipulation_str,
-            atr, live_price, candle_count
+            atr, live_price, candle_count,
+            ml_score, ml_decision
         ))
         conn.commit()
         return cur.lastrowid

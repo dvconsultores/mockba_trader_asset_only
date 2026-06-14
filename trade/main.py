@@ -51,6 +51,65 @@ initialize_database_tables()
 
 _LAST_SIGNAL_ALERTS: Dict[str, float] = {}
 _LAST_EXCHANGE_SCAN_AT: Dict[str, float] = {"dex": 0.0, "cex": 0.0}
+_LAST_LABELER_RUN_AT: float = 0.0
+_LABELER_INTERVAL = 7200  # run outcome labeler every 2 hours
+
+# ML Gate — loaded lazily on first use
+_ml_model = None
+_ML_THRESHOLD = 0.50  # score > 0.50 → ML approves
+
+
+def _get_ml_model():
+    """Lazy-load the signal gate ML model (singleton)."""
+    global _ml_model
+    if _ml_model is None:
+        try:
+            from trade.signal_agent.model import get_model
+            _ml_model = get_model()
+            _ml_model.load()
+            if _ml_model.is_loaded:
+                logger.info("[ML GATE] Model loaded successfully")
+            else:
+                logger.info("[ML GATE] No model file found — ML gate disabled")
+        except Exception as e:
+            logger.warning(f"[ML GATE] Failed to load model: {e}")
+            _ml_model = None
+    return _ml_model
+
+
+def _evaluate_ml_gate(regime: str, obi: float, atr: float, entry_price: float,
+                       side: str, stop_loss: float, take_profit: float,
+                       candle_count: int) -> tuple:
+    """
+    Score a signal through the ML gate.
+    Returns (ml_score, ml_decision, reject_reason_or_none).
+    """
+    model = _get_ml_model()
+    if model is None or not model.is_loaded:
+        return None, None, None
+
+    try:
+        from trade.signal_agent.features import extract_features_live, features_to_array
+        features = extract_features_live(
+            regime=regime, obi=obi, atr=atr, entry_price=entry_price,
+            side=side, stop_loss=stop_loss, take_profit=take_profit,
+            candle_count=candle_count,
+        )
+        X = features_to_array(features)
+        decision, score = model.decide(X, threshold=_ML_THRESHOLD)
+        if decision == "rejected":
+            reason = f"ML gate rejected: Score {score:.3f} < threshold {_ML_THRESHOLD}"
+        else:
+            reason = None
+        return round(score, 4), decision, reason
+    except Exception as e:
+        logger.warning(f"[ML GATE] Evaluation failed: {e}")
+        return None, None, None
+
+_LAST_SIGNAL_ALERTS: Dict[str, float] = {}
+_LAST_EXCHANGE_SCAN_AT: Dict[str, float] = {"dex": 0.0, "cex": 0.0}
+_LAST_LABELER_RUN_AT: float = 0.0
+_LABELER_INTERVAL = 7200  # run outcome labeler every 2 hours
 
 
 def _get_exchange_mode(exchange: str) -> str:
@@ -86,6 +145,29 @@ def _should_run_exchange_cycle(exchange: str, interval_seconds: int) -> bool:
     return True
 
 
+def _should_run_labeler() -> bool:
+    """Throttle outcome labeler to run every _LABELER_INTERVAL seconds."""
+    global _LAST_LABELER_RUN_AT
+    now = time.time()
+    if now - _LAST_LABELER_RUN_AT < _LABELER_INTERVAL:
+        return False
+    _LAST_LABELER_RUN_AT = now
+    return True
+
+
+def _run_labeler_background():
+    """Run the signal outcome labeler in a background thread."""
+    import threading
+    def _label():
+        try:
+            from trade.signal_agent.labeler import label_signals
+            label_signals(dry_run=False)
+        except Exception as e:
+            logger.warning(f"[LABELER] Background run failed: {e}")
+    t = threading.Thread(target=_label, daemon=True, name="labeler-bg")
+    t.start()
+
+
 class ReversalScalper:
     """
     Hard-coded reversal strategy with regime filter, order book imbalance,
@@ -116,7 +198,6 @@ class ReversalScalper:
         self.TP_PCT = self._setting_pct('take_profit', 0.003)    # 0.3% take profit
         self.SL_PCT_MIN = self._setting_pct('stop_loss', 0.010)  # 1.0% stop loss (tighter for scalp-style)
         self.SL_PCT_MAX = 0.012                                   # 1.2% max stop loss
-        self.MAX_TRADES_PER_DAY = 2                               # Max 2 positive trades daily
         self.SL_ATR_MULTIPLIER = 1.2    # SL at 1.2x ATR (tight, capital-preserving)
         self.TP_ATR_MULTIPLIER = 2.0    # TP at 2.0x ATR (R:R ~1.67:1)
         
@@ -936,35 +1017,7 @@ class ReversalScalper:
             display_lines.append(f"📚 ℹ️ OBI {obi:.2f} (bearish book, thin market—reference only)")
         elif side == 'SELL' and obi > 1.0:
             display_lines.append(f"📚 ℹ️ OBI {obi:.2f} (bullish book, thin market—reference only)")
-        
-        # === CHECK DAILY TRADES LIMIT (DEX only, CEX unlimited) ===
-        trades_today = get_trades_today()
-        max_trades = self.MAX_TRADES_PER_DAY
-        
-        if exchange != "cex" and trades_today >= max_trades and _get_exchange_mode("dex") == "Automatic":
-            result['rejection_reasons'].append(f"Daily limit reached ({trades_today}/{max_trades})")
-            display_lines.append(f"🚫 ❌ Daily trade limit reached: {trades_today}/{max_trades} trades\n• Resume trading tomorrow")
-            result['resume_of_analysis'] = "\n".join(display_lines)
-            
-            # === LOG REJECTED SIGNAL ===
-            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
-            save_signal_to_history(
-                asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=active_signal.get('reason') if active_signal else None,
-                approved=False, rejection_reasons=result['rejection_reasons'],
-                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
-                candle_count=max(consecutive_up, consecutive_down)
-            )
-            
-            return result
-        
-        # Display trades count + reminder if approaching limit (DEX only)
-        if exchange != "cex":
-            display_lines.append(f"📊 Trades today: {trades_today}/{max_trades}")
-            if trades_today == max_trades - 1:
-                display_lines.append(f"⚠️ WARNING: This is your final trade for today!")
-            elif trades_today >= max_trades:
-                display_lines.append(f"🚫 Daily limit reached: {trades_today}/{max_trades}\n• Wait until tomorrow for more trades")
-        
+
         # === STEP 8: ALL CHECKS PASSED - APPROVE TRADE ===
         entry = live_price
         
@@ -1042,7 +1095,31 @@ class ReversalScalper:
         
         result['resume_of_analysis'] = "\n".join(display_lines)
         logger.info(f"✅ Signal approved: {side} @ {entry} for {asset}")
-        
+
+        # === STEP 9: ML GATE (score signal, reference-only in Signal mode) ===
+        ml_score, ml_decision, ml_reason = _evaluate_ml_gate(
+            regime=regime, obi=obi, atr=atr, entry_price=entry,
+            side=side, stop_loss=sl, take_profit=tp,
+            candle_count=max(consecutive_up, consecutive_down) if len(df_5m) >= 10 else 0,
+        )
+        result['ml_score'] = ml_score
+        result['ml_decision'] = ml_decision
+
+        if ml_decision == "approved":
+            display_lines.append(f"🤖 ML Gate: score={ml_score:.3f} → APPROVED ✅")
+        elif ml_decision == "rejected":
+            display_lines.append(f"🤖 ML Gate: score={ml_score:.3f} → REJECTED ❌ ({ml_reason})")
+            if _get_exchange_mode(exchange) != "Automatic":
+                display_lines.append("  ℹ️ Signal mode — trade still allowed, ML verdict is reference")
+            else:
+                result['approved'] = False
+                result['rejection_reasons'].append(ml_reason)
+                display_lines.append("  ⛔ Automatic mode — trade BLOCKED by ML gate")
+        else:
+            display_lines.append("🤖 ML Gate: model not available — skipping")
+
+        result['resume_of_analysis'] = "\n".join(display_lines)
+
         # === SAVE SIGNAL TO DATABASE FOR LATER ANALYSIS ===
         consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
         signal_id = save_signal_to_history(
@@ -1051,16 +1128,18 @@ class ReversalScalper:
             regime=regime,
             obi=obi,
             pattern_type=active_signal.get('reason', 'Unknown'),
-            approved=True,
+            approved=result['approved'],  # may be overridden by ML gate
             side=side,
             entry_price=entry,
             stop_loss=sl,
             take_profit=tp,
-            rejection_reasons=[],
+            rejection_reasons=result['rejection_reasons'],
             manipulation_warnings=manipulation_warnings,
             atr=atr,
             live_price=live_price,
-            candle_count=max(consecutive_up, consecutive_down)
+            candle_count=max(consecutive_up, consecutive_down),
+            ml_score=ml_score,
+            ml_decision=ml_decision,
         )
         logger.info(f"💾 Signal saved to DB with ID: {signal_id}")
         
@@ -1178,6 +1257,10 @@ def autotrade():
                             }
                             place_spot_order(order_payload)
                             logger.info(f"🚀 Binance spot order placed: {order_payload}")
+
+            # Periodic outcome labeling (background, every 2 hours)
+            if _should_run_labeler():
+                _run_labeler_background()
 
             time.sleep(30)
         except Exception as e:
