@@ -1097,6 +1097,7 @@ class ReversalScalper:
         logger.info(f"✅ Signal approved: {side} @ {entry} for {asset}")
 
         # === STEP 9: ML GATE (score signal, reference-only in Signal mode) ===
+        consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
         ml_score, ml_decision, ml_reason = _evaluate_ml_gate(
             regime=regime, obi=obi, atr=atr, entry_price=entry,
             side=side, stop_loss=sl, take_profit=tp,
