@@ -7,23 +7,13 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
     env_file:
       - .env
+    environment:
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./.env:/app/.env
       - ./data:/app/data
-      - ./logs:/app/logs
 
-  # ── Sidecar: tails apolo.log into stdout for Dozzle ─────────────────
-  log-tail:
-    image: alpine:latest
-    container_name: log-tail-apolo
-    restart: always
-    volumes:
-      - ./logs:/logs:ro
-    command: sh -c "touch /logs/apolo.log && tail -f /logs/apolo.log"
-    depends_on:
-      - micro-mockba-asset-futures-bot
-
-  # ── Real-time log viewer (browser: http://your-server:8080) ──────────
+  # ── Real-time log viewer → http://your-server:8080 ──────────────────
   dozzle:
     image: amir20/dozzle:latest
     container_name: dozzle-logs
@@ -34,7 +24,10 @@ services:
       - "8080:8080"
     environment:
       - DOZZLE_NO_ANALYTICS=true
-      - DOZZLE_FILTER=asset-futures
+      - DOZZLE_FILTER=name=micro-mockba-asset-futures-bot
+    networks:
+      - default
+      - nginx-proxy-manager_default
 
   watchtower:
     image: containrrr/watchtower
@@ -47,3 +40,7 @@ services:
       - WATCHTOWER_POLL_INTERVAL=60
       - WATCHTOWER_LIFECYCLE_HOOKS=true
       - WATCHTOWER_LABEL_ENABLE=true
+
+networks:
+  nginx-proxy-manager_default:
+    external: true
