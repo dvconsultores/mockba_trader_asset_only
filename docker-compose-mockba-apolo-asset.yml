@@ -10,23 +10,22 @@ services:
     volumes:
       - ./.env:/app/.env
       - ./data:/app/data
-      - ./apolo.log:/app/logs/apolo.log
+      - apolo-logs:/app/logs
 
-  # ── Dashboard API (FastAPI) — uses root Dockerfile ─────
+  # ── Dashboard API (FastAPI) ──────────────────────────────
   dashboard:
-    build: .
+    build: ./dashboard
     container_name: mockba-dashboard-api
     restart: always
     ports:
       - "8080:8080"
     volumes:
       - ./data:/app/data:ro
-      - ./apolo.log:/app/apolo.log:ro
+      - apolo-logs:/app/logs:ro
     environment:
       - DB_PATH=/app/data/trading.db
-      - LOG_PATH=/app/apolo.log
+      - LOG_PATH=/app/logs/apolo.log
       - MODEL_PATH=/app/data/signal_model.json
-    command: python -m uvicorn dashboard.main:app --host 0.0.0.0 --port 8080 --log-level info
 
   # ── Dashboard UI (React + nginx) ─────────────────────────
   dashboard-ui:
@@ -34,7 +33,7 @@ services:
     container_name: mockba-dashboard-ui
     restart: always
     ports:
-      - "85:80"
+      - "86:80"
     depends_on:
       - dashboard
 
@@ -49,3 +48,6 @@ services:
       - WATCHTOWER_POLL_INTERVAL=60
       - WATCHTOWER_LIFECYCLE_HOOKS=true
       - WATCHTOWER_LABEL_ENABLE=true
+
+volumes:
+  apolo-logs:

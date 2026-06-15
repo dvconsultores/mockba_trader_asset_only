@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react'
+import { TerminalSquare, BarChart3, Bot, Radio } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import Terminal from './Terminal'
 import Signals from './Signals'
 import MLMonitor from './MLMonitor'
@@ -30,18 +32,18 @@ export default function App() {
     return () => clearInterval(interval)
   }, [])
 
-  const tabs: { id: Tab; label: string; icon: string }[] = [
-    { id: 'live', label: 'Live', icon: '📟' },
-    { id: 'signals', label: 'Signals', icon: '📊' },
-    { id: 'ml', label: 'ML', icon: '🤖' },
-    { id: 'status', label: 'Status', icon: '📡' },
+  const tabs: { id: Tab; label: string; icon: LucideIcon }[] = [
+    { id: 'live', label: 'Live', icon: TerminalSquare },
+    { id: 'signals', label: 'Signals', icon: BarChart3 },
+    { id: 'ml', label: 'ML', icon: Bot },
+    { id: 'status', label: 'Status', icon: Radio },
   ]
 
   return (
     <div className="h-screen flex flex-col bg-[#171421]">
       {/* Top status bar */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-[#2a2240] bg-[#1a1528] select-none shrink-0">
-        <span className="text-[11px] sm:text-xs text-[#D0CFCC] font-bold">Mockba Terminal</span>
+      <div className="flex items-center justify-between px-3 py-2 border-b border-[#2a2240] bg-[#1a1528] select-none shrink-0">
+        <span className="text-base sm:text-lg text-[#D0CFCC] font-bold tracking-tight">Mockba Terminal</span>
         <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-xs">
           {status && (
             <>
@@ -69,20 +71,23 @@ export default function App() {
 
       {/* Bottom tab bar (native app style) */}
       <div className="flex items-center justify-around border-t border-[#2a2240] bg-[#1a1528] select-none shrink-0 safe-bottom pb-[env(safe-area-inset-bottom,0px)]">
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`flex flex-col items-center gap-0.5 py-2 px-3 min-w-[60px] transition-colors ${
-              tab === t.id
-                ? 'text-[#D0CFCC] border-t-2 border-[#D0CFCC] -mt-[1px]'
-                : 'text-[#4a4060] border-t-2 border-transparent -mt-[1px]'
-            }`}
-          >
-            <span className="text-base sm:text-lg leading-none">{t.icon}</span>
-            <span className="text-[9px] sm:text-[10px] font-medium">{t.label}</span>
-          </button>
-        ))}
+        {tabs.map(t => {
+          const Icon = t.icon
+          return (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`flex flex-col items-center gap-1 py-2.5 px-3 min-w-[64px] transition-colors ${
+                tab === t.id
+                  ? 'text-[#D0CFCC] border-t-2 border-[#D0CFCC] -mt-[1px]'
+                  : 'text-[#4a4060] border-t-2 border-transparent -mt-[1px]'
+              }`}
+            >
+              <Icon size={22} strokeWidth={tab === t.id ? 2.4 : 1.8} />
+              <span className="text-[10px] sm:text-[11px] font-medium">{t.label}</span>
+            </button>
+          )
+        })}
       </div>
     </div>
   )

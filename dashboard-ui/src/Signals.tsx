@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Search } from 'lucide-react'
 
 interface Signal {
   id: number
@@ -36,13 +37,14 @@ export default function Signals() {
     return () => clearInterval(interval)
   }, [exchangeFilter])
 
-  const filtered = filter
+  const filtered = (filter
     ? signals.filter(s =>
         s.asset?.toLowerCase().includes(filter.toLowerCase()) ||
         s.pattern_type?.toLowerCase().includes(filter.toLowerCase()) ||
         String(s.id).includes(filter)
       )
     : signals
+  ).slice().sort((a, b) => b.id - a.id)
 
   function mlColor(score: number | null, decision: string | null): string {
     if (score === null) return 'text-[#4a4060]'
@@ -58,25 +60,26 @@ export default function Signals() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center gap-1 sm:gap-2 px-1.5 sm:px-2 py-1 bg-[#1a1528] border-b border-[#2a2240] text-[10px] sm:text-xs">
-        <span className="text-[#4a4060] hidden sm:inline">signal_history</span>
-        <input
-          type="text"
-          value={filter}
-          onChange={e => setFilter(e.target.value)}
-          placeholder="filter..."
-          className="flex-1 bg-[#171421] border border-[#2a2240] text-[#D0CFCC] px-1.5 sm:px-2 py-0.5 text-[10px] sm:text-xs focus:outline-none focus:border-[#D0CFCC] font-mono placeholder-[#4a4060]"
-        />
+      <div className="flex items-center gap-2 px-2 sm:px-3 py-2 bg-[#1a1528] border-b border-[#2a2240]">
+        <div className="relative flex-1">
+          <Search size={16} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#4a4060] pointer-events-none" />
+          <input
+            type="text"
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder="filter signals..."
+            className="w-full bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] pl-8 pr-3 py-2 text-sm focus:outline-none focus:border-[#D0CFCC] font-mono placeholder-[#4a4060]"
+          />
+        </div>
         <select
           value={exchangeFilter}
           onChange={e => setExchangeFilter(e.target.value)}
-          className="bg-[#171421] border border-[#2a2240] text-[#D0CFCC] px-1 sm:px-2 py-0.5 text-[10px] sm:text-xs"
+          className="bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] px-3 py-2 text-sm focus:outline-none focus:border-[#D0CFCC]"
         >
           <option value="">ALL</option>
           <option value="dex">DEX</option>
           <option value="cex">CEX</option>
         </select>
-        <span className="text-[#4a4060] text-[9px] sm:text-xs hidden sm:inline">{filtered.length} rows</span>
       </div>
 
       <div className="flex-1 overflow-auto">
