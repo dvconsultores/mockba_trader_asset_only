@@ -83,12 +83,11 @@ export default function Terminal() {
         </div>
         <button
           onClick={() => setPaused(!paused)}
-          className={`flex items-center justify-center gap-2 rounded-xl px-5 py-3 text-base font-medium border transition-colors ${paused ? 'border-yellow-600 text-yellow-500 bg-yellow-950/30' : 'border-[#2a2240] text-[#D0CFCC] bg-[#171421]'} hover:border-[#D0CFCC] whitespace-nowrap`}
+          className={`flex items-center justify-center rounded-xl px-4 py-3 bg-[#171421] border border-[#2a2240] transition-colors ${paused ? 'text-yellow-500' : 'text-[#D0CFCC]'} hover:border-[#D0CFCC]`}
         >
           {paused ? <Play size={18} /> : <Pause size={18} />}
-          <span className="hidden sm:inline">{paused ? 'Resume' : 'Pause'}</span>
         </button>
-        <span className={`w-3 h-3 rounded-full shrink-0 ${connected ? 'bg-[#D0CFCC]' : 'bg-red-500'}`} />
+        <span className={`w-3 h-3 rounded-full shrink-0 ${connected ? 'bg-green-500' : 'bg-red-500'}`} />
       </div>
 
       {/* Log Output */}

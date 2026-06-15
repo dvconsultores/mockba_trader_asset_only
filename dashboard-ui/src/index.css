@@ -67,7 +67,7 @@ body {
 
 /* ── Tab bar safe area (iPhone notch) ───────────────────── */
 .safe-bottom {
-  padding-bottom: max(8px, env(safe-area-inset-bottom, 8px));
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* ── Mobile (≤768px) ────────────────────────────────────── */

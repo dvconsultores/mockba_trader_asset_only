@@ -70,21 +70,21 @@ export default function App() {
       </div>
 
       {/* Bottom tab bar (native app style) */}
-      <div className="flex items-center justify-around border-t border-[#2a2240] bg-[#1a1528] select-none shrink-0 safe-bottom pb-[env(safe-area-inset-bottom,0px)]">
+      <div className="flex items-center justify-around border-t border-[#2a2240] bg-[#1a1528] select-none shrink-0 safe-bottom">
         {tabs.map(t => {
           const Icon = t.icon
           return (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex flex-col items-center gap-0.5 py-2 px-3 min-w-[64px] transition-colors ${
+              className={`flex flex-col items-center gap-0 py-1.5 px-3 min-w-[64px] leading-none transition-colors ${
                 tab === t.id
                   ? 'text-[#D0CFCC] border-t-2 border-[#D0CFCC] -mt-[1px]'
                   : 'text-[#4a4060] border-t-2 border-transparent -mt-[1px]'
               }`}
             >
               <Icon size={18} strokeWidth={tab === t.id ? 2.4 : 1.8} />
-              <span className="text-[10px] sm:text-xs font-medium">{t.label}</span>
+              <span className="text-[10px] sm:text-xs font-medium mt-0.5">{t.label}</span>
             </button>
           )
         })}
