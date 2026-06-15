@@ -60,21 +60,21 @@ export default function Signals() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center gap-2 px-2 sm:px-3 py-2 bg-[#1a1528] border-b border-[#2a2240]">
+      <div className="flex items-center gap-2 px-2 sm:px-3 py-2.5 bg-[#1a1528] border-b border-[#2a2240]">
         <div className="relative flex-1">
-          <Search size={16} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#4a4060] pointer-events-none" />
+          <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#4a4060] pointer-events-none" />
           <input
             type="text"
             value={filter}
             onChange={e => setFilter(e.target.value)}
             placeholder="filter signals..."
-            className="w-full bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] pl-8 pr-3 py-2 text-sm focus:outline-none focus:border-[#D0CFCC] font-mono placeholder-[#4a4060]"
+            className="w-full bg-[#171421] border border-[#2a2240] rounded-xl text-[#D0CFCC] pl-10 pr-3 py-3 text-base focus:outline-none focus:border-[#D0CFCC] font-mono placeholder-[#4a4060]"
           />
         </div>
         <select
           value={exchangeFilter}
           onChange={e => setExchangeFilter(e.target.value)}
-          className="bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] px-3 py-2 text-sm focus:outline-none focus:border-[#D0CFCC]"
+          className="bg-[#171421] border border-[#2a2240] rounded-xl text-[#D0CFCC] px-4 py-3 text-base focus:outline-none focus:border-[#D0CFCC]"
         >
           <option value="">ALL</option>
           <option value="dex">DEX</option>

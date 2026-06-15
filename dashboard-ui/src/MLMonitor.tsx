@@ -29,8 +29,16 @@ export default function MLMonitor() {
     return <div className="p-4 text-[#4a4060] animate-pulse">Loading ML stats...</div>
   }
 
-  const maxBucket = Math.max(1, ...Object.values(info.score_distribution))
-  const buckets = Object.entries(info.score_distribution).sort()
+  const threshold = info.threshold ?? 0
+  const totalScored = info.total_scored ?? 0
+  const approvedByMl = info.approved_by_ml ?? 0
+  const rejectedByMl = info.rejected_by_ml ?? 0
+  const scoreDistribution = info.score_distribution ?? {}
+  const recentScores = info.recent_scores ?? []
+
+  const maxBucket = Math.max(1, ...Object.values(scoreDistribution))
+  const buckets = Object.entries(scoreDistribution).sort()
+  const recentNewestFirst = [...recentScores].reverse()
 
   return (
     <div className="h-full overflow-auto p-2 sm:p-4 font-mono text-[10px] sm:text-xs">
@@ -40,7 +48,7 @@ export default function MLMonitor() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-3">
           <div className="bg-[#1a1528] border border-[#2a2240] p-2">
             <div className="text-[#4a4060]">Threshold</div>
-            <div className="text-[#D0CFCC] text-lg font-bold">{info.threshold.toFixed(2)}</div>
+            <div className="text-[#D0CFCC] text-lg font-bold">{threshold.toFixed(2)}</div>
           </div>
           <div className="bg-[#1a1528] border border-[#2a2240] p-2">
             <div className="text-[#4a4060]">Model</div>
@@ -50,13 +58,13 @@ export default function MLMonitor() {
           </div>
           <div className="bg-[#1a1528] border border-[#2a2240] p-2">
             <div className="text-[#4a4060]">Total Scored</div>
-            <div className="text-[#D0CFCC] text-lg">{info.total_scored}</div>
+            <div className="text-[#D0CFCC] text-lg">{totalScored}</div>
           </div>
           <div className="bg-[#1a1528] border border-[#2a2240] p-2">
             <div className="text-[#4a4060]">Approval Rate</div>
             <div className="text-[#D0CFCC] text-lg">
-              {info.total_scored > 0
-                ? ((info.approved_by_ml / info.total_scored) * 100).toFixed(1) + '%'
+              {totalScored > 0
+                ? ((approvedByMl / totalScored) * 100).toFixed(1) + '%'
                 : '—'}
             </div>
           </div>
@@ -65,7 +73,7 @@ export default function MLMonitor() {
 
       {/* Score Distribution Histogram */}
       <div className="mb-4">
-        <h3 className="text-[#4a4060] mb-2">Score Distribution (last {info.total_scored})</h3>
+        <h3 className="text-[#4a4060] mb-2">Score Distribution (last {totalScored})</h3>
         <div className="space-y-1">
           {buckets.map(([bucket, count]) => (
             <div key={bucket} className="flex items-center gap-2">
@@ -88,8 +96,8 @@ export default function MLMonitor() {
       <div className="mb-4">
         <h3 className="text-[#4a4060] mb-2">Recent ML Scores</h3>
         <div className="flex flex-wrap gap-1">
-          {info.recent_scores.map((score, i) => {
-            const isApproved = score >= info.threshold
+          {recentNewestFirst.map((score, i) => {
+            const isApproved = score >= threshold
             return (
               <span
                 key={i}
@@ -111,11 +119,11 @@ export default function MLMonitor() {
         <h3 className="text-[#4a4060] mb-2">ML Decision Breakdown</h3>
         <div className="flex gap-4">
           <div className="bg-[#1a1528] border border-[#D0CFCC]/20 p-3 flex-1">
-            <div className="text-[#D0CFCC] text-2xl font-bold">{info.approved_by_ml}</div>
+            <div className="text-[#D0CFCC] text-2xl font-bold">{approvedByMl}</div>
             <div className="text-[#4a4060] text-[10px]">APPROVED BY ML</div>
           </div>
           <div className="bg-[#1a1528] border border-red-900/50 p-3 flex-1">
-            <div className="text-red-400 text-2xl font-bold">{info.rejected_by_ml}</div>
+            <div className="text-red-400 text-2xl font-bold">{rejectedByMl}</div>
             <div className="text-[#4a4060] text-[10px]">REJECTED BY ML</div>
           </div>
         </div>
