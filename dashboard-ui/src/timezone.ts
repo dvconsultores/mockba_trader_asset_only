@@ -19,19 +19,35 @@ export function toCaracasTime(dateOrIso: string | Date): Date {
   return new Date(d.getTime() + UTC_OFFSET_MS)
 }
 
-/** Convert a single timestamp string (ISO or log format) to Caracas time string. */
+/** Regex matches DB timestamp format: "2026-06-14 17:12:22" (space, no ms, UTC) */
+const DB_TS_RE = /^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}$/
+
+/** Convert a single timestamp string (ISO, DB, or log format) to Caracas time string. */
 export function convertTimestampToCaracas(ts: string): string {
+  if (!ts) return '—'
+  // Handle DB format: "2026-06-14 17:12:22" (space, no T, UTC)
+  if (DB_TS_RE.test(ts)) {
+    return _shiftAndFormat(ts.replace(' ', 'T') + 'Z')
+  }
   // Handle ISO format: "2026-06-15T03:49:54"
   if (ts.includes('T')) {
-    const d = toCaracasTime(ts)
-    const mm = String(d.getMonth() + 1).padStart(2, '0')
-    const dd = String(d.getDate()).padStart(2, '0')
-    const hh = String(d.getHours()).padStart(2, '0')
-    const min = String(d.getMinutes()).padStart(2, '0')
-    const ss = String(d.getSeconds()).padStart(2, '0')
-    return `${mm}-${dd} ${hh}:${min}:${ss}`
+    return _shiftAndFormat(ts + (ts.endsWith('Z') ? '' : 'Z'))
   }
   return ts
+}
+
+function _shiftAndFormat(utcStr: string): string {
+  const d = new Date(utcStr)
+  if (isNaN(d.getTime())) return utcStr
+  const caracas = new Date(d.getTime() + UTC_OFFSET_MS)
+  // Use UTC getters because we already shifted the epoch — the result is
+  // the Caracas wall-clock time expressed as a UTC timestamp
+  const mm = String(caracas.getUTCMonth() + 1).padStart(2, '0')
+  const dd = String(caracas.getUTCDate()).padStart(2, '0')
+  const hh = String(caracas.getUTCHours()).padStart(2, '0')
+  const min = String(caracas.getUTCMinutes()).padStart(2, '0')
+  const ss = String(caracas.getUTCSeconds()).padStart(2, '0')
+  return `${mm}-${dd} ${hh}:${min}:${ss}`
 }
 
 /** Replace every UTC timestamp in a log line with Caracas time. */
