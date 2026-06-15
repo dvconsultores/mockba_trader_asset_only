@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Search, Pause, Play } from 'lucide-react'
+import { convertLogLineToCaracas } from './timezone'
 
 const MAX_LINES = 5000
 
@@ -101,7 +102,7 @@ export default function Terminal() {
         )}
         {displayed.map((line, i) => (
           <div key={i} className={`${classifyLine(line)} break-words whitespace-pre-wrap overflow-x-hidden`}>
-            {line}
+            {convertLogLineToCaracas(line)}
           </div>
         ))}
       </div>

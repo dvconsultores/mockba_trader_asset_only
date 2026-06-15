@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Search } from 'lucide-react'
+import { convertTimestampToCaracas } from './timezone'
 
 interface Signal {
   id: number
@@ -108,7 +109,7 @@ export default function Signals() {
                 }`}
               >
                 <td className="px-2 py-0.5 whitespace-nowrap text-[#4a4060]">
-                  {s.timestamp?.replace('T', ' ').substring(5, 19) || '—'}
+                  {convertTimestampToCaracas(s.timestamp) || '—'}
                 </td>
                 <td className="px-2 py-0.5">{s.exchange?.toUpperCase()}</td>
                 <td className={`px-2 py-0.5 ${s.side === 'BUY' ? 'text-[#D0CFCC]' : 'text-red-400'}`}>
