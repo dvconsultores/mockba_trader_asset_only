@@ -83,8 +83,8 @@ export default function App() {
                   : 'text-[#4a4060] border-t-2 border-transparent -mt-[1px]'
               }`}
             >
-              <Icon size={18} strokeWidth={tab === t.id ? 2.4 : 1.8} />
-              <span className="text-[10px] sm:text-xs font-medium mt-0.5">{t.label}</span>
+              <Icon size={24} strokeWidth={tab === t.id ? 2.4 : 1.8} />
+              <span className="text-xs sm:text-sm font-medium mt-0.5">{t.label}</span>
             </button>
           )
         })}
