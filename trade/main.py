@@ -1143,10 +1143,10 @@ class ReversalScalper:
         # === STEP 9: ML GATE (already evaluated above; apply decision now) ===
         ml_reason = None
         if ml_decision == "approved":
-            display_lines.append(f"🤖 ML Gate: score={ml_score:.3f} → APPROVED ✅")
+            display_lines.append(f"\n🤖 ML Gate: score={ml_score:.3f} → APPROVED ✅")
         elif ml_decision == "rejected":
             ml_reason = f"ML gate rejected: Score {ml_score:.3f} < threshold {_ML_THRESHOLD}"
-            display_lines.append(f"🤖 ML Gate: score={ml_score:.3f} → REJECTED ❌ ({ml_reason})")
+            display_lines.append(f"\n🤖 ML Gate: score={ml_score:.3f} → REJECTED ❌ ({ml_reason})")
             if _get_exchange_mode(exchange) != "Automatic":
                 display_lines.append("  ℹ️ Signal mode — trade still allowed, ML verdict is reference")
             else:
@@ -1154,7 +1154,7 @@ class ReversalScalper:
                 result['rejection_reasons'].append(ml_reason)
                 display_lines.append("  ⛔ Automatic mode — trade BLOCKED by ML gate")
         else:
-            display_lines.append("🤖 ML Gate: model not available — skipping")
+            display_lines.append("\n🤖 ML Gate: model not available — skipping")
 
         result['resume_of_analysis'] = "\n".join(display_lines)
 
