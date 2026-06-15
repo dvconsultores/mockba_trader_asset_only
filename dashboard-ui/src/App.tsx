@@ -77,13 +77,13 @@ export default function App() {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex flex-col items-center gap-1 py-2 px-3 min-w-[64px] transition-colors ${
+              className={`flex flex-col items-center gap-0.5 py-2 px-3 min-w-[64px] transition-colors ${
                 tab === t.id
                   ? 'text-[#D0CFCC] border-t-2 border-[#D0CFCC] -mt-[1px]'
                   : 'text-[#4a4060] border-t-2 border-transparent -mt-[1px]'
               }`}
             >
-              <Icon size={22} strokeWidth={tab === t.id ? 2.4 : 1.8} />
+              <Icon size={18} strokeWidth={tab === t.id ? 2.4 : 1.8} />
               <span className="text-[10px] sm:text-xs font-medium">{t.label}</span>
             </button>
           )

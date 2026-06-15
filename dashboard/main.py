@@ -270,7 +270,14 @@ async def api_logs_stream():
             except Exception:
                 pass
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(
+        event_generator(),
+        ping=15,
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ── Health check ─────────────────────────────────────────────────
