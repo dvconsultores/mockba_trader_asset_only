@@ -830,11 +830,17 @@ class ReversalScalper:
                 f_live = pool.submit(get_close_price, ORDERLY_ACCOUNT_ID, asset, interval)
                 f_orderbook = pool.submit(get_orderbook, asset, self.OB_DEPTH)
                 f_trades = pool.submit(get_market_trades, asset, 50)
-            df_5m = f_df_5m.result()
-            df_1h = f_df_1h.result()
-            live_price = f_live.result()
-            orderbook = f_orderbook.result()
-            market_trades = f_trades.result()
+            try:
+                df_5m = f_df_5m.result(timeout=15)
+                df_1h = f_df_1h.result(timeout=15)
+                live_price = f_live.result(timeout=15)
+                orderbook = f_orderbook.result(timeout=15)
+                market_trades = f_trades.result(timeout=15)
+            except TimeoutError:
+                logger.error(f"[{exchange}] API timeout fetching data for {asset} — skipping cycle")
+                result['resume_of_analysis'] = "❌ Error: API timeout"
+                result['rejection_reasons'].append("API timeout")
+                return result
         
         if df_5m is None or len(df_5m) < 30:
             result['resume_of_analysis'] = "❌ Error: Insufficient 5m data"
