@@ -17,13 +17,12 @@ def log(msg):
 def run_script(script_path):
     """Start a script as a subprocess."""
     log(f"🚀 Starting {script_path}")
-    # Use 'python' instead of 'python3' for broader compatibility
+    # Inherit parent stdout/stderr — avoid pipe buffer deadlock.
+    # The child writes its own log file; we just need to monitor its exit.
     return subprocess.Popen(
         [sys.executable, script_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        universal_newlines=True,
-        bufsize=1  # Line-buffered
+        stdout=sys.stdout,
+        stderr=sys.stderr,
     )
 
 def main():
@@ -44,16 +43,6 @@ def main():
                 if proc.poll() is not None:  # Process exited
                     return_code = proc.returncode
                     log(f"⚠️ {script} exited with code {return_code}. Restarting in 3s...")
-                    
-                    # Optional: read last few lines of output for debugging
-                    try:
-                        output = proc.stdout.read() if proc.stdout else ""
-                        if output:
-                            last_lines = output.strip().split('\n')[-3:]
-                            for line in last_lines:
-                                log(f"   [LOG] {line}")
-                    except Exception as e:
-                        log(f"   Failed to read logs: {e}")
 
                     time.sleep(3)
                     processes[script] = run_script(script)

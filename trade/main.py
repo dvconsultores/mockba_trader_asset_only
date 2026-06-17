@@ -161,7 +161,15 @@ def _run_labeler_background():
     def _label():
         try:
             from trade.signal_agent.labeler import label_signals
-            label_signals(dry_run=False)
+            updated = label_signals(dry_run=False)
+            if updated:
+                try:
+                    from trading_bot.send_bot_message import send_bot_message
+                    chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+                    if chat_id:
+                        send_bot_message(chat_id, f"🗄️ Database updated: {updated} signals labeled with real trade outcomes")
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"[LABELER] Background run failed: {e}")
     t = threading.Thread(target=_label, daemon=True, name="labeler-bg")
@@ -1267,8 +1275,11 @@ def autotrade():
                 else:
                     dex_result = scalper.analyze_signal(asset, interval, exchange_override="dex")
                     if dex_result.get("approved"):
+                        ml_score = dex_result.get('ml_score')
                         if dex_mode == "Signal":
-                            if _should_send_signal_alert("dex", asset, dex_result['side'], dex_result.get('signal_reason', 'Unknown')):
+                            if ml_score is not None and ml_score < _ML_THRESHOLD:
+                                logger.info(f"📡 DEX signal skipped — ML score {ml_score:.3f} < threshold {_ML_THRESHOLD}")
+                            elif _should_send_signal_alert("dex", asset, dex_result['side'], dex_result.get('signal_reason', 'Unknown')):
                                 send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 DEX SIGNAL ALERT\n{dex_result['resume_of_analysis']}")
                                 logger.info(f"📡 DEX signal alert sent for {asset}")
                         else:
@@ -1290,8 +1301,11 @@ def autotrade():
                 else:
                     cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
                     if cex_result.get("approved"):
+                        ml_score = cex_result.get('ml_score')
                         if cex_mode == "Signal":
-                            if _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
+                            if ml_score is not None and ml_score < _ML_THRESHOLD:
+                                logger.info(f"📡 CEX signal skipped — ML score {ml_score:.3f} < threshold {_ML_THRESHOLD}")
+                            elif _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
                                 send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
                                 logger.info(f"📡 CEX signal alert sent for {asset}")
                         else:

@@ -179,6 +179,22 @@ def train_and_save(dry_run: bool = False, retrain: bool = False):
     logger.info(f"[TRAIN] ✅ Model saved to {MODEL_PATH}")
     logger.info(f"[TRAIN] Next: model will be loaded by main.py at startup for live inference")
 
+    # Notify via Telegram
+    try:
+        import os as _os
+        from trading_bot.send_bot_message import send_bot_message
+        chat_id = int(_os.getenv("TELEGRAM_CHAT_ID", "0"))
+        if chat_id:
+            send_bot_message(chat_id,
+                f"🧠 ML Model retrained\\n"
+                f"• Samples: {len(y)} ({int(y.sum())}W/{len(y)-int(y.sum())}L)\\n"
+                f"• CV Accuracy: {cv_results['cv_accuracy_mean']:.1%} ±{cv_results['cv_accuracy_std']:.1%}\\n"
+                f"• Train Accuracy: {report['accuracy']:.1%}\\n"
+                f"• Top feature: {train_results['top_features'][0][0]} ({train_results['top_features'][0][1]:.3f})"
+            )
+    except Exception:
+        pass
+
 
 def print_summary():
     """Print a summary of the current training dataset."""
