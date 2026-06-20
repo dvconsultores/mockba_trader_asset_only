@@ -25,7 +25,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_PATH = PROJECT_ROOT / "data" / "signal_model.json"
 
 # Decision threshold (configurable)
-DEFAULT_THRESHOLD = 0.50  # score > 0.50 → enter trade
+DEFAULT_THRESHOLD = 0.75  # score > 0.75 → enter trade
 
 
 class SignalGateModel:
