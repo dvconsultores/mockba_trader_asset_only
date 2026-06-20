@@ -14,8 +14,11 @@ bot = telebot.TeleBot(API_TOKEN)
 def escape_markdown_v2(text: str) -> str:
     """
     Escape special characters for Telegram MarkdownV2 formatting.
+    Characters that MUST be escaped: _ * [ ] ( ) ~ ` > # + - = | { } . !
     """
-    escape_chars = r'\_*[]()~`>#+-=|{}.!'
+    # These are the literal characters, NOT a regex character class.
+    # re.escape turns them into a regex that matches each one.
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
     return re.sub(r'([%s])' % re.escape(escape_chars), r'\\\1', text)
 
 # Send bot message with retry logic and Markdown fallback
