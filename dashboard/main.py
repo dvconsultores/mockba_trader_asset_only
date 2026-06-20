@@ -74,7 +74,7 @@ def api_status():
         "uptime_seconds": round(time.time() - START_TIME),
         "dex_mode": dex_mode["value"] if dex_mode else "unknown",
         "cex_mode": cex_mode["value"] if cex_mode else "unknown",
-        "ml_threshold": float(os.getenv("ML_THRESHOLD", "0.50")),
+        "ml_threshold": float(os.getenv("ML_THRESHOLD", "0.80")),
         "model_loaded": os.path.exists(MODEL_PATH),
     }
 
@@ -215,7 +215,7 @@ def api_ml_info():
             hist = {}
 
         return {
-            "threshold": 0.50,
+            "threshold": 0.80,
             "model_loaded": os.path.exists(MODEL_PATH),
             "recent_scores": scores[-50:] if scores else [],
             "score_distribution": hist,

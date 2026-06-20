@@ -56,7 +56,7 @@ _LABELER_INTERVAL = 7200  # run outcome labeler every 2 hours
 
 # ML Gate — loaded lazily on first use
 _ml_model = None
-_ML_THRESHOLD = 0.50  # score > 0.50 → ML approves
+_ML_THRESHOLD = float(os.getenv("ML_THRESHOLD", "0.80"))  # score > threshold → ML approves
 
 
 def _get_ml_model():
