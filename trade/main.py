@@ -54,6 +54,27 @@ _LAST_EXCHANGE_SCAN_AT: Dict[str, float] = {"dex": 0.0, "cex": 0.0}
 _LAST_LABELER_RUN_AT: float = 0.0
 _LABELER_INTERVAL = 7200  # run outcome labeler every 2 hours
 
+# === EXECUTION COOLDOWN (prevents repeated entries on same pattern) ===
+_LAST_EXECUTION_AT: Dict[str, float] = {}  # key = "exchange:asset:side" → timestamp
+EXECUTION_COOLDOWN_SECONDS = 300  # 5 minutes between same-side executions
+
+
+def _should_allow_execution(exchange: str, asset: str, side: str) -> bool:
+    """Check if enough time has passed since last execution on same exchange+asset+side."""
+    now = time.time()
+    key = f"{exchange}:{asset}:{side}"
+    last_exec = _LAST_EXECUTION_AT.get(key, 0)
+    if now - last_exec < EXECUTION_COOLDOWN_SECONDS:
+        remaining = int(EXECUTION_COOLDOWN_SECONDS - (now - last_exec))
+        logger.info(f"⏳ Cooldown active for {key}: {remaining}s remaining")
+        return False
+    return True
+
+
+def _record_execution(exchange: str, asset: str, side: str):
+    """Record execution time for cooldown tracking."""
+    _LAST_EXECUTION_AT[f"{exchange}:{asset}:{side}"] = time.time()
+
 # ML Gate — loaded lazily on first use
 _ml_model = None
 _ML_THRESHOLD = float(os.getenv("ML_THRESHOLD", "0.80"))  # score > threshold → ML approves
@@ -206,8 +227,8 @@ class ReversalScalper:
         self.TP_PCT = self._setting_pct('take_profit', 0.003)    # 0.3% take profit
         self.SL_PCT_MIN = self._setting_pct('stop_loss', 0.010)  # 1.0% stop loss (tighter for scalp-style)
         self.SL_PCT_MAX = 0.012                                   # 1.2% max stop loss
-        self.SL_ATR_MULTIPLIER = 1.2    # SL at 1.2x ATR (tight, capital-preserving)
-        self.TP_ATR_MULTIPLIER = 2.0    # TP at 2.0x ATR (R:R ~1.67:1)
+        self.SL_ATR_MULTIPLIER = 2.0    # SL at 2.0x ATR (gives corrections room to breathe)
+        self.TP_ATR_MULTIPLIER = 2.0    # TP at 2.0x ATR (R:R ~1:1 before structure adjustment)
         
         # === REVERSAL PATTERN PARAMETERS ===
         self.CANDLE_COUNT = 2           # Minimum 2 candles same direction
@@ -290,6 +311,50 @@ class ReversalScalper:
         # ATR = simple moving average of TR
         atr = np.mean(tr[-period:])
         return atr
+    
+    def _calculate_structural_sl(self, df: pd.DataFrame, side: str, entry: float, atr: float) -> float:
+        """
+        Calculate stop-loss based on market structure (swing low/high).
+        
+        For LONG trades: SL = recent swing low - 0.5x ATR buffer
+        For SHORT trades: SL = recent swing high + 0.5x ATR buffer
+        
+        This places SL beyond the structural level that formed the reversal pattern.
+        If the swing point breaks, the reversal thesis is genuinely invalidated.
+        
+        Falls back to ATR-based SL if no clear swing point is found.
+        """
+        if len(df) < 10 or atr <= 0:
+            return 0.0
+        
+        highs = df['high'].values
+        lows = df['low'].values
+        
+        # Look for swing points in recent candles (exclude current forming candle)
+        lookback = min(20, len(df) - 1)
+        
+        if side == 'BUY':
+            # Find the lowest low in the recent window (the swing low that formed the reversal)
+            recent_lows = lows[-lookback:-1]  # exclude current candle
+            if len(recent_lows) < 3:
+                return 0.0
+            swing_low = np.min(recent_lows)
+            # Add 0.5x ATR buffer BELOW the swing low
+            structural_sl = swing_low - (atr * 0.5)
+            # But never tighter than 1.5x ATR from entry
+            min_sl = entry - (atr * 1.5)
+            return min(structural_sl, min_sl)
+        else:  # SELL
+            # Find the highest high in the recent window (the swing high that formed the reversal)
+            recent_highs = highs[-lookback:-1]  # exclude current candle
+            if len(recent_highs) < 3:
+                return 0.0
+            swing_high = np.max(recent_highs)
+            # Add 0.5x ATR buffer ABOVE the swing high
+            structural_sl = swing_high + (atr * 0.5)
+            # But never tighter than 1.5x ATR from entry
+            min_sl = entry + (atr * 1.5)
+            return max(structural_sl, min_sl)
     
     def _calculate_normalized_slope(self, prices: np.ndarray, window: int) -> float:
         """Calculate linear regression slope normalized by price (percentage per candle)."""
@@ -907,15 +972,12 @@ class ReversalScalper:
         ]
         
         if exchange != "cex":
+            atr_sl_pct = max(atr * self.SL_ATR_MULTIPLIER / live_price, self.SL_PCT_MIN) if atr > 0 else self.SL_PCT_MIN
+            atr_tp_pct = max(atr * self.TP_ATR_MULTIPLIER / live_price, self.TP_PCT) if atr > 0 else self.TP_PCT
             display_lines.append(
                 f"📏 Volatility (ATR 14): {atr:.6f} ({(atr/live_price)*100:.3f}%)\n"
-                + (lambda sl_pct, tp_pct: (
-                    f"• SL will be: {live_price - live_price*sl_pct:.6f} (-{sl_pct*100:.2f}%)\n"
-                    f"• TP will be: {live_price + live_price*tp_pct:.6f} (+{tp_pct*100:.2f}%)"
-                ))(
-                    max(atr * self.SL_ATR_MULTIPLIER / live_price, self.SL_PCT_MIN),
-                    max(atr * self.TP_ATR_MULTIPLIER / live_price, self.TP_PCT)
-                )
+                f"• SL floor: {live_price - live_price*atr_sl_pct:.6f} (-{atr_sl_pct*100:.2f}%) [structure-based if signal found]\n"
+                f"• TP target: {live_price + live_price*atr_tp_pct:.6f} (+{atr_tp_pct*100:.2f}%)"
             )
         
         display_lines.extend([
@@ -1096,31 +1158,44 @@ class ReversalScalper:
                 atr_based = False
             sl = 0  # No stop loss for spot
         elif atr > 0:
-            # Use ATR for adaptive stops (tight SL to preserve capital)
+            # === STRUCTURE-BASED SL (primary): place SL beyond recent swing point ===
+            structural_sl = self._calculate_structural_sl(df_5m, side, entry, atr)
+            if structural_sl > 0:
+                sl = structural_sl
+                sl_source = 'structure'
+            else:
+                # Fallback: ATR-based with wider multiplier
+                if side == 'BUY':
+                    sl = entry - (atr * self.SL_ATR_MULTIPLIER)
+                else:  # SELL
+                    sl = entry + (atr * self.SL_ATR_MULTIPLIER)
+                sl_source = 'atr'
+            # Apply absolute floor: SL never tighter than DB setting (SL_PCT_MIN)
+            sl_pct = abs(sl - entry) / entry
+            if sl_pct < self.SL_PCT_MIN:
+                sl_pct = self.SL_PCT_MIN
+                sl = entry * (1 - sl_pct) if side == 'BUY' else entry * (1 + sl_pct)
+                sl_source = 'floor'
+            # TP: ATR-based with floor
             if side == 'BUY':
                 tp = entry + (atr * self.TP_ATR_MULTIPLIER)
-                sl = entry - (atr * self.SL_ATR_MULTIPLIER)
-            else:  # SELL
+            else:
                 tp = entry - (atr * self.TP_ATR_MULTIPLIER)
-                sl = entry + (atr * self.SL_ATR_MULTIPLIER)
-            # Apply floor guards: ATR values cannot be tighter than DB settings
-            sl_pct = abs(sl - entry) / entry
-            sl_pct = max(sl_pct, self.SL_PCT_MIN)
-            sl = entry * (1 - sl_pct) if side == 'BUY' else entry * (1 + sl_pct)
             tp_pct = abs(tp - entry) / entry
             tp_pct = max(tp_pct, self.TP_PCT)
             tp = entry * (1 + tp_pct) if side == 'BUY' else entry * (1 - tp_pct)
             atr_based = True
         else:
-            # Fallback: use original fixed percentages
+            # Fallback: use original fixed percentages (ATR unavailable)
             tp = entry * (1 + self.TP_PCT) if side == 'BUY' else entry * (1 - self.TP_PCT)
             ranges = df_5m['high'].values - df_5m['low'].values
             avg_range_pct = np.mean(ranges[-20:]) / np.mean(df_5m['close'].values[-20:])
-            sl_multiplier = min(1.2, max(1.0, avg_range_pct / 0.005))
+            sl_multiplier = min(1.5, max(1.0, avg_range_pct / 0.005))
             sl_dist = self.SL_PCT_MIN * sl_multiplier
             sl_dist = min(sl_dist, self.SL_PCT_MAX)
             sl = entry * (1 - sl_dist) if side == 'BUY' else entry * (1 + sl_dist)
             atr_based = False
+            sl_source = 'fallback'
         
         result.update({
             'approved': True,
@@ -1143,11 +1218,12 @@ class ReversalScalper:
             )
         else:
             sl_distance_pct = abs(sl - entry) / entry * 100
+            sl_label = {'structure': '[Structure]', 'atr': '[ATR]', 'floor': '[DB Floor]', 'fallback': '[Fallback]'}.get(sl_source, '')
             display_lines.append(
                 f"✅ ✅ ✅ TRADE APPROVED ✅ ✅ ✅\n"
                 f"• Signal: {active_signal['reason']}\n"
                 f"• Entry: {entry:.6f}\n"
-                f"• SL: {sl:.6f} (-{sl_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
+                f"• SL: {sl:.6f} (-{sl_distance_pct:.2f}%)  {sl_label}\n"
                 f"• TP: {tp:.6f} (+{tp_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
                 f"• Risk/Reward: {(tp_distance_pct / sl_distance_pct):.2f}:1"
             )
@@ -1283,16 +1359,21 @@ def autotrade():
                                 send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 DEX SIGNAL ALERT\n{dex_result['resume_of_analysis']}")
                                 logger.info(f"📡 DEX signal alert sent for {asset}")
                         else:
-                            order_payload = {
-                                "symbol": dex_result['symbol'],
-                                "side": dex_result['side'],
-                                "entry": dex_result['entry'],
-                                "take_profit": dex_result['take_profit'],
-                                "stop_loss": dex_result['stop_loss'],
-                                "leverage": int(get_setting("leverage") or 5)
-                            }
-                            place_futures_order(order_payload)
-                            logger.info(f"🚀 Orderly futures order placed: {order_payload}")
+                            # === COOLDOWN CHECK: prevent repeated entries on same pattern ===
+                            if not _should_allow_execution("dex", asset, dex_result['side']):
+                                logger.info(f"⏳ DEX execution skipped — cooldown active for {asset} {dex_result['side']}")
+                            else:
+                                order_payload = {
+                                    "symbol": dex_result['symbol'],
+                                    "side": dex_result['side'],
+                                    "entry": dex_result['entry'],
+                                    "take_profit": dex_result['take_profit'],
+                                    "stop_loss": dex_result['stop_loss'],
+                                    "leverage": int(get_setting("leverage") or 5)
+                                }
+                                place_futures_order(order_payload)
+                                _record_execution("dex", asset, dex_result['side'])
+                                logger.info(f"🚀 Orderly futures order placed: {order_payload}")
 
             # CEX cycle
             if cex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("cex", 60):
@@ -1309,14 +1390,19 @@ def autotrade():
                                 send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
                                 logger.info(f"📡 CEX signal alert sent for {asset}")
                         else:
-                            order_payload = {
-                                "symbol": cex_result['symbol'],
-                                "side": cex_result['side'],
-                                "entry": cex_result['entry'],
-                                "take_profit": cex_result['take_profit'],
-                            }
-                            place_spot_order(order_payload)
-                            logger.info(f"🚀 Binance spot order placed: {order_payload}")
+                            # === COOLDOWN CHECK: prevent repeated entries on same pattern ===
+                            if not _should_allow_execution("cex", asset, cex_result['side']):
+                                logger.info(f"⏳ CEX execution skipped — cooldown active for {asset} {cex_result['side']}")
+                            else:
+                                order_payload = {
+                                    "symbol": cex_result['symbol'],
+                                    "side": cex_result['side'],
+                                    "entry": cex_result['entry'],
+                                    "take_profit": cex_result['take_profit'],
+                                }
+                                place_spot_order(order_payload)
+                                _record_execution("cex", asset, cex_result['side'])
+                                logger.info(f"🚀 Binance spot order placed: {order_payload}")
 
             # Periodic outcome labeling (background, every 2 hours)
             if _should_run_labeler():
