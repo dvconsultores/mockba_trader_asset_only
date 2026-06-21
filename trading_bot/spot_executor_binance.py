@@ -24,6 +24,29 @@ BINANCE_BASE_URL = "https://api.binance.com"
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 
+# Time sync with Binance server (clock skew causes -1021 errors)
+_BINANCE_TIME_OFFSET_MS = 0
+
+
+def _sync_binance_time() -> None:
+    """Sync local clock offset with Binance server time."""
+    global _BINANCE_TIME_OFFSET_MS
+    try:
+        r = requests.get(f"{BINANCE_BASE_URL}/api/v3/time", timeout=5)
+        r.raise_for_status()
+        server_ms = int(r.json().get("serverTime", 0))
+        local_ms = int(time.time() * 1000)
+        _BINANCE_TIME_OFFSET_MS = server_ms - local_ms
+        logger.info(f"🕐 Binance time synced: offset={_BINANCE_TIME_OFFSET_MS}ms")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not sync Binance time: {e}")
+
+
+def _binance_timestamp() -> int:
+    """Return a timestamp safe for Binance signed requests (server time - 1.5s safety margin)."""
+    return int(time.time() * 1000) + _BINANCE_TIME_OFFSET_MS - 1500
+
+
 def _sign(params: dict) -> str:
     """Generate HMAC SHA256 signature for Binance."""
     # Binance expects signature from the exact query-string order being sent.
@@ -45,6 +68,206 @@ def _round_step(value: float, step: float) -> float:
         return value
     precision = max(0, int(round(-math.log10(step))))
     return round(value - (value % step), precision)
+
+
+def _binance_get_order(symbol: str, order_id: str) -> dict | None:
+    """Check status of a Binance order."""
+    params = {
+        "symbol": symbol,
+        "orderId": order_id,
+        "timestamp": _binance_timestamp(),
+    }
+    params["signature"] = _sign(params)
+    try:
+        r = requests.get(
+            f"{BINANCE_BASE_URL}/api/v3/order",
+            params=params,
+            headers=_headers(),
+            timeout=10
+        )
+        if r.status_code == 200:
+            return r.json()
+        logger.warning(f"⚠️ Binance get order error: {r.status_code} {r.text[:200]}")
+        return None
+    except Exception as e:
+        logger.warning(f"⚠️ Binance get order exception: {e}")
+        return None
+
+
+def _binance_cancel_order(symbol: str, order_id: str) -> bool:
+    """Cancel a Binance order. Returns True on success."""
+    params = {
+        "symbol": symbol,
+        "orderId": order_id,
+        "timestamp": _binance_timestamp(),
+    }
+    params["signature"] = _sign(params)
+    try:
+        r = requests.delete(
+            f"{BINANCE_BASE_URL}/api/v3/order",
+            params=params,
+            headers=_headers(),
+            timeout=10
+        )
+        if r.status_code == 200:
+            logger.info(f"🗑️ Binance order {order_id} cancelled")
+            return True
+        logger.warning(f"⚠️ Binance cancel error: {r.status_code} {r.text[:200]}")
+        return False
+    except Exception as e:
+        logger.warning(f"⚠️ Binance cancel exception: {e}")
+        return False
+
+
+def _limit_buy_with_fallback(
+    binance_symbol: str,
+    qty: float,
+    limit_price: float,
+    timeout_seconds: int = 30,
+    notify_chat_id: int = 0,
+) -> dict | None:
+    """
+    Place a LIMIT BUY order and wait for fill. If unfilled after timeout_seconds,
+    cancel and fall back to MARKET BUY.
+
+    Sends Telegram notifications at each stage when notify_chat_id is provided.
+
+    Returns the fill result dict (same format as Binance order response), or None on failure.
+    """
+    notional = qty * limit_price
+
+    # --- STEP A: Place LIMIT BUY ---
+    buy_params = {
+        "symbol": binance_symbol,
+        "side": "BUY",
+        "type": "LIMIT",
+        "timeInForce": "GTC",
+        "quantity": f"{qty}",
+        "price": f"{limit_price}",
+        "timestamp": _binance_timestamp(),
+    }
+    buy_params["signature"] = _sign(buy_params)
+
+    try:
+        r = requests.post(
+            f"{BINANCE_BASE_URL}/api/v3/order",
+            params=buy_params,
+            headers=_headers(),
+            timeout=10
+        )
+        if r.status_code != 200:
+            logger.error(f"❌ Binance LIMIT BUY error: {r.status_code} {r.text[:400]}")
+            if notify_chat_id:
+                send_bot_message(notify_chat_id, f"❌ LIMIT BUY failed for {binance_symbol}: {r.text[:200]}")
+            return None
+
+        order_result = r.json()
+        order_id = str(order_result.get("orderId", ""))
+        status = order_result.get("status", "")
+        logger.info(f"📝 LIMIT BUY placed: orderId={order_id}, status={status}, price={limit_price}")
+
+        if notify_chat_id:
+            send_bot_message(notify_chat_id,
+                f"📝 LIMIT BUY placed: {qty} {binance_symbol} @ ${limit_price}\n"
+                f"   Notional: ${notional:.2f}\n"
+                f"   Order ID: {order_id}")
+
+    except Exception as e:
+        logger.error(f"❌ Binance LIMIT BUY exception: {e}")
+        if notify_chat_id:
+            send_bot_message(notify_chat_id, f"❌ LIMIT BUY exception: {e}")
+        return None
+
+    # If already filled immediately, return
+    if status == "FILLED":
+        executed_qty = float(order_result.get("executedQty", qty))
+        cumm_quote = float(order_result.get("cummulativeQuoteQty", notional))
+        avg_price = cumm_quote / executed_qty if executed_qty > 0 else limit_price
+        logger.info(f"✅ LIMIT BUY filled immediately: {order_id}")
+        if notify_chat_id:
+            send_bot_message(notify_chat_id,
+                f"✅ LIMIT BUY filled: {executed_qty} {binance_symbol} @ ${avg_price:.4f}\n"
+                f"   Maker ✅ (lower fees)")
+        return order_result
+
+    # --- STEP B: Poll for fill ---
+    poll_interval = 3  # seconds
+    elapsed = 0
+    while elapsed < timeout_seconds:
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+
+        order_info = _binance_get_order(binance_symbol, order_id)
+        if order_info is None:
+            logger.warning(f"⚠️ Could not check order {order_id}, falling back to MARKET")
+            break
+
+        current_status = order_info.get("status", "")
+        executed_qty = float(order_info.get("executedQty", 0))
+
+        if current_status == "FILLED":
+            cumm_quote = float(order_info.get("cummulativeQuoteQty", 0))
+            avg_price = cumm_quote / executed_qty if executed_qty > 0 else limit_price
+            logger.info(f"✅ LIMIT BUY filled after {elapsed}s: {executed_qty} @ avg {avg_price}")
+            if notify_chat_id:
+                send_bot_message(notify_chat_id,
+                    f"✅ LIMIT BUY filled after {elapsed}s: {executed_qty} {binance_symbol} @ ${avg_price:.4f}\n"
+                    f"   Maker ✅ (lower fees)")
+            return order_info
+
+        if current_status in ("CANCELED", "EXPIRED", "REJECTED"):
+            logger.warning(f"⚠️ LIMIT BUY {current_status} after {elapsed}s, falling back to MARKET")
+            break
+
+        logger.info(f"⏳ LIMIT BUY pending ({elapsed}s/{timeout_seconds}s): filled={executed_qty}/{qty}")
+
+    # --- STEP C: Cancel and fall back to MARKET ---
+    if status != "FILLED":
+        _binance_cancel_order(binance_symbol, order_id)
+        if notify_chat_id:
+            send_bot_message(notify_chat_id,
+                f"⏰ LIMIT BUY cancelled after {timeout_seconds}s — switching to MARKET BUY\n"
+                f"   {qty} {binance_symbol}")
+
+    logger.info(f"🔄 Falling back to MARKET BUY for {binance_symbol}")
+    market_params = {
+        "symbol": binance_symbol,
+        "side": "BUY",
+        "type": "MARKET",
+        "quantity": f"{qty}",
+        "timestamp": _binance_timestamp(),
+    }
+    market_params["signature"] = _sign(market_params)
+
+    try:
+        r = requests.post(
+            f"{BINANCE_BASE_URL}/api/v3/order",
+            params=market_params,
+            headers=_headers(),
+            timeout=10
+        )
+        if r.status_code != 200:
+            logger.error(f"❌ Binance MARKET BUY fallback error: {r.status_code} {r.text[:400]}")
+            if notify_chat_id:
+                send_bot_message(notify_chat_id, f"❌ MARKET BUY fallback failed: {r.text[:200]}")
+            return None
+
+        market_result = r.json()
+        executed_qty = float(market_result.get("executedQty", 0))
+        cumm_quote = float(market_result.get("cummulativeQuoteQty", 0))
+        avg_price = cumm_quote / executed_qty if executed_qty > 0 else limit_price
+        logger.info(f"✅ MARKET BUY filled: {executed_qty}")
+        if notify_chat_id:
+            send_bot_message(notify_chat_id,
+                f"✅ MARKET BUY filled: {executed_qty} {binance_symbol} @ ${avg_price:.4f}\n"
+                f"   Taker ⚡ (standard fees)")
+        return market_result
+
+    except Exception as e:
+        logger.error(f"❌ Binance MARKET BUY fallback exception: {e}")
+        if notify_chat_id:
+            send_bot_message(notify_chat_id, f"❌ MARKET BUY exception: {e}")
+        return None
 
 
 def get_binance_exchange_info(symbol: str) -> dict:
@@ -86,6 +309,7 @@ def has_open_orders_binance(symbol: str = None, fail_safe: bool = False) -> bool
     """Check if there are any open limit orders on Binance.
     Returns True if pending orders exist, False otherwise.
     """
+    _sync_binance_time()
     if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
         if fail_safe:
             logger.warning("⚠️ Binance API keys missing — fail-safe assumes open orders exist")
@@ -93,7 +317,7 @@ def has_open_orders_binance(symbol: str = None, fail_safe: bool = False) -> bool
         return False
 
     binance_symbol = get_binance_symbol(symbol) if symbol else None
-    params = {"timestamp": int(time.time() * 1000)}
+    params = {"timestamp": _binance_timestamp()}
     if binance_symbol:
         params["symbol"] = binance_symbol
     params["signature"] = _sign(params)
@@ -123,7 +347,7 @@ def has_open_orders_binance(symbol: str = None, fail_safe: bool = False) -> bool
                     logger.warning(
                         f"⚠️ Binance symbol {binance_symbol} rejected in openOrders; retrying without symbol filter"
                     )
-                    retry_params = {"timestamp": int(time.time() * 1000)}
+                    retry_params = {"timestamp": _binance_timestamp()}
                     retry_params["signature"] = _sign(retry_params)
                     retry_resp = requests.get(
                         f"{BINANCE_BASE_URL}/api/v3/openOrders",
@@ -161,7 +385,7 @@ def has_open_orders_binance(symbol: str = None, fail_safe: bool = False) -> bool
 
 def get_binance_balance(asset: str = "USDT") -> float:
     """Get available balance for an asset on Binance spot."""
-    params = {"timestamp": int(time.time() * 1000)}
+    params = {"timestamp": _binance_timestamp()}
     params["signature"] = _sign(params)
 
     try:
@@ -187,17 +411,21 @@ def get_binance_balance(asset: str = "USDT") -> float:
 
 def place_spot_order(signal: dict):
     """
-    Place a Binance spot order: market BUY, then limit SELL at TP.
+    Place a Binance spot order: LIMIT BUY (with MARKET fallback), then LIMIT SELL at TP.
     No stop loss for spot (user can wait days).
+    Sends Telegram notifications at each stage.
     """
     if not BINANCE_API_KEY or not BINANCE_SECRET_KEY:
         logger.error("❌ BINANCE_API_KEY or BINANCE_SECRET_KEY not set!")
         return None
 
+    _sync_binance_time()
+
     symbol = signal['symbol']
     binance_symbol = get_binance_symbol(symbol)
     entry = float(signal['entry'])
     tp = float(signal['take_profit'])
+    chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
 
     # Get exchange info
     info = get_binance_exchange_info(symbol)
@@ -211,24 +439,20 @@ def place_spot_order(signal: dict):
         logger.error(f"❌ Insufficient USDT balance: {balance}")
         return None
 
-    # Position sizing for CEX: fixed USDT capital per position
+    # Position sizing for CEX: use configured capital, or all available balance
     try:
         configured_capital = float(get_setting('cex_capital') or 0)
     except (TypeError, ValueError):
         configured_capital = 0.0
 
     if configured_capital <= 0:
-        # Backward-compatible fallback for old DBs
-        try:
-            risk_pct = float(get_setting('risk_level') or 10)
-        except (TypeError, ValueError):
-            risk_pct = 10.0
-        trade_amount = balance * (risk_pct / 100)
+        # Use all available USDT balance
+        trade_amount = balance
+        logger.info(f"💰 Using full balance: ${trade_amount:.2f} (cex_capital not set)")
     else:
-        trade_amount = configured_capital
+        trade_amount = min(configured_capital, balance)
 
     trade_amount = max(trade_amount, info['min_notional'])
-    trade_amount = min(trade_amount, balance)
 
     qty = trade_amount / entry
     qty = _round_step(qty, info['base_tick'])
@@ -242,37 +466,21 @@ def place_spot_order(signal: dict):
         logger.error(f"❌ Notional ${notional:.2f} below min ${info['min_notional']}")
         return None
 
-    # --- STEP 1: Market BUY ---
-    buy_params = {
-        "symbol": binance_symbol,
-        "side": "BUY",
-        "type": "MARKET",
-        "quantity": f"{qty}",
-        "timestamp": int(time.time() * 1000),
-    }
-    buy_params["signature"] = _sign(buy_params)
+    # --- STEP 1: LIMIT BUY with fallback to MARKET after 30s ---
+    quote_tick = info['quote_tick']
+    price_precision = max(0, int(round(-math.log10(quote_tick)))) if quote_tick > 0 else 4
+    limit_price = round(entry, price_precision)
 
-    try:
-        r = requests.post(
-            f"{BINANCE_BASE_URL}/api/v3/order",
-            params=buy_params,
-            headers=_headers(),
-            timeout=10
-        )
-        if r.status_code != 200:
-            logger.error(f"❌ Binance BUY error: {r.status_code} {r.text[:400]}")
-            return None
-
-        buy_result = r.json()
-        filled_qty = float(buy_result.get("executedQty", 0))
-        cumm_quote = float(buy_result.get("cummulativeQuoteQty", 0))
-        avg_price = cumm_quote / filled_qty if filled_qty > 0 else entry
-
-        logger.info(f"✅ Binance BUY filled: {filled_qty} @ {avg_price:.6f}")
-
-    except Exception as e:
-        logger.error(f"❌ Binance BUY error: {e}")
+    buy_result = _limit_buy_with_fallback(binance_symbol, qty, limit_price, timeout_seconds=30, notify_chat_id=chat_id)
+    if buy_result is None:
+        logger.error("❌ LIMIT BUY and MARKET fallback both failed")
         return None
+
+    filled_qty = float(buy_result.get("executedQty", 0))
+    cumm_quote = float(buy_result.get("cummulativeQuoteQty", 0))
+    avg_price = cumm_quote / filled_qty if filled_qty > 0 else entry
+
+    logger.info(f"✅ Binance BUY filled: {filled_qty} @ {avg_price:.6f}")
 
     if filled_qty <= 0:
         logger.error("❌ BUY order filled 0 quantity")
@@ -291,7 +499,7 @@ def place_spot_order(signal: dict):
         "timeInForce": "GTC",
         "quantity": f"{sell_qty}",
         "price": f"{tp_price}",
-        "timestamp": int(time.time() * 1000),
+        "timestamp": _binance_timestamp(),
     }
     sell_params["signature"] = _sign(sell_params)
 
@@ -304,10 +512,10 @@ def place_spot_order(signal: dict):
         )
         if r.status_code != 200:
             logger.error(f"❌ Binance SELL (TP) error: {r.status_code} {r.text[:400]}")
-            send_bot_message(
-                int(os.getenv("TELEGRAM_CHAT_ID")),
-                f"⚠️ BUY filled but TP SELL failed for {binance_symbol}. Place SELL manually at {tp_price}!"
-            )
+            if chat_id:
+                send_bot_message(chat_id,
+                    f"⚠️ BUY filled but TP SELL failed for {binance_symbol}.\n"
+                    f"   Place SELL manually: {sell_qty} @ ${tp_price}!")
             return None
 
         sell_result = r.json()
@@ -315,24 +523,30 @@ def place_spot_order(signal: dict):
 
     except Exception as e:
         logger.error(f"❌ Binance SELL error: {e}")
-        send_bot_message(
-            int(os.getenv("TELEGRAM_CHAT_ID")),
-            f"⚠️ BUY filled but TP SELL failed for {binance_symbol}. Place SELL manually at {tp_price}!"
-        )
+        if chat_id:
+            send_bot_message(chat_id,
+                f"⚠️ BUY filled but TP SELL failed for {binance_symbol}.\n"
+                f"   Place SELL manually: {sell_qty} @ ${tp_price}!")
         return None
 
-    # --- Notify ---
+    # --- Final notification with TP sell info ---
+    is_maker = buy_result.get("type") != "MARKET"  # LIMIT fills are maker
+    maker_label = "Maker ✅ (lower fees)" if is_maker else "Taker ⚡ (standard fees)"
+    tp_notional = sell_qty * tp_price
     msg = (
-        f"✅ Binance Spot Order: {binance_symbol}\n"
-        f"Side: 🟢 BUY (Spot)\n"
-        f"Qty: {round(filled_qty, 6)}\n"
-        f"Buy Price: {round(avg_price, 6)}\n"
-        f"TP Sell: {round(tp_price, 6)}\n"
-        f"Notional: {round(filled_qty * avg_price, 2)}\n"
-        f"No SL (spot - can hold)\n"
-        f"Order ID: {order_id}"
+        f"✅ Binance Spot Trade: {binance_symbol}\n"
+        f"   Side: 🟢 BUY\n"
+        f"   Qty: {round(filled_qty, 4)}\n"
+        f"   Entry: ${round(avg_price, 6)}\n"
+        f"   TP Sell: ${round(tp_price, 6)} ({round((tp_price/avg_price - 1)*100, 2)}% gain)\n"
+        f"   TP Notional: ${tp_notional:.2f}\n"
+        f"   Notional: ${round(filled_qty * avg_price, 2)}\n"
+        f"   Type: {maker_label}\n"
+        f"   No SL (spot — can hold)\n"
+        f"   Order ID: {order_id}"
     )
-    send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), msg)
+    if chat_id:
+        send_bot_message(chat_id, msg)
     logger.info(f"✅ Binance spot: BUY {filled_qty} @ {avg_price} → TP SELL @ {tp_price}")
 
     new_count = increment_trades_today()

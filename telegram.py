@@ -243,12 +243,9 @@ def callback_handler(call):
             'asset_add': ask_add_asset,
             'asset_remove': ask_remove_asset,
             'set_exchange': set_exchange,
-            'set_interval': set_interval,
             'set_take_profit': set_take_profit,
-            'set_stop_loss': set_stop_loss,
             # Backward-compatible callback aliases
             'set_min_tp': set_take_profit,
-            'set_min_sl': set_stop_loss,
             'set_auto_trade': set_auto_trade,
             'set_cex_capital': set_cex_capital,
             'set_leverage': set_leverage,
@@ -279,9 +276,7 @@ def settings(m):
     labels = {
         "manage_assets": "💰 Manage Assets",
         "set_current_asset": "🎯 Current Asset",
-        "set_interval": "⏱️ Interval",
         "set_take_profit": "📈 Take Profit",
-        "set_stop_loss": "📉 Stop Loss (DEX only)",
         "set_auto_trade": "🤖 Auto Trade",
         "set_cex_capital": "💵 CEX Capital (USDT)",
         "set_leverage": "⚖️ Leverage (DEX only)"
@@ -316,9 +311,9 @@ def upsert_assets(m):
     elif gp1 == "risk_level":
         if not is_float(valor) or float(valor) <= 0:
             valid, error_msg = False, "Risk must be a positive number (e.g., 1.5)"
-    elif gp1 in ("take_profit", "stop_loss"):
+    elif gp1 == "take_profit":
         if not is_float(valor) or float(valor) <= 0:
-            valid, error_msg = False, f"{'Take Profit' if gp1 == 'take_profit' else 'Stop Loss'} must be positive"
+            valid, error_msg = False, "Take Profit must be positive"
     elif gp1 == "leverage":
         if not is_integer(valor) or not (1 <= int(valor) <= 50):
             valid, error_msg = False, "Leverage must be integer 1–50"
@@ -328,9 +323,6 @@ def upsert_assets(m):
     elif gp1 == "auto_trade":
         if valor not in ("True", "False"):
             valid, error_msg = False, "Auto Trade must be 'True' or 'False'"
-    elif gp1 == "interval":
-        if not re.match(r"^\d+[mhd]$", valor.lower()) and not valor.lower() in ("5m", "15m", "30m", "1h", "4h", "1d"):
-            valid, error_msg = False, "Invalid interval (e.g., 15m, 1h)"
     if not valid:
         bot.send_message(cid, translate(f"❌ {error_msg}. Try again:", cid))
         bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
@@ -352,7 +344,7 @@ def set_asset(m):
     markup.add(InlineKeyboardButton(translate("➕ Add Asset", cid), callback_data="asset_add"))
     markup.add(InlineKeyboardButton(translate("➖ Remove Asset", cid), callback_data="asset_remove"))
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Interval ➡️", cid), callback_data="set_interval"))
+               InlineKeyboardButton(translate("Next: Take Profit ➡️", cid), callback_data="set_take_profit"))
     
     current_assets = get_asset_list()
     msg = translate("Manage Assets:", cid) + "\n" + ", ".join(current_assets)
@@ -401,7 +393,7 @@ def set_current_asset(m):
         markup.add(InlineKeyboardButton(f"{status} {asset}", callback_data=f"set_val:current_asset:{asset}"))
     
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Interval ➡️", cid), callback_data="set_interval"))
+               InlineKeyboardButton(translate("Next: Take Profit ➡️", cid), callback_data="set_take_profit"))
     
     bot.send_message(cid, translate("Select Current Asset:", cid), reply_markup=markup)
 
@@ -462,26 +454,10 @@ def set_risk(m):
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Interval ➡️", cid), callback_data="set_interval"))
+               InlineKeyboardButton(translate("Next: Take Profit ➡️", cid), callback_data="set_take_profit"))
                
     bot.send_message(cid, translate("Enter risk level (e.g., 1.5 for 1.5%)", cid), reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
-
-def set_interval(m):
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-    
-    markup = InlineKeyboardMarkup()
-    options = ['5m', '15m', '30m', '1h', '4h', '1d']
-    buttons = [InlineKeyboardButton(opt, callback_data=f"set_val:interval:{opt}") for opt in options]
-    for i in range(0, len(buttons), 3):
-        markup.add(*buttons[i:i+3])
-    
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Take Profit ➡️", cid), callback_data="set_take_profit"))
-        
-    bot.send_message(cid, translate("Select Interval:", cid), reply_markup=markup)
 
 def set_take_profit(m):
     if m.chat.type != 'private': return
@@ -491,22 +467,9 @@ def set_take_profit(m):
     
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Stop Loss ➡️", cid), callback_data="set_stop_loss"))
-               
-    bot.send_message(cid, translate("Enter take profit % (e.g., 0.3)", cid), reply_markup=markup)
-    bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
-
-def set_stop_loss(m):
-    if m.chat.type != 'private': return
-    global gp1; gp1 = "stop_loss"
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-    
-    markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Next: Auto Trade ➡️", cid), callback_data="set_auto_trade"))
                
-    bot.send_message(cid, translate("Enter stop loss % (e.g., 1.5)", cid), reply_markup=markup)
+    bot.send_message(cid, translate("Enter take profit % (e.g., 0.3)", cid), reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
 
 def set_auto_trade(m):

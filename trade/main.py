@@ -77,7 +77,13 @@ def _record_execution(exchange: str, asset: str, side: str):
 
 # ML Gate — loaded lazily on first use
 _ml_model = None
-_ML_THRESHOLD = float(os.getenv("ML_THRESHOLD", "0.80"))  # score > threshold → ML approves
+_ML_THRESHOLD = 0.80  # score > threshold → ML approves
+
+# LLM Gate — always active second-opinion layer after ML
+_LLM_GATE_TIMEOUT = 8         # seconds before fallback to ML decision
+_LLM_API_KEY = os.getenv("DEEP_SEEK_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+_LLM_MODEL = "deepseek-chat"  # fast, cheap model for gating
+_LLM_API_URL = "https://api.deepseek.com/v1/chat/completions"
 
 
 def _get_ml_model():
@@ -126,6 +132,81 @@ def _evaluate_ml_gate(regime: str, obi: float, atr: float, entry_price: float,
     except Exception as e:
         logger.warning(f"[ML GATE] Evaluation failed: {e}")
         return None, None, None
+
+
+def _evaluate_llm_gate(signal_summary: str, ml_score: float | None) -> tuple[str | None, str | None]:
+    """
+    Optional LLM second-opinion gate for marginal ML scores.
+
+    Only called when:
+    - LLM_GATE_ENABLED=true
+    - ML score is in the marginal range (TIE_LOW < score <= TIE_HIGH)
+
+    Returns (decision, reason) where decision is "approved", "rejected", or None on timeout/error.
+    """
+    if not _LLM_API_KEY:
+        return None, None
+
+    try:
+        import requests as _requests
+        prompt = (
+            "You are a quantitative crypto scalping analyst reviewing a live trade signal. "
+            "The strategy detects several pattern types:\n"
+            "- 2/3/4-candle reversal at S/R: consecutive candles in one direction + reversal candle\n"
+            "- Bullish/Bearish engulfing at support/resistance\n"
+            "- Pin bar / Hammer / Shooting star (wick rejection) at S/R\n"
+            "- Spike reversal: outsized candle + OB confirming reversal\n\n"
+            "Your job: confirm the signal has real edge, or flag a clear reason to skip it. "
+            "Only reject when there is STRONG contradictory evidence — a missed trade is a missed opportunity. "
+            "When data is mixed or inconclusive, default to APPROVED and let the trade play out.\n\n"
+            "=== SIGNAL DATA ===\n"
+            f"{signal_summary}\n\n"
+            "=== ML MODEL CONTEXT ===\n"
+            f"XGBoost score: {ml_score:.3f} (threshold: {_ML_THRESHOLD}, trained on historical NEAR reversals)\n\n"
+            "=== DECISION FRAMEWORK (only reject on CLEAR contradictions) ===\n"
+            "1. PATTERN: All detected patterns are valid by definition (code already verified candle structure). "
+            "Only question the pattern if price is clearly mid-range with no nearby S/R.\n"
+            "2. REGIME: RANGE = ideal for reversals. TREND = the reversal must be WITH the trend (pullback), not against it. "
+            "A LONG in TREND_DOWN or SHORT in TREND_UP needs OBI > 1.15 (LONG) or OBI < 0.85 (SHORT) to override.\n"
+            "3. ORDER BOOK: OBI > 1.0 supports LONG, OBI < 1.0 supports SHORT. Counter-OBI trades are risky but not fatal "
+            "on liquid markets — flag as warning, not auto-reject. Extreme OBI (>1.3 bullish, <0.77 bearish) = whale activity, treat as neutral.\n"
+            "4. HIGHER TIMEFRAME: Price at 20-day high + LONG signal = rejection. Price at 20-day low + SHORT signal = rejection. "
+            "A single 4h/1d warning is informational; only reject if BOTH 4h AND 1d oppose the trade direction.\n"
+            "5. R:R: For spot (no SL), TP must be > 0.3% to clear spread+fees. For DEX futures, R:R below 0.5:1 is a reject.\n"
+            "6. DEFAULT: When in doubt, APPROVE. The ML model and HTF filter already blocked the worst signals. "
+            "Your role is to catch obvious mistakes the deterministic filters missed, not to second-guess every trade.\n\n"
+            "Reply with ONLY valid JSON (no markdown, no extra text):\n"
+            '{"decision":"approved","reason":"<why this trade has edge, referencing specific data>"}\n'
+            'or\n'
+            '{"decision":"rejected","reason":"<specific contradiction that makes this trade clearly bad>"}'
+        )
+        headers = {
+            "Authorization": f"Bearer {_LLM_API_KEY}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "model": _LLM_MODEL,
+            "temperature": 0.1,
+            "max_tokens": 250,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": {"type": "json_object"},
+        }
+        r = _requests.post(_LLM_API_URL, headers=headers, json=body, timeout=_LLM_GATE_TIMEOUT)
+        r.raise_for_status()
+        content = r.json()["choices"][0]["message"]["content"]
+
+        # Parse JSON
+        import json as _json
+        result = _json.loads(content)
+        decision = result.get("decision", "").lower()
+        reason = result.get("reason", "LLM gate decision")
+        if decision in ("approved", "rejected"):
+            logger.info(f"[LLM GATE] Decision: {decision} — {reason}")
+            return decision, reason
+        return None, None
+    except Exception as e:
+        logger.warning(f"[LLM GATE] Evaluation failed (falling through): {e}")
+        return None, None
 
 _LAST_SIGNAL_ALERTS: Dict[str, float] = {}
 _LAST_EXCHANGE_SCAN_AT: Dict[str, float] = {"dex": 0.0, "cex": 0.0}
@@ -857,6 +938,60 @@ class ReversalScalper:
             lines.append("⚠️ High risk signals detected (FYI)")
         return "\n".join(lines)
     
+    def _check_htf_exhaustion(self, df_4h, df_1d, live_price: float, side: str) -> list[str]:
+        """
+        Check higher timeframe (4h, 1d) for exhaustion signals that would
+        warn against entering a trade in the given direction.
+
+        Returns list of warning strings (empty if clean).
+        """
+        warnings = []
+        if live_price <= 0:
+            return warnings
+
+        # --- 1d slope check ---
+        if df_1d is not None and len(df_1d) >= 20:
+            slope_1d = self._calculate_normalized_slope(df_1d['close'].values, min(20, len(df_1d)))
+            # Going LONG into a 1d downtrend → exhaustion risk
+            if side == 'BUY' and slope_1d < -0.0005:  # -0.05%/day
+                warnings.append(f"⚠️ LONG vs 1d downtrend (slope={slope_1d*100:.3f}%/day)")
+            # Going SHORT into a 1d uptrend → exhaustion risk
+            elif side == 'SELL' and slope_1d > 0.0005:
+                warnings.append(f"⚠️ SHORT vs 1d uptrend (slope={slope_1d*100:.3f}%/day)")
+
+            # 1d swing high/low proximity
+            if len(df_1d) >= 30:
+                d_highs = df_1d['high'].values
+                d_lows = df_1d['low'].values
+                d_high_20 = np.max(d_highs[-20:])
+                d_low_20 = np.min(d_lows[-20:])
+                if side == 'BUY' and live_price >= d_high_20 * 0.985:
+                    warnings.append(f"⚠️ LONG near 1d resistance (within 1.5% of 20-day high)")
+                elif side == 'SELL' and live_price <= d_low_20 * 1.015:
+                    warnings.append(f"⚠️ SHORT near 1d support (within 1.5% of 20-day low)")
+
+        # --- 4h overextension check ---
+        if df_4h is not None and len(df_4h) >= 20:
+            closes_4h = df_4h['close'].values
+            ma_4h = np.mean(closes_4h[-20:])
+            if ma_4h > 0:
+                deviation = (live_price - ma_4h) / ma_4h
+                # Price >4% above 4h MA → overbought, risky to go LONG
+                if side == 'BUY' and deviation > 0.04:
+                    warnings.append(f"⚠️ Price {deviation*100:.1f}% above 4h MA — overbought for LONG")
+                # Price >4% below 4h MA → oversold, risky to go SHORT
+                elif side == 'SELL' and deviation < -0.04:
+                    warnings.append(f"⚠️ Price {abs(deviation)*100:.1f}% below 4h MA — oversold for SHORT")
+
+            # 4h slope check
+            slope_4h = self._calculate_normalized_slope(closes_4h, min(20, len(df_4h)))
+            if side == 'BUY' and slope_4h < -0.001:  # -0.1%/4h candle
+                warnings.append(f"⚠️ LONG vs 4h downtrend (slope={slope_4h*100:.3f}%/candle)")
+            elif side == 'SELL' and slope_4h > 0.001:
+                warnings.append(f"⚠️ SHORT vs 4h uptrend (slope={slope_4h*100:.3f}%/candle)")
+
+        return warnings
+
     def _log_round_summary(self, exchange: str, asset: str, price: float, regime: str,
                            consecutive_up: int, consecutive_down: int,
                            approved: bool, reasons: list, ml_score, ml_decision):
@@ -890,22 +1025,28 @@ class ReversalScalper:
         }
 
         # === STEP 1: FETCH ALL DATA IN PARALLEL ===
-        with ThreadPoolExecutor(max_workers=min(5, self.MAX_WORKERS)) as pool:
+        with ThreadPoolExecutor(max_workers=min(7, self.MAX_WORKERS)) as pool:
             if exchange == "cex":
                 f_df_5m = pool.submit(get_historical_data_binance, symbol=asset, interval='5m', limit=100)
                 f_df_1h = pool.submit(get_historical_data_binance, symbol=asset, interval='1h', limit=100)
+                f_df_4h = pool.submit(get_historical_data_binance, symbol=asset, interval='4h', limit=100)
+                f_df_1d = pool.submit(get_historical_data_binance, symbol=asset, interval='1d', limit=100)
                 f_live = pool.submit(get_binance_price, asset)
                 f_orderbook = pool.submit(get_orderbook_binance, asset, self.OB_DEPTH)
                 f_trades = pool.submit(get_binance_market_trades, asset, 50)
             else:
                 f_df_5m = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='5m', limit=100)
                 f_df_1h = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='1h', limit=100)
+                f_df_4h = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='4h', limit=100)
+                f_df_1d = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='1d', limit=100)
                 f_live = pool.submit(get_close_price, ORDERLY_ACCOUNT_ID, asset, interval)
                 f_orderbook = pool.submit(get_orderbook, asset, self.OB_DEPTH)
                 f_trades = pool.submit(get_market_trades, asset, 50)
             try:
                 df_5m = f_df_5m.result(timeout=15)
                 df_1h = f_df_1h.result(timeout=15)
+                df_4h = f_df_4h.result(timeout=15)
+                df_1d = f_df_1d.result(timeout=15)
                 live_price = f_live.result(timeout=15)
                 orderbook = f_orderbook.result(timeout=15)
                 market_trades = f_trades.result(timeout=15)
@@ -957,7 +1098,23 @@ class ReversalScalper:
         # === CALCULATE ATR for display and SL/TP later ===
         atr = self._calculate_atr(df_5m, period=14)
         result['debug_info']['atr'] = atr
-        
+
+        # === STEP 5.5: CHECK HIGHER TIMEFRAME EXHAUSTION (4h, 1d) ===
+        # Determine tentative side for HTF check
+        tentative_side = None
+        if pattern:
+            tentative_side = pattern['side']
+        elif spike_reversal:
+            tentative_side = spike_reversal['side']
+        elif engulfing:
+            tentative_side = engulfing['side']
+        elif pinbar:
+            tentative_side = pinbar['side']
+
+        htf_warnings = []
+        if tentative_side:
+            htf_warnings = self._check_htf_exhaustion(df_4h, df_1d, live_price, tentative_side)
+        result['debug_info']['htf_warnings'] = htf_warnings
         # === STEP 6: BUILD DEBUG DISPLAY ===
         regime = regime_info['regime']
         exchange_label = "💱 CEX (Binance Spot)" if exchange == "cex" else "🌐 DEX (Orderly Futures)"
@@ -1021,6 +1178,13 @@ class ReversalScalper:
         if manip_display:
             display_lines.append(manip_display)
             display_lines.append("")
+
+        # Add HTF exhaustion warnings if any
+        if htf_warnings:
+            display_lines.append("📅 Higher Timeframe Check (4h/1d):")
+            for w in htf_warnings:
+                display_lines.append(f"• {w}")
+            display_lines.append("")
         
         # === STEP 7: APPLY FILTERS ===
         price_dev = self._validate_live_price(last_close, live_price)
@@ -1059,6 +1223,23 @@ class ReversalScalper:
         # User prefers simple price action without filters
         if len(manipulation_warnings) >= 2:
             display_lines.append("⚠️ ℹ️ Manipulation signals detected (reference only, not blocking)")
+
+        # === HTF EXHAUSTION FILTER: block if ≥2 HTF warnings (strong multi-timeframe disagreement) ===
+        if len(htf_warnings) >= 2:
+            result['rejection_reasons'].append(f"HTF exhaustion: {', '.join(htf_warnings)}")
+            display_lines.append(f"🚫 ❌ Higher timeframe exhaustion ({len(htf_warnings)} warnings) — reversal blocked")
+            result['resume_of_analysis'] = "\n".join(display_lines)
+
+            consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+            save_signal_to_history(
+                asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=None,
+                approved=False, rejection_reasons=result['rejection_reasons'],
+                manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
+                candle_count=max(consecutive_up, consecutive_down)
+            )
+            self._log_round_summary(exchange, asset, live_price, regime, consecutive_up, consecutive_down,
+                                    False, result['rejection_reasons'], None, None)
+            return result
         
         # Choose the active signal: spike reversal takes priority in HIGH_VOL,
         # then 2+ candle pattern, then engulfing, then pin bar, then spike
@@ -1245,6 +1426,34 @@ class ReversalScalper:
                 display_lines.append("  ⛔ Automatic mode — trade BLOCKED by ML gate")
         else:
             display_lines.append("\n🤖 ML Gate: model not available — skipping")
+
+        # === STEP 9.5: LLM GATE (always active second opinion) ===
+        if result['approved']:
+            llm_decision, llm_reason = _evaluate_llm_gate(
+                signal_summary=result.get('resume_of_analysis', ''),
+                ml_score=ml_score,
+            )
+            if llm_decision == "approved":
+                display_lines.append(f"🧠 LLM Gate: APPROVED ✅ — {llm_reason}")
+            elif llm_decision == "rejected":
+                display_lines.append(f"🧠 LLM Gate: REJECTED ❌ — {llm_reason}")
+                if _get_exchange_mode(exchange) == "Automatic":
+                    result['approved'] = False
+                    result['rejection_reasons'].append(f"LLM gate: {llm_reason}")
+                    display_lines.append("  ⛔ Automatic mode — trade BLOCKED by LLM gate")
+                    # Notify via Telegram so user can review the rejection
+                    try:
+                        chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+                        if chat_id:
+                            send_bot_message(chat_id,
+                                f"🧠 LLM Gate REJECTED a signal for {asset}\n"
+                                f"Reason: {llm_reason}\n"
+                                f"ML score: {ml_score:.3f}\n\n"
+                                f"Full analysis:\n{result.get('resume_of_analysis', '')}")
+                    except Exception:
+                        pass
+                else:
+                    display_lines.append("  ℹ️ Signal mode — LLM verdict is reference only")
 
         result['resume_of_analysis'] = "\n".join(display_lines)
 

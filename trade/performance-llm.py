@@ -18,6 +18,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from logs.log_config import apolo_trader_logger as logger
 from trade.get_trades import get_trades
+from trade.get_binance_trades import get_binance_trades_for_analysis
 
 # Parameters to extract from main.py — organized by category
 REGIME_FILTER_PARAMETER_KEYS = [
@@ -308,12 +309,20 @@ def _build_trade_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
     win_quantities = []
     loss_quantities = []
 
+    # Exchange tracking
+    exchange_counter: Counter[str] = Counter()
+    exchange_pnl: dict[str, float] = {}
+    exchange_fees: dict[str, float] = {}
+    exchange_wins: dict[str, int] = {}
+    exchange_losses: dict[str, int] = {}
+
     for trade in trades:
         pnl = float(trade.get("realized_pnl") or 0.0)
         fee = float(trade.get("fee") or 0.0)
         qty = float(trade.get("executed_quantity") or 0.0)
         side = str(trade.get("side", "UNKNOWN")).upper()
         is_maker = int(trade.get("is_maker") or 0)
+        exchange = str(trade.get("exchange", "orderly_dex"))
 
         pnl_sum += pnl
         fee_sum += fee
@@ -347,6 +356,15 @@ def _build_trade_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
             taker_count += 1
             taker_pnl += pnl
             taker_fees += fee
+
+        # Exchange breakdown
+        exchange_counter[exchange] += 1
+        exchange_pnl[exchange] = exchange_pnl.get(exchange, 0.0) + pnl
+        exchange_fees[exchange] = exchange_fees.get(exchange, 0.0) + fee
+        if pnl > 0:
+            exchange_wins[exchange] = exchange_wins.get(exchange, 0) + 1
+        elif pnl < 0:
+            exchange_losses[exchange] = exchange_losses.get(exchange, 0) + 1
 
         dt = _to_datetime_utc(trade.get("executed_timestamp"))
         if dt is not None:
@@ -419,6 +437,19 @@ def _build_trade_stats(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "hours_enter_distribution": dict(sorted(hour_counter.items())),
         "days_enter_distribution": dict(day_counter),
         "strategy_used_distribution": dict(strategy_counter),
+        "exchange_breakdown": {
+            exch: {
+                "count": exchange_counter.get(exch, 0),
+                "wins": exchange_wins.get(exch, 0),
+                "losses": exchange_losses.get(exch, 0),
+                "win_rate_pct": round(
+                    exchange_wins.get(exch, 0) / max(exchange_counter.get(exch, 1), 1) * 100, 2
+                ),
+                "total_pnl": round(exchange_pnl.get(exch, 0.0), 4),
+                "total_fees": round(exchange_fees.get(exch, 0.0), 4),
+            }
+            for exch in sorted(exchange_counter.keys())
+        },
     }
 
 
@@ -499,6 +530,14 @@ def _build_llm_prompt(
             f"PnL ${sd['total_pnl']}, fees ${sd['total_fees']}"
         )
 
+    # Build exchange breakdown summary lines
+    exchange_lines = []
+    for exch, ed in stats.get("exchange_breakdown", {}).items():
+        exchange_lines.append(
+            f"{exch}: {ed['count']} trades, {ed['win_rate_pct']}% win, "
+            f"PnL ${ed['total_pnl']}, fees ${ed['total_fees']}"
+        )
+
     instructions = [
         "=== ROLE ===",
         "You are a quantitative trading performance analyst specializing in crypto futures scalping.",
@@ -506,7 +545,7 @@ def _build_llm_prompt(
         "",
         "=== STRATEGY CONTEXT ===",
         "Strategy: Price Action Reversal Scalper (hard-coded logic, NO LLM/ML in execution)",
-        f"Asset: {symbol_filter} perpetual futures on Orderly Network (low-volume DEX)",
+        f"Asset: {symbol_filter} on Orderly Network (DEX futures) + Binance (CEX spot)",
         "Timeframe: 5-minute candles with regime detection on 1-hour",
         "",
         "=== EXECUTIVE SUMMARY (computed from actual data) ===",
@@ -514,6 +553,9 @@ def _build_llm_prompt(
         f"Net PnL after fees: ${net_pnl}",
         f"Avg win: ${avg_win} | Avg loss: ${avg_loss} | Avg fee: ${avg_fee}",
         f"Fee impact: avg fee is {fee_pct_of_avg_win}% of avg win — fee drag is {'SIGNIFICANT' if fee_pct_of_avg_win > 10 else 'moderate'}",
+        "",
+        "=== EXCHANGE BREAKDOWN ===",
+        *exchange_lines,
         "",
         "=== SIDE DIRECTION BREAKDOWN ===",
         *side_lines,
@@ -695,7 +737,14 @@ def _build_md_report(output: dict[str, Any]) -> str:
     llm_parsed = output.get("llm_parsed", {})
 
     lines.append(f"# Trading Performance Analysis — {symbol}")
-    lines.append(f"\n**Generated:** {ts}\n")
+    lines.append(f"\n**Generated:** {ts}")
+    
+    # Show exchanges analyzed
+    exch_bd = stats.get("exchange_breakdown", {})
+    exchanges = list(exch_bd.keys())
+    if exchanges:
+        lines.append(f"**Exchanges:** {', '.join(exchanges)}")
+    lines.append("")
 
     lines.append("## Trade Statistics")
     lines.append(f"- Total trades: {stats.get('total_trades', 0)}")
@@ -714,6 +763,13 @@ def _build_md_report(output: dict[str, Any]) -> str:
         lines.append("\n### Side Breakdown")
         for side, sd in side_bd.items():
             lines.append(f"- **{side}**: {sd.get('count', 0)} trades, {sd.get('win_rate_pct', 0)}% win, PnL ${sd.get('total_pnl', 0)}")
+    
+    exch_bd = stats.get("exchange_breakdown", {})
+    if exch_bd and len(exch_bd) > 1:
+        lines.append("\n### Exchange Breakdown")
+        for exch, ed in exch_bd.items():
+            lines.append(f"- **{exch}**: {ed.get('count', 0)} trades, {ed.get('win_rate_pct', 0)}% win, PnL ${ed.get('total_pnl', 0)}, fees ${ed.get('total_fees', 0)}")
+    
     maker_taker = stats.get("maker_vs_taker", {})
     if maker_taker:
         lines.append("\n### Maker vs Taker")
@@ -799,15 +855,31 @@ def _build_md_report(output: dict[str, Any]) -> str:
 def analyze_trade_performance(symbol_filter: str = "NEAR_USDC") -> dict[str, Any]:
     """
     Main function: Analyze trade performance and get LLM recommendations.
+    Merges both Orderly DEX (futures) and Binance CEX (spot) trades.
     
     Returns dict with analysis results, saves to Markdown file.
     """
-    trades = get_trades(symbol_filter=symbol_filter)
+    # Extract base asset name (e.g., "NEAR" from "NEAR_USDC" or "PERP_NEAR_USDC")
+    base_asset = symbol_filter.replace("PERP_", "").replace("_USDC", "").strip()
+
+    # Fetch Orderly DEX trades
+    dex_trades = get_trades(symbol_filter=symbol_filter)
+    for t in dex_trades:
+        t["exchange"] = "orderly_dex"
+
+    # Fetch Binance spot trades
+    binance_trades = get_binance_trades_for_analysis(base_asset)
+
+    # Merge
+    trades = dex_trades + binance_trades
+
     if not trades:
         return {
             "ok": False,
             "error": f"No trades found for symbol filter: {symbol_filter}",
         }
+    trade_source = "DEX + CEX" if binance_trades else "DEX only"
+    logger.info(f"📊 Analyzing {len(trades)} trades ({len(dex_trades)} DEX + {len(binance_trades)} CEX) for {base_asset}")
     
     # Build statistics
     stats = _build_trade_stats(trades)
