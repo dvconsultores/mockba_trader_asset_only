@@ -355,7 +355,18 @@ class ReversalScalper:
         # === MULTI-CORE PROCESSING ===
         self.MAX_WORKERS = max(1, os.cpu_count() or 1)
         logger.info(f"🖥️  ReversalScalper initialized with {self.MAX_WORKERS} CPU cores")
-        
+
+        # === DEX SWING PARAMETERS (wider targets to overcome DEX spread) ===
+        # On Orderly, spreads are 0.1-0.3% — a 0.3% TP is eaten by spread.
+        # Swing mode uses higher TF (4h/1d) patterns with wider targets.
+        self.DEX_SWING_TP_PCT = 0.025      # 2.5% take profit (clears 0.3% spread with room)
+        self.DEX_SWING_SL_PCT = 0.035      # 3.5% stop loss (R:R ~0.7:1 — acceptable for 4h swings)
+        self.DEX_SWING_MIN_SPREAD = 0.003  # 0.3% max spread — reject if wider
+        self.DEX_SWING_SL_ATR_MULT = 3.0   # Wider ATR multiplier for swing SL
+        self.DEX_SWING_TP_ATR_MULT = 2.5   # ATR multiplier for swing TP
+
+        # === SPREAD GATE (DEX only) ===
+        self.DEX_MAX_SPREAD = 0.003  # Reject DEX trades if spread > 0.3%
     def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         """
         Calculate Average True Range (ATR) for adaptive stop loss.
@@ -1205,6 +1216,30 @@ class ReversalScalper:
                                     False, result['rejection_reasons'], None, None)
             return result
         
+        # === DEX SPREAD GATE: reject if spread is too wide for swing trading ===
+        if exchange == "dex" and orderbook.get('bids') and orderbook.get('asks'):
+            try:
+                best_bid = float(orderbook['bids'][0][0])
+                best_ask = float(orderbook['asks'][0][0])
+                if best_bid > 0:
+                    spread = (best_ask - best_bid) / best_bid
+                    if spread > self.DEX_MAX_SPREAD:
+                        result['rejection_reasons'].append(f"DEX spread {spread*100:.2f}% > {self.DEX_MAX_SPREAD*100:.1f}%")
+                        display_lines.append(f"🚫 ❌ DEX spread {spread*100:.2f}% too wide (max {self.DEX_MAX_SPREAD*100:.1f}%) — swing blocked")
+                        result['resume_of_analysis'] = "\n".join(display_lines)
+                        consecutive_up, consecutive_down = self._count_consecutive_candles(df_5m['close'].values) if len(df_5m) >= 10 else (0, 0)
+                        save_signal_to_history(
+                            asset=asset, exchange=exchange, regime=regime, obi=obi, pattern_type=None,
+                            approved=False, rejection_reasons=result['rejection_reasons'],
+                            manipulation_warnings=manipulation_warnings, atr=atr, live_price=live_price,
+                            candle_count=max(consecutive_up, consecutive_down)
+                        )
+                        self._log_round_summary(exchange, asset, live_price, regime, consecutive_up, consecutive_down,
+                                                False, result['rejection_reasons'], None, None)
+                        return result
+            except (TypeError, ValueError, IndexError):
+                pass
+        
         # ✅ REMOVED: Trend filter — reversals trade in any regime now
         # if regime in ['TREND_UP', 'TREND_DOWN']:
         #     result['rejection_reasons'].append(f"Market in {regime}")
@@ -1338,6 +1373,43 @@ class ReversalScalper:
                 tp = entry * (1 + self.TP_PCT)
                 atr_based = False
             sl = 0  # No stop loss for spot
+        elif exchange == "dex":
+            # === DEX SWING MODE: wider TP/SL to overcome DEX spread ===
+            # Uses 4h ATR for volatility-adaptive swing sizing
+            swing_atr = self._calculate_atr(df_4h, period=14) if df_4h is not None and len(df_4h) >= 14 else atr
+            if swing_atr > 0:
+                # Structure-based SL with wider ATR multiplier
+                structural_sl = self._calculate_structural_sl(df_4h if df_4h is not None and len(df_4h) >= 10 else df_5m, side, entry, swing_atr)
+                if structural_sl > 0:
+                    sl = structural_sl
+                    sl_source = 'structure'
+                else:
+                    if side == 'BUY':
+                        sl = entry - (swing_atr * self.DEX_SWING_SL_ATR_MULT)
+                    else:
+                        sl = entry + (swing_atr * self.DEX_SWING_SL_ATR_MULT)
+                    sl_source = 'atr'
+                # Floor: SL must be at least DEX_SWING_SL_PCT from entry
+                sl_pct = abs(sl - entry) / entry
+                if sl_pct < self.DEX_SWING_SL_PCT:
+                    sl_pct = self.DEX_SWING_SL_PCT
+                    sl = entry * (1 - sl_pct) if side == 'BUY' else entry * (1 + sl_pct)
+                    sl_source = 'swing_floor'
+                # TP: wider to clear spread
+                if side == 'BUY':
+                    tp = entry + (swing_atr * self.DEX_SWING_TP_ATR_MULT)
+                else:
+                    tp = entry - (swing_atr * self.DEX_SWING_TP_ATR_MULT)
+                tp_pct = abs(tp - entry) / entry
+                tp_pct = max(tp_pct, self.DEX_SWING_TP_PCT)
+                tp = entry * (1 + tp_pct) if side == 'BUY' else entry * (1 - tp_pct)
+                atr_based = True
+            else:
+                # Fallback: fixed swing percentages
+                tp = entry * (1 + self.DEX_SWING_TP_PCT) if side == 'BUY' else entry * (1 - self.DEX_SWING_TP_PCT)
+                sl = entry * (1 - self.DEX_SWING_SL_PCT) if side == 'BUY' else entry * (1 + self.DEX_SWING_SL_PCT)
+                atr_based = False
+                sl_source = 'swing_fixed'
         elif atr > 0:
             # === STRUCTURE-BASED SL (primary): place SL beyond recent swing point ===
             structural_sl = self._calculate_structural_sl(df_5m, side, entry, atr)
@@ -1396,6 +1468,18 @@ class ReversalScalper:
                 f"• Entry: {entry:.6f}\n"
                 f"• TP: {tp:.6f} (+{tp_distance_pct:.2f}%){'  [ATR-based]' if atr_based else '  [Fixed %]'}\n"
                 f"• Mode: 🟢 BUY only (long-only spot)"
+            )
+        elif exchange == "dex":
+            sl_distance_pct = abs(sl - entry) / entry * 100
+            sl_label = {'structure': '[Structure]', 'atr': '[Swing ATR]', 'swing_floor': '[Swing Floor]', 'swing_fixed': '[Swing Fixed]'}.get(sl_source, '')
+            display_lines.append(
+                f"✅ ✅ ✅ DEX SWING TRADE APPROVED ✅ ✅ ✅\n"
+                f"• Signal: {active_signal['reason']}\n"
+                f"• Entry: {entry:.6f}\n"
+                f"• SL: {sl:.6f} (-{sl_distance_pct:.2f}%)  {sl_label}\n"
+                f"• TP: {tp:.6f} (+{tp_distance_pct:.2f}%) {'[Swing ATR]' if atr_based else '[Swing Fixed]'}\n"
+                f"• Risk/Reward: {(tp_distance_pct / sl_distance_pct):.2f}:1\n"
+                f"• Mode: 🔄 DEX Swing (wider targets for thin liquidity)"
             )
         else:
             sl_distance_pct = abs(sl - entry) / entry * 100
