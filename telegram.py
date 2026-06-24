@@ -803,11 +803,10 @@ def ListSettings(m):
         if key in settings:
             value = settings[key]
             if key == "stop_loss":
-                value = f"{value}%"
+                value = f"{value}% (min floor, ATR-adjusted)"
             elif key == "leverage":
                 value = f"{value}x"
             message_lines.append(f"{emoji} {label}: {value}\n")
-    message_lines.append("📊 Daily trade limit: 1/day\n")
     
     # CEX-only settings
     message_lines.append("\n💱 CEX Only (Binance Spot):\n")
