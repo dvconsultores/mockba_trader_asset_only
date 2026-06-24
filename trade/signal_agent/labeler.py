@@ -435,8 +435,22 @@ def label_signals(dry_run: bool = False, days: int = 90, local_only: bool = Fals
     with open(acc_path, "w") as f:
         json.dump(acc_list, f, default=str)
 
-    # ── 4. Normalize for matching ───────────────────────────────────────
+    # ── 4. Normalize Orderly trades for matching ───────────────────────
     all_trades = _normalize_trades_orderly(acc_list)
+    logger.info(f"Orderly trades for matching: {len(all_trades)}")
+
+    # ── 4b. Fetch & normalize Binance trades for CEX signal matching ───
+    if BINANCE_API_KEY and BINANCE_SECRET_KEY:
+        try:
+            binance_raw = download_binance_trades(days=days)
+            if binance_raw:
+                binance_norm = _normalize_trades_binance(binance_raw)
+                binance_norm = _compute_binance_pnl(binance_norm)
+                all_trades.extend(binance_norm)
+                logger.info(f"Binance trades for matching: {len(binance_norm)}")
+        except Exception as e:
+            logger.warning(f"Could not download Binance trades for labeling: {e}")
+
     logger.info(f"Total trades for matching: {len(all_trades)}")
 
     # ── 5. Fetch unlabeled approved signals ─────────────────────────────

@@ -431,12 +431,16 @@ def place_spot_order(signal: dict):
     info = get_binance_exchange_info(symbol)
     if not info:
         logger.error(f"❌ Failed to get Binance exchange info for {symbol}")
+        if chat_id:
+            send_bot_message(chat_id, f"❌ CEX order failed: Could not fetch exchange info for {symbol}")
         return None
 
     # Get balance
     balance = get_binance_balance("USDT")
     if balance < info['min_notional']:
         logger.error(f"❌ Insufficient USDT balance: {balance}")
+        if chat_id:
+            send_bot_message(chat_id, f"❌ CEX order failed: Insufficient USDT balance (${balance}) for {binance_symbol}")
         return None
 
     # Position sizing for CEX: use configured capital, or all available balance
@@ -459,11 +463,15 @@ def place_spot_order(signal: dict):
 
     if qty < info['base_min']:
         logger.error(f"❌ Quantity {qty} below minimum {info['base_min']}")
+        if chat_id:
+            send_bot_message(chat_id, f"❌ CEX order failed: Qty {qty} below min {info['base_min']} for {binance_symbol}")
         return None
 
     notional = qty * entry
     if notional < info['min_notional']:
         logger.error(f"❌ Notional ${notional:.2f} below min ${info['min_notional']}")
+        if chat_id:
+            send_bot_message(chat_id, f"❌ CEX order failed: Notional ${notional:.2f} below min ${info['min_notional']} for {binance_symbol}")
         return None
 
     # --- STEP 1: LIMIT BUY with fallback to MARKET after 30s ---

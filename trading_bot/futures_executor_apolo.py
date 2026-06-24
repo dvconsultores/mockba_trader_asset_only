@@ -314,17 +314,23 @@ def place_futures_order(signal: dict):
     symbol = signal['symbol']
     side = signal['side'].upper()
 
+    chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+
     asset_info = get_futures_exchange_info(symbol)
     if not asset_info:
         logger.error(f"❌ Failed to fetch asset info for {symbol}")
+        if chat_id:
+            send_bot_message(chat_id, f"❌ DEX order failed: Could not fetch asset info for {symbol}")
         return
-    
+
     quote_tick = float(asset_info["quote_tick"] or 0.0)
     base_tick  = float(asset_info["base_tick"]  or 0.0)
     min_notional = float(asset_info.get("min_notional", 10.0))
 
     if quote_tick <= 0 or base_tick <= 0:
         logger.error(f"❌ Invalid tick sizes for {symbol}: quote_tick={quote_tick}, base_tick={base_tick}")
+        if chat_id:
+            send_bot_message(chat_id, f"❌ DEX order failed: Invalid tick sizes for {symbol}")
         return
 
     # FIX: Calculate decimal precision from tick size
@@ -355,8 +361,11 @@ def place_futures_order(signal: dict):
     orderly_public_key = ORDERLY_PUBLIC_KEY
 
     balance = get_available_balance(orderly_secret, orderly_account_id, orderly_public_key)
-    if balance is None or balance < 5.0:
-        logger.error(f"❌ Insufficient balance. Balance: {balance}")
+    if balance is None or balance <= 0:
+        logger.error(f"❌ No available balance. Balance: {balance}")
+        if chat_id:
+            send_bot_message(chat_id, f"❌ DEX order failed: No available balance (${balance}) for {symbol}")
+        return None
 
     # Key
     raw_key = b58decode(orderly_secret.replace("ed25519:", ""))
@@ -368,6 +377,9 @@ def place_futures_order(signal: dict):
     live_price = float(get_close_price(orderly_account_id, symbol))
     if live_price <= 0:
         logger.error(f"❌ Invalid live price for {symbol}: {live_price}")
+        if chat_id:
+            send_bot_message(chat_id, f"❌ DEX order failed: Could not get valid live price for {symbol}")
+        return None
 
     # --- Normalize side ---
     if isinstance(side, int):
@@ -409,6 +421,8 @@ def place_futures_order(signal: dict):
     qty = calculate_position_size_with_margin_cap(signal, balance, leverage, asset_info)
     if qty <= 0:
         logger.warning(f"Position size calculation failed for {symbol}")
+        if chat_id:
+            send_bot_message(chat_id, f"❌ DEX order failed: Position size too small for {symbol} (qty={qty}, balance={balance})")
         return None
 
     # FIX: Use proper precision for quantity rounding

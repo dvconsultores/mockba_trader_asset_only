@@ -134,18 +134,51 @@ def _evaluate_ml_gate(regime: str, obi: float, atr: float, entry_price: float,
         return None, None, None
 
 
-def _evaluate_llm_gate(signal_summary: str, ml_score: float | None) -> tuple[str | None, str | None]:
+def _evaluate_llm_gate(signal_summary: str, ml_score: float | None, exchange: str = "dex") -> tuple[str | None, str | None]:
     """
-    Optional LLM second-opinion gate for marginal ML scores.
-
-    Only called when:
-    - LLM_GATE_ENABLED=true
-    - ML score is in the marginal range (TIE_LOW < score <= TIE_HIGH)
+    LLM second-opinion gate — always active when API key is set.
+    Called for every approved signal after ML gate.
+    Prompt adapts thresholds and context based on exchange (dex vs cex).
 
     Returns (decision, reason) where decision is "approved", "rejected", or None on timeout/error.
     """
     if not _LLM_API_KEY:
         return None, None
+
+    is_dex = (exchange == "dex")
+
+    # ── Exchange-specific context ──────────────────────────────────
+    if is_dex:
+        exchange_context = (
+            "=== EXCHANGE: ORDERLY DEX FUTURES ===\n"
+            "• Leveraged futures with mandatory SL/TP (bracket orders)\n"
+            "• LONG and SHORT both allowed — direction matters\n"
+            "• Thinner on-chain liquidity → spreads 0.1-0.3% (rejected if >0.3%)\n"
+            "• OBI thresholds (same as code):\n"
+            "   OBI > 1.10 = bullish | OBI < 0.909 = bearish | 0.909-1.10 = neutral\n"
+            "   OBI > 1.30 = extreme bullish | OBI < 0.77 = extreme bearish → note, don't reject\n"
+            "   (OBI threshold is user-configurable via order_book_threshold setting)\n"
+            "• Targets: DB default TP=0.5%, SL=0.3% (before ATR adjustment).\n"
+            "   Swing mode (wider): TP=2.5%, SL=3.5% → R:R ~0.7:1 is normal\n"
+            "   Actual TP/SL are ATR-adjusted — check the signal data for final values\n"
+            "• If SL looks too tight vs ATR (SL distance < 2x ATR) → flag as LOW confidence\n"
+            "• Daily limit: 1 trade/day — make it count, but don't be paralyzed\n"
+        )
+    else:
+        exchange_context = (
+            "=== EXCHANGE: BINANCE CEX SPOT ===\n"
+            "• Spot only — no leverage, no liquidation risk, can hold indefinitely\n"
+            "• BUY only (LONG) — SHORT signals are rejected upstream\n"
+            "• Deep centralized liquidity → tighter spreads (~0.05-0.1%)\n"
+            "• OBI thresholds (same code for both exchanges):\n"
+            "   OBI > 1.10 = bullish | OBI < 0.909 = bearish | 0.909-1.10 = neutral\n"
+            "   OBI > 1.30 = extreme bullish | OBI < 0.77 = extreme bearish → note, don't reject\n"
+            "• Targets: DB default TP=0.5% (before adjustment). No SL on spot.\n"
+            "   Actual TP is in the signal data — check it clears spread + fees\n"
+            "• TP below 0.3% → note as LOW confidence (tight vs spread)\n"
+            "• No daily trade limit on spot — more permissive\n"
+            "• No SL means TP must be realistic; if TP is extremely far from entry, flag it\n"
+        )
 
     try:
         import requests as _requests
@@ -156,29 +189,62 @@ def _evaluate_llm_gate(signal_summary: str, ml_score: float | None) -> tuple[str
             "- Bullish/Bearish engulfing at support/resistance\n"
             "- Pin bar / Hammer / Shooting star (wick rejection) at S/R\n"
             "- Spike reversal: outsized candle + OB confirming reversal\n\n"
-            "Your job: confirm the signal has real edge, or flag a clear reason to skip it. "
-            "Only reject when there is STRONG contradictory evidence — a missed trade is a missed opportunity. "
-            "When data is mixed or inconclusive, default to APPROVED and let the trade play out.\n\n"
+            "Your job: confirm the signal has real edge, or flag a clear reason to skip it.\n\n"
             "=== SIGNAL DATA ===\n"
             f"{signal_summary}\n\n"
+            f"{exchange_context}\n"
+            "=== REGIME DETECTION CONTEXT ===\n"
+            "Regime is determined by linear regression slope over 5m and 1h candles:\n"
+            "- RANGE: |slope| < 0.12%/candle on 5m AND < 0.14%/candle on 1h (flat/sideways)\n"
+            "- TREND_UP: positive slope exceeding threshold + volume ≥ 120% avg\n"
+            "- TREND_DOWN: negative slope exceeding threshold + volume ≥ 120% avg\n"
+            "The signal_summary reports which regime was detected.\n\n"
             "=== ML MODEL CONTEXT ===\n"
             f"XGBoost score: {ml_score:.3f} (threshold: {_ML_THRESHOLD}, trained on historical NEAR reversals)\n\n"
-            "=== DECISION FRAMEWORK (only reject on CLEAR contradictions) ===\n"
-            "1. PATTERN: All detected patterns are valid by definition (code already verified candle structure). "
-            "Only question the pattern if price is clearly mid-range with no nearby S/R.\n"
-            "2. REGIME: RANGE = ideal for reversals. TREND = the reversal must be WITH the trend (pullback), not against it. "
-            "A LONG in TREND_DOWN or SHORT in TREND_UP needs OBI > 1.15 (LONG) or OBI < 0.85 (SHORT) to override.\n"
-            "3. ORDER BOOK: OBI > 1.0 supports LONG, OBI < 1.0 supports SHORT. Counter-OBI trades are risky but not fatal "
-            "on liquid markets — flag as warning, not auto-reject. Extreme OBI (>1.3 bullish, <0.77 bearish) = whale activity, treat as neutral.\n"
-            "4. HIGHER TIMEFRAME: Price at 20-day high + LONG signal = rejection. Price at 20-day low + SHORT signal = rejection. "
-            "A single 4h/1d warning is informational; only reject if BOTH 4h AND 1d oppose the trade direction.\n"
-            "5. R:R: For spot (no SL), TP must be > 0.3% to clear spread+fees. For DEX futures, R:R below 0.5:1 is a reject.\n"
-            "6. DEFAULT: When in doubt, APPROVE. The ML model and HTF filter already blocked the worst signals. "
-            "Your role is to catch obvious mistakes the deterministic filters missed, not to second-guess every trade.\n\n"
-            "Reply with ONLY valid JSON (no markdown, no extra text):\n"
-            '{"decision":"approved","reason":"<why this trade has edge, referencing specific data>"}\n'
-            'or\n'
-            '{"decision":"rejected","reason":"<specific contradiction that makes this trade clearly bad>"}'
+            "=== DECISION FRAMEWORK ===\n\n"
+            "1. PATTERN VALIDATION — quick sanity-check:\n"
+            "   Verify the detected pattern against its definition:\n"
+            "   • Reversal: Do candles actually reverse at a logical S/R level?\n"
+            "   • Engulfing: Does the engulfing candle body truly exceed the prior candle's body?\n"
+            "   • Pin bar: Is the wick ≥ 2x the body and at a price extreme?\n"
+            "   • Spike: Is the spike candle range ≥ 1.3x average AND volume ≥ 3x average?\n"
+            "   • 'Mid-range' = price is between 25%-75% of the 20-period range — informational only\n"
+            "   • 'Nearby S/R' = within 1.5% of a swing pivot. Missing S/R — informational only\n"
+            "   • Only REJECT if the pattern is clearly misidentified (e.g., 'engulfing' where body is smaller)\n\n"
+            "2. REGIME + OBI — guide confidence, not rejection:\n"
+            "   Use the exchange-specific OBI thresholds above.\n"
+            "   • RANGE + OBI supporting → ideal conditions, HIGH confidence\n"
+            "   • TREND with the trade (pullback) → APPROVE, HIGH confidence\n"
+            "   • TREND against the trade (counter-trend) → APPROVE with MEDIUM confidence\n"
+            "   • Counter-trend + OBI strongly supporting → upgrade to HIGH confidence\n"
+            "   • OBI neutral in any regime → no adjustment needed\n"
+            "   • REGIME + OBI should guide your confidence level, NOT trigger rejection\n\n"
+            "3. HIGHER TIMEFRAME (HTF) — the main rejection trigger:\n"
+            "   Timeframe priority: 1d > 4h > 1h. Daily carries most weight.\n"
+            "   • Price at 20-day HIGH + LONG signal → REJECT (buying the top)\n"
+            "   • Price at 20-day LOW + SHORT signal → REJECT (shorting the bottom)\n"
+            "   • Single TF disagreeing (e.g., 1d opposes, 4h/1h agree) → LOW confidence, but still APPROVE\n"
+            "   • If HTF data is missing → skip this check completely\n"
+            "   • ONLY reject on HTF when both 4h AND 1d clearly oppose the direction\n\n"
+            "4. RISK/REWARD (R:R) — informational, almost never reject alone:\n"
+            "   Use the exchange-specific R:R context above.\n"
+            "   • Check that TP clears spread + fees (see exchange context for thresholds)\n"
+            "   • R:R should NEVER be the sole reason to reject — only combine with HTF rejection\n"
+            "   • If R:R is not computable (missing SL/TP), skip this check\n\n"
+            "5. MISSING DATA — always default to ALLOW:\n"
+            "   • Any missing field → treat that factor as NEUTRAL, not as a strike against the trade\n"
+            "   • Never reject solely because data is missing\n\n"
+            "6. OVERRIDING PRINCIPLE — DEFAULT TO APPROVE:\n"
+            "   This is a scalping strategy. A missed winning trade costs more than a small loss.\n"
+            "   Your job: catch the 1-2 OBVIOUSLY bad trades per day, not block everything questionable.\n"
+            "   • REJECT only when: HTF clearly opposes (both 4h+1d) OR pattern is clearly misidentified\n"
+            "   • For everything else: APPROVE and use confidence level to express doubt\n"
+            "   • If you're unsure after 15 seconds of thinking → APPROVE with MEDIUM confidence\n"
+            "   • The ML model and HTF filter already blocked the worst candidates before reaching you\n\n"
+            "Reply with ONLY valid JSON (no markdown, no code blocks, no extra text):\n"
+            '{"decision":"approved","confidence":"high|medium|low","reason":"<brief assessment, mention the strongest factor>"}\n'
+            'or (RARELY — only for clear HTF contradiction or pattern misidentification)\n'
+            '{"decision":"rejected","confidence":"high","reason":"<which specific factor clearly invalidates this trade>"}'
         )
         headers = {
             "Authorization": f"Bearer {_LLM_API_KEY}",
@@ -187,7 +253,7 @@ def _evaluate_llm_gate(signal_summary: str, ml_score: float | None) -> tuple[str
         body = {
             "model": _LLM_MODEL,
             "temperature": 0.1,
-            "max_tokens": 250,
+            "max_tokens": 350,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": {"type": "json_object"},
         }
@@ -200,9 +266,12 @@ def _evaluate_llm_gate(signal_summary: str, ml_score: float | None) -> tuple[str
         result = _json.loads(content)
         decision = result.get("decision", "").lower()
         reason = result.get("reason", "LLM gate decision")
+        confidence = result.get("confidence", "medium")
         if decision in ("approved", "rejected"):
-            logger.info(f"[LLM GATE] Decision: {decision} — {reason}")
-            return decision, reason
+            logger.info(f"[LLM GATE] Decision: {decision} ({confidence}) — {reason}")
+            # Embed confidence in reason for display
+            full_reason = f"[{confidence.upper()}] {reason}"
+            return decision, full_reason
         return None, None
     except Exception as e:
         logger.warning(f"[LLM GATE] Evaluation failed (falling through): {e}")
@@ -264,14 +333,17 @@ def _run_labeler_background():
         try:
             from trade.signal_agent.labeler import label_signals
             updated = label_signals(dry_run=False)
-            if updated:
-                try:
-                    from trading_bot.send_bot_message import send_bot_message
-                    chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
-                    if chat_id:
+            try:
+                from trading_bot.send_bot_message import send_bot_message
+                chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+                if chat_id:
+                    if updated:
                         send_bot_message(chat_id, f"🗄️ Database updated: {updated} signals labeled with real trade outcomes")
-                except Exception:
-                    pass
+                    else:
+                        # Inform user that labeler ran but found nothing new
+                        logger.info("[LABELER] Run completed — no new signals to label")
+            except Exception:
+                pass
         except Exception as e:
             logger.warning(f"[LABELER] Background run failed: {e}")
     t = threading.Thread(target=_label, daemon=True, name="labeler-bg")
@@ -1516,6 +1588,7 @@ class ReversalScalper:
             llm_decision, llm_reason = _evaluate_llm_gate(
                 signal_summary=result.get('resume_of_analysis', ''),
                 ml_score=ml_score,
+                exchange=exchange,
             )
             if llm_decision == "approved":
                 display_lines.append(f"🧠 LLM Gate: APPROVED ✅ — {llm_reason}")
@@ -1616,6 +1689,28 @@ def process_signal(asset_override: str = None, exchange_override: str = None) ->
 def autotrade():
     """Main autotrade loop - supports independent modes for DEX and CEX."""
     logger.info("🤖 Starting hard-coded autotrade loop...")
+
+    # ── Startup confirmation via Telegram ────────────────────────────
+    try:
+        chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+        if chat_id:
+            dex_mode = _get_exchange_mode("dex")
+            cex_mode = _get_exchange_mode("cex")
+            asset = get_setting("current_asset") or "N/A"
+            startup_msg = (
+                f"🤖 Mockba Bot Started\n"
+                f"• Asset: {asset}\n"
+                f"• DEX mode: {dex_mode}\n"
+                f"• CEX mode: {cex_mode}\n"
+                f"• Interval: {get_setting('interval') or '5m'}"
+            )
+            send_bot_message(chat_id, startup_msg)
+    except Exception:
+        pass
+
+    _last_health_check_at = time.time()
+    _HEALTH_CHECK_INTERVAL = 21600  # 6 hours
+
     while True:
         try:
             dex_mode = _get_exchange_mode("dex")
@@ -1700,6 +1795,25 @@ def autotrade():
             # Periodic outcome labeling (background, every 2 hours)
             if _should_run_labeler():
                 _run_labeler_background()
+
+            # Periodic health check via Telegram (every 6 hours)
+            now = time.time()
+            if now - _last_health_check_at >= _HEALTH_CHECK_INTERVAL:
+                _last_health_check_at = now
+                try:
+                    chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+                    if chat_id:
+                        dex_positions = get_user_statistics() if dex_mode in ("Signal", "Automatic") else 0
+                        cex_has_open = has_open_orders_binance(fail_safe=False) if cex_mode in ("Signal", "Automatic") else False
+                        health_msg = (
+                            f"💚 Bot Health Check\n"
+                            f"• DEX mode: {dex_mode} | Open positions: {dex_positions}\n"
+                            f"• CEX mode: {cex_mode} | Open orders: {'Yes' if cex_has_open else 'No'}\n"
+                            f"• Asset: {asset}"
+                        )
+                        send_bot_message(chat_id, health_msg)
+                except Exception:
+                    pass
 
             time.sleep(30)
         except Exception as e:
