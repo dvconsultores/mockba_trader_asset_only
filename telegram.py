@@ -561,16 +561,30 @@ def set_cex_capital(m):
 
 def set_leverage(m):
     if m.chat.type != 'private': return
-    global gp1; gp1 = "leverage"
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-    
+
+    current = get_setting("leverage") or "3"
+
+    levels = [
+        ("🟢 2x",  "2",  "Safe — low liquidation risk"),
+        ("🟡 3x",  "3",  "Balanced — moderate leverage"),
+        ("🟠 5x",  "5",  "Aggressive — higher exposure"),
+        ("🔴 10x", "10", "Max — high risk, tight liquidation"),
+    ]
+
     markup = InlineKeyboardMarkup()
+    for label, val, desc in levels:
+        check = "✅" if current == val else "  "
+        markup.add(InlineKeyboardButton(
+            f"{check} {label}",
+            callback_data=f"set_val:leverage:{val}"
+        ))
+
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
-               
-    bot.send_message(cid, translate("Enter leverage (e.g., 5)", cid), reply_markup=markup)
-    bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
+
+    bot.send_message(cid, translate("Select Leverage (DEX futures multiplier):", cid), reply_markup=markup)
 
 def set_prompt(m):
     if m.chat.type != 'private': return
