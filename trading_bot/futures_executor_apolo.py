@@ -260,8 +260,14 @@ def calculate_position_size_with_margin_cap(
 
     qty_by_risk = risk_amount / risk_per_unit
 
-    # Margin cap: use only a portion of available buying power (50% for safety)
-    max_notional = available_balance * leverage * 0.5
+    # Capital usage: configurable % of available buying power to deploy
+    try:
+        capital_pct = float(get_setting('capital_usage'))
+    except (TypeError, ValueError, AttributeError):
+        logger.warning("Invalid or missing 'capital_usage' setting. Using default 50%.")
+        capital_pct = 50.0
+
+    max_notional = available_balance * leverage * (capital_pct / 100)
     if entry <= 0:
         logger.warning("Invalid entry price")
         return 0.0

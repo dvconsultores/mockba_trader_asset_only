@@ -249,6 +249,7 @@ def callback_handler(call):
             'set_auto_trade': set_auto_trade,
             'set_cex_capital': set_cex_capital,
             'set_risk': set_risk,
+            'set_capital_usage': set_capital_usage,
             'set_leverage': set_leverage,
             'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
@@ -281,6 +282,7 @@ def settings(m):
         "set_auto_trade": "🤖 Auto Trade",
         "set_cex_capital": "💵 CEX Capital (USDT)",
         "set_risk": "⚠️ Risk Level",
+        "set_capital_usage": "💰 Capital Usage",
         "set_leverage": "⚖️ Leverage (DEX only)"
     }
     
@@ -471,9 +473,36 @@ def set_risk(m):
         ))
 
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
+               InlineKeyboardButton(translate("Next: Capital Usage ➡️", cid), callback_data="set_capital_usage"))
 
     bot.send_message(cid, translate("Select Risk Level (% of balance risked per trade):", cid), reply_markup=markup)
+
+def set_capital_usage(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    current = get_setting("capital_usage") or "50"
+
+    levels = [
+        ("🟢 25%",  "25",  "Conservative — leaves 75% buffer"),
+        ("🟡 50%",  "50",  "Balanced — default, half buying power"),
+        ("🟠 75%",  "75",  "Aggressive — uses most capital"),
+        ("🔴 100%", "100", "Max — full buying power, no buffer"),
+    ]
+
+    markup = InlineKeyboardMarkup()
+    for label, val, desc in levels:
+        check = "✅" if current == val else "  "
+        markup.add(InlineKeyboardButton(
+            f"{check} {label}",
+            callback_data=f"set_val:capital_usage:{val}"
+        ))
+
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
+
+    bot.send_message(cid, translate("Select Capital Usage (% of buying power deployed):", cid), reply_markup=markup)
 
 def set_take_profit(m):
     if m.chat.type != 'private': return
@@ -814,6 +843,7 @@ def ListSettings(m):
     dex_keys = [
         ("🛡️", "stop_loss", "Stop Loss"),
         ("⚠️", "risk_level", "Risk Level"),
+        ("💰", "capital_usage", "Capital Usage"),
         ("⚖️", "leverage", "Leverage"),
     ]
     for emoji, key, label in dex_keys:
@@ -823,6 +853,8 @@ def ListSettings(m):
                 value = f"{value}% (min floor, ATR-adjusted)"
             elif key == "risk_level":
                 value = f"{value}% of balance"
+            elif key == "capital_usage":
+                value = f"{value}% of buying power"
             elif key == "leverage":
                 value = f"{value}x"
             message_lines.append(f"{emoji} {label}: {value}\n")

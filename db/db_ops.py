@@ -93,6 +93,7 @@ def initialize_database_tables():
             ('cex_capital', '10'),  # USDT amount per Binance spot position
             ('leverage', '1000'),
             ('risk_level', '1.0'),  # % of balance risked per trade
+            ('capital_usage', '50'),  # % of buying power to deploy per trade
             ('exchange', 'dex'),  # 'dex' (Orderly futures) or 'cex' (Binance spot)
         ]
         for key, value in default_settings:
