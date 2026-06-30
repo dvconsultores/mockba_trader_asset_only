@@ -454,6 +454,10 @@ class ReversalScalper:
         # Gate 4: "Is the macro trend against me?" (1d + 4h both bearish = stay out)
         self.CEX_MAX_1D_BEARISH_SLOPE = -0.001       # -0.1%/day
         self.CEX_MAX_4H_BEARISH_SLOPE = -0.002       # -0.2%/4h candle
+        self.CEX_MIN_BOUNCE_RETRACEMENT = 0.25       # Bounce must retrace ≥25% of drop
+        self.CEX_RECENT_DROP_LOOKBACK = 50            # Candles for drop measurement
+        self.CEX_MAX_CONSECUTIVE_LOSSES = 3           # Stop after N consecutive losses
+        self.CEX_AVERAGING_DOWN_ENTRIES = 3           # Flag if last N entries are lower
 
     def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         """
@@ -1133,6 +1137,51 @@ class ReversalScalper:
         return True, warnings
 
     # ── CEX Gate Helpers ────────────────────────────────────────────────
+
+    def _count_consecutive_cex_losses(self) -> int:
+        """Count how many of the most recent CEX trades were losses (consecutive)."""
+        try:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT trade_outcome FROM signal_history "
+                    "WHERE exchange='cex' AND approved=1 AND trade_outcome IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 10"
+                )
+                rows = cur.fetchall()
+                count = 0
+                for r in rows:
+                    if r['trade_outcome'] == 'loss':
+                        count += 1
+                    else:
+                        break
+                return count
+        except Exception:
+            return 0
+
+    def _is_averaging_down_cex(self, current_price: float) -> bool:
+        """Check if recent CEX entries are at progressively lower prices."""
+        try:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT entry_price FROM signal_history "
+                    "WHERE exchange='cex' AND approved=1 AND entry_price IS NOT NULL "
+                    "ORDER BY id DESC LIMIT ?",
+                    (self.CEX_AVERAGING_DOWN_ENTRIES,)
+                )
+                rows = cur.fetchall()
+                if len(rows) < self.CEX_AVERAGING_DOWN_ENTRIES:
+                    return False
+                prices = [r['entry_price'] for r in rows]
+                for i in range(len(prices) - 1):
+                    if prices[i] >= prices[i + 1]:
+                        return False
+                if current_price >= min(prices):
+                    return False
+                return True
+        except Exception:
+            return False
 
     def _minutes_since_last_cex_exit(self) -> float | None:
         """
