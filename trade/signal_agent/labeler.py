@@ -258,12 +258,16 @@ def _normalize_trades_binance(raw_trades: list[dict]) -> list[dict]:
 def _compute_binance_pnl(trades: list[dict]) -> list[dict]:
     """
     Binance spot doesn't provide per-trade PnL.
-    Match BUY/SELL pairs by FIFO to compute realized PnL.
+    Match BUY/SELL pairs by CLOSEST-TIMESTAMP (chronological) to compute
+    realized PnL that reflects actual round-trip performance per signal.
 
-    Properly handles partial fills:
-    - Sell smaller than buy → remaining buy stays in queue (at front)
-    - Sell larger than buy → consume entire buy, continue matching remainder
-      against next buy(s) in queue
+    FIFO is technically what Binance uses, but for signal labeling we need
+    to know which BUY each SELL actually closes. FIFO causes new profitable
+    trades to be matched against old high-price positions, making wins
+    appear as losses. Chronological matching (each SELL → closest BUY
+    before it) gives the correct round-trip PnL per signal.
+
+    Handles partial fills properly.
     """
     # Group by symbol
     by_symbol: dict[str, list] = {}
@@ -272,23 +276,41 @@ def _compute_binance_pnl(trades: list[dict]) -> list[dict]:
 
     for sym_trades in by_symbol.values():
         sym_trades.sort(key=lambda x: x["timestamp_ms"])
-        buy_queue: list[dict] = []  # FIFO queue of open buys
 
+        # Build list of open BUYs with remaining qty (we mutate these)
+        open_buys: list[dict] = []
         for t in sym_trades:
             if t["side"] == "BUY":
-                buy_queue.append(dict(t))  # copy so we can mutate qty
-                t["realized_pnl"] = 0.0     # BUY has no PnL yet
+                open_buys.append(dict(t))  # copy so we can mutate qty
+                t["realized_pnl"] = 0.0
                 continue
 
-            # SELL: match against queued buys (FIFO), may consume multiple buys
             if t["side"] != "SELL":
                 continue
 
             remaining_sell_qty = t["executed_quantity"]
             total_pnl = 0.0
+            sell_ts = t["timestamp_ms"]
 
-            while remaining_sell_qty > 0 and buy_queue:
-                buy = buy_queue[0]
+            while remaining_sell_qty > 0 and open_buys:
+                # Find the BUY closest in time BEFORE this SELL (not the oldest)
+                best_idx = -1
+                best_gap = float('inf')
+                for i, buy in enumerate(open_buys):
+                    if buy["executed_quantity"] <= 0:
+                        continue
+                    if buy["timestamp_ms"] >= sell_ts:
+                        continue  # BUY must be before SELL
+                    gap = sell_ts - buy["timestamp_ms"]
+                    if gap < best_gap:
+                        best_gap = gap
+                        best_idx = i
+
+                if best_idx == -1:
+                    # No valid BUY found (all are after this SELL)
+                    break
+
+                buy = open_buys[best_idx]
                 buy_qty = buy["executed_quantity"]
                 buy_price = buy["executed_price"]
                 sell_price = t["executed_price"]
@@ -298,11 +320,9 @@ def _compute_binance_pnl(trades: list[dict]) -> list[dict]:
                 total_pnl += pnl
 
                 if buy_qty > matched_qty:
-                    # Partial fill: reduce buy qty, keep in queue for next sell
                     buy["executed_quantity"] -= matched_qty
                 else:
-                    # Fully consumed this buy
-                    buy_queue.pop(0)
+                    buy["executed_quantity"] = 0  # fully consumed
 
                 remaining_sell_qty -= matched_qty
 
