@@ -45,8 +45,8 @@ BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_SECRET_KEY = os.getenv("BINANCE_SECRET_KEY")
 
 # ── Matching parameters ──────────────────────────────────────────────────
-MATCH_WINDOW_MINUTES = 15      # max time diff between signal and entry trade
-EXIT_WINDOW_HOURS = 12         # max time to look for closing trade after signal
+MATCH_WINDOW_MINUTES = 60      # max time diff between signal and entry trade
+EXIT_WINDOW_HOURS = 48         # max time to look for closing trade after signal
 PNL_THRESHOLD_WIN = 0.01       # PnL > $0.01 = win
 PNL_THRESHOLD_LOSS = -0.01     # PnL < -$0.01 = loss
 
@@ -125,6 +125,29 @@ def download_orderly_trades(symbol_filter: str = "NEAR_USDC", days: int = 90) ->
     return all_trades
 
 
+# ── Binance time sync (clock skew causes -1021 errors) ──────────────────
+_BINANCE_TIME_OFFSET_MS = 0
+
+
+def _sync_binance_time() -> None:
+    """Sync local clock offset with Binance server time."""
+    global _BINANCE_TIME_OFFSET_MS
+    try:
+        r = requests.get(f"{BINANCE_BASE}/api/v3/time", timeout=5)
+        r.raise_for_status()
+        server_ms = int(r.json().get("serverTime", 0))
+        local_ms = int(time.time() * 1000)
+        _BINANCE_TIME_OFFSET_MS = server_ms - local_ms
+        logger.info(f"🕐 Binance time synced: offset={_BINANCE_TIME_OFFSET_MS}ms")
+    except Exception as e:
+        logger.warning(f"⚠️ Could not sync Binance time: {e}")
+
+
+def _binance_timestamp() -> int:
+    """Return a timestamp safe for Binance signed requests."""
+    return int(time.time() * 1000) + _BINANCE_TIME_OFFSET_MS - 1500
+
+
 def download_binance_trades(symbol: str = "NEARUSDT", days: int = 90) -> list[dict]:
     """
     Download spot trade history from Binance.
@@ -139,7 +162,8 @@ def download_binance_trades(symbol: str = "NEARUSDT", days: int = 90) -> list[di
         params: dict = {
             "symbol": symbol,
             "limit": limit,
-            "timestamp": int(time.time() * 1000),
+            "timestamp": _binance_timestamp(),
+            "recvWindow": 60000,
         }
         if from_id is not None:
             params["fromId"] = from_id
@@ -235,6 +259,11 @@ def _compute_binance_pnl(trades: list[dict]) -> list[dict]:
     """
     Binance spot doesn't provide per-trade PnL.
     Match BUY/SELL pairs by FIFO to compute realized PnL.
+
+    Properly handles partial fills:
+    - Sell smaller than buy → remaining buy stays in queue (at front)
+    - Sell larger than buy → consume entire buy, continue matching remainder
+      against next buy(s) in queue
     """
     # Group by symbol
     by_symbol: dict[str, list] = {}
@@ -247,21 +276,37 @@ def _compute_binance_pnl(trades: list[dict]) -> list[dict]:
 
         for t in sym_trades:
             if t["side"] == "BUY":
-                buy_queue.append(t)
-            elif t["side"] == "SELL" and buy_queue:
-                # Match against oldest buy
-                buy = buy_queue.pop(0)
+                buy_queue.append(dict(t))  # copy so we can mutate qty
+                t["realized_pnl"] = 0.0     # BUY has no PnL yet
+                continue
+
+            # SELL: match against queued buys (FIFO), may consume multiple buys
+            if t["side"] != "SELL":
+                continue
+
+            remaining_sell_qty = t["executed_quantity"]
+            total_pnl = 0.0
+
+            while remaining_sell_qty > 0 and buy_queue:
+                buy = buy_queue[0]
+                buy_qty = buy["executed_quantity"]
                 buy_price = buy["executed_price"]
                 sell_price = t["executed_price"]
-                # Approximate: PnL based on price difference × sell qty (capped by buy qty)
-                matched_qty = min(buy["executed_quantity"], t["executed_quantity"])
-                pnl = (sell_price - buy_price) * matched_qty
-                t["realized_pnl"] = round(pnl, 8)
 
-                # If sell qty > buy qty, put remainder back
-                if t["executed_quantity"] > buy["executed_quantity"]:
-                    # Partial fill: remaining buy still open
-                    pass  # simplified — assume full match for now
+                matched_qty = min(buy_qty, remaining_sell_qty)
+                pnl = (sell_price - buy_price) * matched_qty
+                total_pnl += pnl
+
+                if buy_qty > matched_qty:
+                    # Partial fill: reduce buy qty, keep in queue for next sell
+                    buy["executed_quantity"] -= matched_qty
+                else:
+                    # Fully consumed this buy
+                    buy_queue.pop(0)
+
+                remaining_sell_qty -= matched_qty
+
+            t["realized_pnl"] = round(total_pnl, 8)
 
     return trades
 
@@ -440,16 +485,59 @@ def label_signals(dry_run: bool = False, days: int = 90, local_only: bool = Fals
     logger.info(f"Orderly trades for matching: {len(all_trades)}")
 
     # ── 4b. Fetch & normalize Binance trades for CEX signal matching ───
+    binance_trades_loaded = False
     if BINANCE_API_KEY and BINANCE_SECRET_KEY:
         try:
+            _sync_binance_time()
             binance_raw = download_binance_trades(days=days)
             if binance_raw:
                 binance_norm = _normalize_trades_binance(binance_raw)
                 binance_norm = _compute_binance_pnl(binance_norm)
                 all_trades.extend(binance_norm)
-                logger.info(f"Binance trades for matching: {len(binance_norm)}")
+                binance_trades_loaded = True
+                logger.info(f"Binance trades for matching: {len(binance_norm)} (live API)")
         except Exception as e:
-            logger.warning(f"Could not download Binance trades for labeling: {e}")
+            logger.warning(f"Could not download Binance trades from API: {e}")
+
+    # Fallback: load cached binance_trades.json if live API failed
+    # Note: cached data is already in normalized format from get_binance_trades.py
+    if not binance_trades_loaded:
+        cache_path = PROJECT_ROOT / "data" / "binance_trades.json"
+        if cache_path.exists():
+            try:
+                with open(cache_path) as f:
+                    cached = json.load(f)
+                # Normalize exchange field (old files use "binance_spot")
+                for t in cached:
+                    if t.get("exchange") == "binance_spot":
+                        t["exchange"] = "cex"
+                # Cached data is already normalized — convert timestamps to datetime
+                from datetime import datetime, timezone as tz
+                binance_norm = []
+                for t in cached:
+                    ts_ms = t.get("executed_timestamp", 0)
+                    try:
+                        dt = datetime.fromtimestamp(int(ts_ms) / 1000.0, tz=tz.utc)
+                    except (TypeError, ValueError, OSError):
+                        continue
+                    binance_norm.append({
+                        "exchange": "cex",
+                        "trade_id": t.get("order_id", ""),
+                        "symbol": t.get("symbol", ""),
+                        "side": str(t.get("side", "")).upper(),
+                        "executed_price": float(t.get("executed_price", 0)),
+                        "executed_quantity": float(t.get("executed_quantity", 0)),
+                        "quote_qty": float(t.get("executed_quantity", 0)) * float(t.get("executed_price", 0)),
+                        "realized_pnl": float(t.get("realized_pnl", 0)),
+                        "timestamp_utc": dt,
+                        "timestamp_ms": ts_ms,
+                    })
+                # Recompute PnL with fixed FIFO
+                binance_norm = _compute_binance_pnl(binance_norm)
+                all_trades.extend(binance_norm)
+                logger.info(f"Binance trades for matching: {len(binance_norm)} (cached fallback)")
+            except Exception as e:
+                logger.warning(f"Could not load cached binance_trades.json: {e}")
 
     logger.info(f"Total trades for matching: {len(all_trades)}")
 

@@ -83,6 +83,7 @@ def fetch_binance_my_trades(symbol: str, limit: int = 1000) -> list[dict[str, An
         "symbol": symbol,
         "limit": limit,
         "timestamp": _binance_timestamp(),
+        "recvWindow": 60000,
     }
     params["signature"] = _sign(params)
 
@@ -177,7 +178,7 @@ def _pair_binance_trades(raw_trades: list[dict[str, Any]]) -> list[dict[str, Any
                     "fee": round(allocated_buy_fee + allocated_sell_fee, 8),
                     "realized_pnl": round(net_pnl, 8),
                     "is_maker": 1 if is_maker else 0,
-                    "exchange": "binance_spot",
+                    "exchange": "cex",
                     "order_id": buy["order_id"],
                 })
 

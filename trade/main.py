@@ -23,7 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 # === IMPORTS FROM YOUR EXISTING PROJECT ===
-from db.db_ops import get_setting, initialize_database_tables, get_trades_today, increment_trades_today, save_signal_to_history
+from db.db_ops import get_db_connection, get_setting, initialize_database_tables, get_trades_today, increment_trades_today, save_signal_to_history
 from logs.log_config import apolo_trader_logger as logger
 from trade.historical_data import (
     get_historical_data_limit_apolo, 
@@ -439,6 +439,22 @@ class ReversalScalper:
 
         # === SPREAD GATE (DEX only) ===
         self.DEX_MAX_SPREAD = 0.003  # Reject DEX trades if spread > 0.3%
+
+        # === CEX SMART ENTRY GATES (no SL = must be conservative) ===
+        # CEX spot has no stop-loss — the cost of a bad entry is unlimited.
+        # These 4 gates emulate what a disciplined human trader asks before entering:
+        #
+        # Gate 1: "Did I just close a position?" → wait before re-entering
+        self.CEX_POST_EXIT_COOLDOWN_MINUTES = 15
+        # Gate 2: "Am I entering at nearly the same price as my last trade?"
+        self.CEX_SAME_PRICE_ZONE_PCT = 0.005        # 0.5% = same zone
+        self.CEX_SAME_PRICE_ZONE_MINUTES = 30        # within 30 minutes
+        # Gate 3: "How many trades have I made today?"
+        self.CEX_MAX_TRADES_PER_DAY = 20
+        # Gate 4: "Is the macro trend against me?" (1d + 4h both bearish = stay out)
+        self.CEX_MAX_1D_BEARISH_SLOPE = -0.001       # -0.1%/day
+        self.CEX_MAX_4H_BEARISH_SLOPE = -0.002       # -0.2%/4h candle
+
     def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> float:
         """
         Calculate Average True Range (ATR) for adaptive stop loss.
@@ -1021,6 +1037,176 @@ class ReversalScalper:
             lines.append("⚠️ High risk signals detected (FYI)")
         return "\n".join(lines)
     
+    def _check_cex_smart_entry(
+        self, df_5m, df_4h, df_1d, live_price: float, side: str,
+        regime: str
+    ) -> tuple[bool, list[str]]:
+        """
+        Human-like intelligence for CEX spot entries (no SL = must be conservative).
+
+        A smart human asks 4 questions before buying spot with no stop-loss:
+        1. Is the macro trend against me? (1d/4h bearish → don't buy)
+        2. Is this bounce real or a dead cat? (weak bounce in downtrend = trap)
+        3. Have I been losing recently? (3+ consecutive losses → stop and reassess)
+        4. Am I averaging down? (each entry lower than the last = catching knife)
+
+        Returns (should_enter: bool, warnings: list[str]).
+        On CEX spot, the default answer is NO unless conditions are clearly favorable.
+        """
+        if side != 'BUY':
+            return True, []  # Only apply to LONG entries (CEX is long-only anyway)
+
+        warnings = []
+
+        # ── 1. MACRO TREND CHECK: Don't buy in sustained downtrend ──
+        slope_1d = 0.0
+        slope_4h = 0.0
+        if df_1d is not None and len(df_1d) >= 20:
+            slope_1d = self._calculate_normalized_slope(df_1d['close'].values, min(20, len(df_1d)))
+        if df_4h is not None and len(df_4h) >= 20:
+            slope_4h = self._calculate_normalized_slope(df_4h['close'].values, min(20, len(df_4h)))
+
+        # Both 1d AND 4h bearish → sustained downtrend. A smart human stays out.
+        if slope_1d < self.CEX_MAX_1D_BEARISH_SLOPE and slope_4h < self.CEX_MAX_4H_BEARISH_SLOPE:
+            warnings.append(
+                f"🛑 Sustained downtrend: 1d slope={slope_1d*100:.3f}%/day, "
+                f"4h slope={slope_4h*100:.3f}%/candle — buying here is catching a falling knife"
+            )
+            return False, warnings
+
+        # 1d alone strongly bearish → high risk, flag but don't block alone
+        if slope_1d < self.CEX_MAX_1D_BEARISH_SLOPE:
+            warnings.append(
+                f"⚠️ Macro headwind: 1d slope={slope_1d*100:.3f}%/day — "
+                f"this bounce may be a dead cat, not a reversal"
+            )
+
+        # ── 2. BOUNCE QUALITY: Is this a real reversal or a trap? ──
+        if df_5m is not None and len(df_5m) >= self.CEX_RECENT_DROP_LOOKBACK:
+            closes = df_5m['close'].values
+            lookback = min(self.CEX_RECENT_DROP_LOOKBACK, len(closes))
+            recent = closes[-lookback:]
+            recent_low = np.min(recent)
+            recent_high_before_low = np.max(recent[:-5])  # high before the most recent candles
+
+            if recent_low > 0 and recent_high_before_low > recent_low:
+                drop_pct = (recent_high_before_low - recent_low) / recent_high_before_low
+                bounce_pct = (live_price - recent_low) / recent_low
+
+                # Significant drop (>2%) with weak bounce (<25% retracement) = likely dead cat
+                if drop_pct > 0.02 and bounce_pct < drop_pct * self.CEX_MIN_BOUNCE_RETRACEMENT:
+                    warnings.append(
+                        f"🛑 Weak bounce: price retraced only {bounce_pct*100:.1f}% of the "
+                        f"{drop_pct*100:.1f}% drop — classic dead cat, wait for confirmation"
+                    )
+                    return False, warnings
+
+                # Moderate bounce — flag as questionable
+                if drop_pct > 0.015 and bounce_pct < drop_pct * 0.5:
+                    warnings.append(
+                        f"⚠️ Questionable bounce: only {bounce_pct*100:.1f}% retracement of "
+                        f"{drop_pct*100:.1f}% drop — this may not be the bottom"
+                    )
+
+        # ── 3. RECENT LOSS STREAK: Stop after consecutive losses ──
+        consecutive_losses = self._count_consecutive_cex_losses()
+        if consecutive_losses >= self.CEX_MAX_CONSECUTIVE_LOSSES:
+            warnings.append(
+                f"🛑 Loss streak: {consecutive_losses} consecutive CEX losses — "
+                f"a smart human stops to reassess, so should the bot"
+            )
+            return False, warnings
+        elif consecutive_losses >= 2:
+            warnings.append(
+                f"⚠️ Caution: {consecutive_losses} consecutive CEX losses — "
+                f"consider waiting for stronger confirmation"
+            )
+
+        # ── 4. AVERAGING DOWN DETECTION: Each entry lower = catching knife ──
+        if self._is_averaging_down_cex(live_price):
+            warnings.append(
+                f"🛑 Averaging down: last {self.CEX_AVERAGING_DOWN_ENTRIES} CEX entries "
+                f"at progressively lower prices — this is catching a falling knife"
+            )
+            return False, warnings
+
+        return True, warnings
+
+    # ── CEX Gate Helpers ────────────────────────────────────────────────
+
+    def _minutes_since_last_cex_exit(self) -> float | None:
+        """
+        Gate 1 helper: minutes since the most recent CEX SELL (exit).
+        Returns None if no exit found.
+        """
+        try:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                # Last approved CEX BUY that has a trade_outcome (was closed)
+                cur.execute(
+                    "SELECT timestamp FROM signal_history "
+                    "WHERE exchange='cex' AND approved=1 AND trade_outcome IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                ts_str = row['timestamp']
+                from datetime import datetime, timezone
+                ts = datetime.fromisoformat(str(ts_str).replace('Z', '+00:00'))
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                return (now - ts).total_seconds() / 60.0
+        except Exception:
+            return None
+
+    def _last_cex_entry_info(self) -> dict | None:
+        """
+        Gate 2 helper: price and age of the most recent approved CEX BUY.
+        Returns None if no prior entry found.
+        """
+        try:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT entry_price, timestamp FROM signal_history "
+                    "WHERE exchange='cex' AND approved=1 AND entry_price IS NOT NULL "
+                    "ORDER BY id DESC LIMIT 1"
+                )
+                row = cur.fetchone()
+                if not row or row['entry_price'] is None:
+                    return None
+                from datetime import datetime, timezone
+                ts_str = str(row['timestamp']).replace('Z', '+00:00')
+                ts = datetime.fromisoformat(ts_str)
+                if ts.tzinfo is None:
+                    ts = ts.replace(tzinfo=timezone.utc)
+                now = datetime.now(timezone.utc)
+                return {
+                    'price': float(row['entry_price']),
+                    'minutes_ago': (now - ts).total_seconds() / 60.0,
+                }
+        except Exception:
+            return None
+
+    def _count_cex_trades_today(self) -> int:
+        """
+        Gate 3 helper: count approved CEX entries placed today (UTC).
+        """
+        try:
+            with get_db_connection() as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "SELECT COUNT(*) as cnt FROM signal_history "
+                    "WHERE exchange='cex' AND approved=1 "
+                    "AND date(timestamp) = date('now')"
+                )
+                row = cur.fetchone()
+                return int(row['cnt']) if row else 0
+        except Exception:
+            return 0
+
     def _check_htf_exhaustion(self, df_4h, df_1d, live_price: float, side: str) -> list[str]:
         """
         Check higher timeframe (4h, 1d) for exhaustion signals that would
@@ -1418,6 +1604,40 @@ class ReversalScalper:
             self._log_round_summary(exchange, asset, live_price, regime, consecutive_up, consecutive_down,
                                     False, result['rejection_reasons'], ml_score, ml_decision)
             return result
+
+        # === CEX SMART ENTRY GATE: 4 human-like checks before entering spot ===
+        # No SL on CEX spot → the cost of a wrong entry is unlimited.
+        # Gate 1: Did I just close? → 15min post-exit cooldown
+        # Gate 2: Same price as last entry? → don't double down at same level
+        # Gate 3: Traded too much today? → max 5 CEX trades/day
+        # Gate 4: Macro trend against me? → don't buy in sustained downtrend
+        if exchange == "cex" and active_signal['side'] == 'BUY':
+            should_enter, cex_warnings = self._check_cex_smart_entry(
+                df_5m=df_5m, df_4h=df_4h, df_1d=df_1d,
+                live_price=live_price, side=active_signal['side'], regime=regime
+            )
+            result['debug_info']['cex_smart_warnings'] = cex_warnings
+            if cex_warnings:
+                display_lines.append("")
+                display_lines.append("🧠 CEX Smart Entry Check:")
+                for w in cex_warnings:
+                    display_lines.append(f"• {w}")
+            if not should_enter:
+                result['rejection_reasons'].extend(cex_warnings)
+                result['resume_of_analysis'] = "\n".join(display_lines)
+                save_signal_to_history(
+                    asset=asset, exchange=exchange, regime=regime, obi=obi,
+                    pattern_type=active_signal.get('reason'),
+                    approved=False, side=active_signal['side'],
+                    entry_price=live_price, stop_loss=None, take_profit=None,
+                    rejection_reasons=result['rejection_reasons'],
+                    manipulation_warnings=manipulation_warnings, atr=atr,
+                    live_price=live_price, candle_count=max(consecutive_up, consecutive_down),
+                    ml_score=ml_score, ml_decision=ml_decision,
+                )
+                self._log_round_summary(exchange, asset, live_price, regime, consecutive_up, consecutive_down,
+                                        False, result['rejection_reasons'], ml_score, ml_decision)
+                return result
         
         # OBI is reference only — counter-trend OBI logged as warning, not a blocker
         # In thin markets like Orderly, OBI is too volatile to use as hard filter
