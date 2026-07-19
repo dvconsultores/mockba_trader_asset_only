@@ -227,6 +227,90 @@ def initialize_database_tables():
         """)
 
         _ensure_signal_history_schema(cur)
+
+        # === Arbitrage refactor: new tables (additive, following existing pattern) ===
+
+        # Inventory ledger: free balance snapshots per exchange/asset
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS arbitrage_inventory (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                exchange TEXT NOT NULL,
+                asset TEXT NOT NULL,
+                free_balance REAL NOT NULL,
+                source TEXT NOT NULL DEFAULT 'api',
+                UNIQUE(exchange, asset, timestamp)
+            );
+        """)
+
+        # Capital allocation: USDT-denominated capital allocated to arbitrage per exchange
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS arbitrage_capital_allocation (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                exchange TEXT NOT NULL,
+                allocated_usdt REAL NOT NULL,
+                change_amount REAL NOT NULL DEFAULT 0,
+                reason TEXT
+            );
+        """)
+
+        # Per-sample observations for statistical asset scoring
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS arbitrage_observations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                symbol TEXT NOT NULL,
+                binance_bid REAL,
+                binance_ask REAL,
+                binance_bid_qty REAL,
+                binance_ask_qty REAL,
+                bitget_bid REAL,
+                bitget_ask REAL,
+                bitget_bid_qty REAL,
+                bitget_ask_qty REAL,
+                spread_b2b REAL,
+                spread_btog REAL,
+                deposits_open_binance INTEGER DEFAULT 1,
+                deposits_open_bitget INTEGER DEFAULT 1,
+                withdrawals_open_binance INTEGER DEFAULT 1,
+                withdrawals_open_bitget INTEGER DEFAULT 1
+            );
+        """)
+
+        # Rotation decision log
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS arbitrage_rotation_decisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                current_asset TEXT NOT NULL,
+                candidate_asset TEXT NOT NULL,
+                current_score REAL,
+                candidate_score REAL,
+                estimated_rotation_cost REAL,
+                score_margin REAL,
+                config_margin REAL,
+                decision TEXT NOT NULL DEFAULT 'declined',
+                reason TEXT
+            );
+        """)
+
+        # Additive columns for arbitrage_compounding (new execution model)
+        _ensure_arbitrage_compounding_schema(cur)
+        # Additive columns for arbitrage_cycle_steps (remove transfer steps, new step names)
+        _ensure_arbitrage_cycle_steps_schema(cur)
+
+        # Default settings for arbitrage refactor
+        arbitrage_defaults = [
+            ('arbitrage_run_state', 'running'),
+            ('arbitrage_initial_capital_binance', '100'),
+            ('arbitrage_initial_capital_bitget', '100'),
+        ]
+        for key, value in arbitrage_defaults:
+            cur.execute("""
+                INSERT OR IGNORE INTO settings (key, value)
+                VALUES (?, ?);
+            """, (key, value))
         
         conn.commit()
         
@@ -541,6 +625,236 @@ def get_dex_asset_chains(dex: str, asset: str) -> list:
         """, (dex.lower(), asset.upper()))
         rows = cur.fetchall()
         return [row['chain'] for row in rows]
+
+
+# === ARBITRAGE REFACTOR: schema migration helpers ===
+
+def _ensure_arbitrage_compounding_schema(cur):
+    """Add new columns to arbitrage_compounding for the two-leg execution model."""
+    cur.execute("PRAGMA table_info(arbitrage_compounding)")
+    columns = [row[1] for row in cur.fetchall()]
+    if not columns:
+        return
+
+    new_cols = {
+        'buy_exchange': 'TEXT',
+        'sell_exchange': 'TEXT',
+        'buy_leg_order_id': 'TEXT',
+        'sell_leg_order_id': 'TEXT',
+        'buy_leg_fill_price': 'REAL',
+        'sell_leg_fill_price': 'REAL',
+        'buy_leg_fill_qty': 'REAL',
+        'sell_leg_fill_qty': 'REAL',
+        'buy_leg_fee': 'REAL',
+        'sell_leg_fee': 'REAL',
+        'spread_at_detect': 'REAL',
+        'spread_at_fill': 'REAL',
+        'is_simulation': 'INTEGER DEFAULT 0',
+        'inventory_snapshot': 'TEXT',
+    }
+    for col_name, col_type in new_cols.items():
+        if col_name not in columns:
+            try:
+                cur.execute(
+                    f"ALTER TABLE arbitrage_compounding ADD COLUMN {col_name} {col_type}"
+                )
+            except Exception:
+                pass
+
+
+def _ensure_arbitrage_cycle_steps_schema(cur):
+    """No structural changes needed; step names are updated in application code.
+    Kept as a hook for future additive migrations on this table."""
+    pass
+
+
+# === ARBITRAGE REFACTOR: inventory ledger helpers ===
+
+def insert_inventory_snapshot(exchange: str, asset: str, free_balance: float, source: str = "api"):
+    """Record an inventory snapshot."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT OR REPLACE INTO arbitrage_inventory (exchange, asset, free_balance, source, timestamp)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (exchange, asset, free_balance, source))
+        conn.commit()
+
+
+def get_latest_inventory(exchange: str, asset: str) -> float | None:
+    """Get most recent inventory balance for exchange/asset."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT free_balance FROM arbitrage_inventory
+            WHERE exchange = ? AND asset = ?
+            ORDER BY timestamp DESC LIMIT 1
+        """, (exchange, asset))
+        row = cur.fetchone()
+        return row['free_balance'] if row else None
+
+
+def get_inventory_at_time(exchange: str, asset: str, before_timestamp: str) -> float | None:
+    """Get inventory balance closest to a given timestamp."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT free_balance FROM arbitrage_inventory
+            WHERE exchange = ? AND asset = ? AND timestamp <= ?
+            ORDER BY timestamp DESC LIMIT 1
+        """, (exchange, asset, before_timestamp))
+        row = cur.fetchone()
+        return row['free_balance'] if row else None
+
+
+# === ARBITRAGE REFACTOR: capital allocation helpers ===
+
+def get_current_capital_allocation(exchange: str) -> float:
+    """Get latest capital allocation for an exchange."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT allocated_usdt FROM arbitrage_capital_allocation
+            WHERE exchange = ?
+            ORDER BY timestamp DESC LIMIT 1
+        """, (exchange,))
+        row = cur.fetchone()
+        return row['allocated_usdt'] if row else 0.0
+
+
+def record_capital_change(exchange: str, allocated_usdt: float, change_amount: float, reason: str):
+    """Record a capital allocation change."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO arbitrage_capital_allocation (exchange, allocated_usdt, change_amount, reason)
+            VALUES (?, ?, ?, ?)
+        """, (exchange, allocated_usdt, change_amount, reason))
+        conn.commit()
+
+
+def initialize_capital_allocation(exchange: str, amount_usdt: float):
+    """Initialize capital allocation if none exists for this exchange."""
+    current = get_current_capital_allocation(exchange)
+    if current == 0.0:
+        record_capital_change(exchange, amount_usdt, amount_usdt, "initial_allocation")
+
+
+def get_capital_allocation_history(exchange: str, limit: int = 50) -> list:
+    """Get capital allocation change history for an exchange."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT * FROM arbitrage_capital_allocation
+            WHERE exchange = ?
+            ORDER BY timestamp DESC LIMIT ?
+        """, (exchange, limit))
+        return [dict(row) for row in cur.fetchall()]
+
+
+# === ARBITRAGE REFACTOR: observation persistence helpers ===
+
+def insert_observation(
+    symbol: str,
+    binance_bid: float | None = None,
+    binance_ask: float | None = None,
+    binance_bid_qty: float | None = None,
+    binance_ask_qty: float | None = None,
+    bitget_bid: float | None = None,
+    bitget_ask: float | None = None,
+    bitget_bid_qty: float | None = None,
+    bitget_ask_qty: float | None = None,
+    spread_b2b: float | None = None,
+    spread_btog: float | None = None,
+    deposits_open_binance: bool = True,
+    deposits_open_bitget: bool = True,
+    withdrawals_open_binance: bool = True,
+    withdrawals_open_bitget: bool = True,
+):
+    """Persist a single observation sample."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO arbitrage_observations (
+                symbol, binance_bid, binance_ask, binance_bid_qty, binance_ask_qty,
+                bitget_bid, bitget_ask, bitget_bid_qty, bitget_ask_qty,
+                spread_b2b, spread_btog,
+                deposits_open_binance, deposits_open_bitget,
+                withdrawals_open_binance, withdrawals_open_bitget
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            symbol, binance_bid, binance_ask, binance_bid_qty, binance_ask_qty,
+            bitget_bid, bitget_ask, bitget_bid_qty, bitget_ask_qty,
+            spread_b2b, spread_btog,
+            int(deposits_open_binance), int(deposits_open_bitget),
+            int(withdrawals_open_binance), int(withdrawals_open_bitget),
+        ))
+        conn.commit()
+
+
+def get_observations_since(symbol: str, since_timestamp: str) -> list:
+    """Get observations for a symbol since a given timestamp."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT * FROM arbitrage_observations
+            WHERE symbol = ? AND timestamp >= ?
+            ORDER BY timestamp ASC
+        """, (symbol, since_timestamp))
+        return [dict(row) for row in cur.fetchall()]
+
+
+def get_all_observations_in_window(window_start: str) -> list:
+    """Get all observations since a window start time."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT * FROM arbitrage_observations
+            WHERE timestamp >= ?
+            ORDER BY timestamp ASC
+        """, (window_start,))
+        return [dict(row) for row in cur.fetchall()]
+
+
+# === ARBITRAGE REFACTOR: rotation decision helpers ===
+
+def insert_rotation_decision(
+    current_asset: str,
+    candidate_asset: str,
+    current_score: float,
+    candidate_score: float,
+    estimated_rotation_cost: float,
+    score_margin: float,
+    config_margin: float,
+    decision: str,
+    reason: str = "",
+):
+    """Persist a rotation decision (executed or declined)."""
+    with get_db_connection() as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO arbitrage_rotation_decisions (
+                current_asset, candidate_asset, current_score, candidate_score,
+                estimated_rotation_cost, score_margin, config_margin, decision, reason
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            current_asset, candidate_asset, current_score, candidate_score,
+            estimated_rotation_cost, score_margin, config_margin, decision, reason,
+        ))
+        conn.commit()
+
+
+# === ARBITRAGE REFACTOR: run state helpers ===
+
+def get_arbitrage_run_state() -> str:
+    """Get the arbitrage loop run state ('running' or 'stopped')."""
+    val = get_setting('arbitrage_run_state')
+    return val if val in ('running', 'stopped') else 'running'
+
+
+def set_arbitrage_run_state(state: str):
+    """Set the arbitrage loop run state."""
+    upsert_setting('arbitrage_run_state', state)
 
 
 def clear_dex_asset_wallets():

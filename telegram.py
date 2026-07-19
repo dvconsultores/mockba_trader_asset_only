@@ -15,7 +15,8 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.db_ops import (
     upsert_setting, get_all_settings, initialize_database_tables, get_setting,
-    add_asset, remove_asset, get_asset_list
+    add_asset, remove_asset, get_asset_list,
+    get_arbitrage_run_state, set_arbitrage_run_state,
 )
 from trade.main import process_signal as run_process_signal, autotrade
 import json
@@ -50,9 +51,9 @@ def _load_spread_llm_main():
     module_path = os.path.join(
         os.path.dirname(__file__),
         "trade",
-        "spread-llm-analizer.py",
+        "spread_llm_analyzer.py",
     )
-    spec = importlib.util.spec_from_file_location("spread_llm_analizer", module_path)
+    spec = importlib.util.spec_from_file_location("spread_llm_analyzer", module_path)
     if spec is None or spec.loader is None:
         return None
 
@@ -176,7 +177,36 @@ def command_list(m):
     markup.row(InlineKeyboardButton(translate("⚙️ Settings", cid), callback_data="Settings"))
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
     markup.row(InlineKeyboardButton(translate(" List All Settings", cid), callback_data="ListSettings"))
+    # Arbitrage control (FR-12)
+    arb_state = get_arbitrage_run_state()
+    arb_label = translate("⏸ Stop Arbitrage", cid) if arb_state == "running" else translate("▶ Start Arbitrage", cid)
+    arb_callback = "arb_stop" if arb_state == "running" else "arb_start"
+    markup.row(InlineKeyboardButton(arb_label, callback_data=arb_callback))
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
+
+
+# ── Arbitrage remote control (FR-12) ─────────────────────────────────────
+
+@bot.message_handler(commands=['arb_start'])
+def command_arb_start(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+    set_arbitrage_run_state("running")
+    bot.send_message(cid, translate("▶ Arbitrage loop STARTED. State: running", cid))
+
+
+@bot.message_handler(commands=['arb_stop'])
+def command_arb_stop(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+    set_arbitrage_run_state("stopped")
+    bot.send_message(cid, translate("⏸ Arbitrage loop STOPPED. In-flight trade will complete, then pause. State: stopped", cid))
 
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -221,7 +251,18 @@ def callback_handler(call):
         _, key, val = call.data.split(":", 2)
         upsert_setting(key, val)
 
-        bot.send_message(cid, translate(f"✅ {key} set to {val}.", cid))
+        # Map key to its parent menu so user stays in context after a change
+        menu_for_key = {
+            "exchange": set_exchange,
+            "current_asset": set_current_asset,
+            "risk_level": set_risk,
+            "capital_usage": set_capital_usage,
+            "leverage": set_leverage,
+            "show_prompt": set_show_prompt,
+            "prompt_mode": set_prompt_mode,
+        }
+        parent_menu = menu_for_key.get(key, settings)
+        parent_menu(call.message)
     elif call.data.startswith("set_mode:"):
         _, exchange, mode = call.data.split(":", 2)
         if exchange not in ("dex", "cex") or mode not in ("False", "Signal", "Automatic"):
@@ -233,6 +274,7 @@ def callback_handler(call):
 
         exchange_label = "🌐 DEX" if exchange == "dex" else "💱 CEX"
         bot.send_message(cid, translate(f"✅ {exchange_label} mode set to: {mode}", cid))
+        set_auto_trade(call.message)
     else:
         options = {
             'List': command_list,
@@ -255,6 +297,9 @@ def callback_handler(call):
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
             # 'SpreadLLMAnalyzer': execute_spread_llm_analyzer,  # LLM option removed
+            # Arbitrage control (FR-12)
+            'arb_start': lambda msg: arb_control_callback(msg, "start"),
+            'arb_stop': lambda msg: arb_control_callback(msg, "stop"),
         }
         func = options.get(call.data)
         if func:
@@ -281,8 +326,8 @@ def settings(m):
         "set_take_profit": "📈 Take Profit",
         "set_auto_trade": "🤖 Auto Trade",
         "set_cex_capital": "💵 CEX Capital (USDT)",
-        "set_risk": "⚠️ Risk Level",
-        "set_capital_usage": "💰 Capital Usage",
+        "set_risk": "⚠️ Risk Level (DEX only)",
+        "set_capital_usage": "💰 Capital Usage (DEX only)",
         "set_leverage": "⚖️ Leverage (DEX only)"
     }
     
@@ -475,7 +520,7 @@ def set_risk(m):
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Next: Capital Usage ➡️", cid), callback_data="set_capital_usage"))
 
-    bot.send_message(cid, translate("Select Risk Level (% of balance risked per trade):", cid), reply_markup=markup)
+    bot.send_message(cid, translate("Select Risk Level (DEX only — % of balance risked per trade):", cid), reply_markup=markup)
 
 def set_capital_usage(m):
     if m.chat.type != 'private': return
@@ -502,7 +547,7 @@ def set_capital_usage(m):
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
                InlineKeyboardButton(translate("Next: Leverage ➡️", cid), callback_data="set_leverage"))
 
-    bot.send_message(cid, translate("Select Capital Usage (% of buying power deployed):", cid), reply_markup=markup)
+    bot.send_message(cid, translate("Select Capital Usage (DEX only — % of buying power deployed):", cid), reply_markup=markup)
 
 def set_take_profit(m):
     if m.chat.type != 'private': return
@@ -639,6 +684,22 @@ def set_order_book_threshold(m):
                
     bot.send_message(cid, translate("Enter Order Book Threshold (e.g., 1.6)", cid), reply_markup=markup)
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
+
+
+# ── Arbitrage control callback (FR-12) ───────────────────────────────────
+
+def arb_control_callback(m, action: str):
+    """Handle arbitrage start/stop from inline button callback."""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    if action == "start":
+        set_arbitrage_run_state("running")
+        bot.send_message(cid, translate("▶ Arbitrage loop STARTED. State: running", cid))
+    elif action == "stop":
+        set_arbitrage_run_state("stopped")
+        bot.send_message(cid, translate("⏸ Arbitrage loop STOPPED. In-flight trade will complete, then pause. State: stopped", cid))
 
 
 # === Main Actions ===

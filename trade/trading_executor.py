@@ -1738,6 +1738,348 @@ def buy_bitget_sell_binance(base_asset: str, bitget_price: float, binance_price:
     }
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  REFACTOR: Simultaneous two-leg execution  (FR-04, FR-05)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def binance_market_sell(symbol: str, quantity: float) -> Optional[Dict]:
+    """Market sell on Binance."""
+    response = None
+    try:
+        quantity = _normalize_binance_quantity(symbol, quantity)
+        timestamp = _binance_timestamp()
+        params = {
+            "symbol": symbol,
+            "side": "SELL",
+            "type": "MARKET",
+            "quantity": quantity,
+            "timestamp": timestamp,
+            "recvWindow": 10000,
+        }
+        query_string = "&".join([f"{k}={v}" for k, v in params.items()])
+        params["signature"] = _binance_signature(query_string)
+        headers = {"X-MBX-APIKEY": BINANCE_API_KEY}
+        response = requests.post(
+            f"{BINANCE_BASE}/order",
+            params=params,
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        result = response.json()
+        logger.info(f"✓ Market sell {quantity} {symbol} on Binance - Order ID: {result.get('orderId')}")
+        return result
+    except Exception as e:
+        body = response.text if response is not None else ""
+        logger.error(f"✗ Binance market sell failed: {e} | response={body}")
+        return None
+
+
+def bitget_market_sell(symbol: str, quantity: float) -> Optional[Dict]:
+    """Market sell on Bitget."""
+    try:
+        timestamp = _bitget_timestamp()
+        body = {
+            "symbol": symbol,
+            "side": "sell",
+            "orderType": "market",
+            "quantity": str(quantity),
+            "force": "GTC",
+        }
+        body_json = json.dumps(body)
+        path = "/spot/trade/orders"
+        signature = _bitget_signature(timestamp, "POST", path, body_json)
+        headers = {
+            "ACCESS-KEY": BITGET_API_KEY,
+            "ACCESS-SIGN": signature,
+            "ACCESS-TIMESTAMP": timestamp,
+            "ACCESS-PASSPHRASE": BITGET_PASSPHRASE,
+            "Content-Type": "application/json",
+        }
+        response = requests.post(
+            f"{BITGET_BASE}{path}",
+            json=body,
+            headers=headers,
+            timeout=10,
+        )
+        response.raise_for_status()
+        result = response.json()
+        order_id = result.get("data", {}).get("orderId", "unknown")
+        logger.info(f"✓ Market sell {quantity} {symbol} on Bitget - Order ID: {order_id}")
+        return result
+    except Exception as e:
+        logger.error(f"✗ Bitget market sell failed: {e}")
+        return None
+
+
+def _parse_binance_fill(result: Dict, side: str) -> Dict:
+    """Extract fill details from a Binance order result."""
+    fills = result.get("fills", [])
+    total_qty = 0.0
+    total_quote = 0.0
+    for f in fills:
+        qty = float(f.get("qty", 0))
+        price = float(f.get("price", 0))
+        total_qty += qty
+        total_quote += qty * price
+    avg_price = total_quote / total_qty if total_qty > 0 else float(result.get("price", 0))
+    return {
+        "order_id": str(result.get("orderId", "")),
+        "side": side,
+        "exchange": "binance",
+        "filled_qty": total_qty or float(result.get("executedQty", 0)),
+        "avg_fill_price": avg_price or float(result.get("price", 0)),
+        "fee": 0.0,  # Fee not directly in order response; estimated from trade amount * 0.001
+        "status": result.get("status", "UNKNOWN"),
+    }
+
+
+def _parse_bitget_fill(result: Dict, side: str) -> Dict:
+    """Extract fill details from a Bitget order result."""
+    data = result.get("data", {})
+    return {
+        "order_id": str(data.get("orderId", "")),
+        "side": side,
+        "exchange": "bitget",
+        "filled_qty": float(data.get("filledQty", data.get("quantity", 0))),
+        "avg_fill_price": float(data.get("fillPrice", data.get("priceAvg", 0))),
+        "fee": 0.0,
+        "status": data.get("status", "UNKNOWN"),
+    }
+
+
+def _record_execution_error(cycle_num: int, error_type: str, error_message: str, recovery_action: str = ""):
+    """Record an execution error to the database."""
+    try:
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from db.db_ops import get_db_connection
+        with get_db_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO execution_errors (strategy, cycle_num, error_type, error_message, severity, recovery_action)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, ("arbitrage", cycle_num, error_type, error_message, "ERROR", recovery_action))
+            conn.commit()
+    except Exception as e:
+        logger.warning(f"Failed to record execution error: {e}")
+
+
+def execute_simultaneous_legs(
+    base_asset: str,
+    direction: str,
+    trade_amount_usdt: float = 100,
+    cycle_num: int = 0,
+) -> Optional[Dict]:
+    """Execute both legs of an arbitrage trade concurrently.
+
+    direction = 'binance_to_bitget': buy Binance, sell Bitget.
+    direction = 'bitget_to_binance': buy Bitget, sell Binance.
+
+    Returns structured result with both legs, or None on failure.
+    On partial failure, attempts to unwind the filled leg.
+    """
+    symbol = f"{base_asset}USDT"
+    logger.info(f"\n{'='*70}")
+    logger.info(f"SIMULTANEOUS EXECUTION: {direction} — {symbol}")
+    logger.info(f"{'='*70}")
+
+    if direction == "binance_to_bitget":
+        buy_exchange, sell_exchange = "binance", "bitget"
+    else:
+        buy_exchange, sell_exchange = "bitget", "binance"
+
+    # ── Determine quantities ──────────────────────────────────────────────
+    # For the buy leg: use trade_amount_usdt to buy at market
+    # For the sell leg: need to determine qty to sell (should match what we already hold)
+    # In the inventory model, we already hold the working asset on both exchanges.
+    # We compute the sell qty as the amount we'd get from the buy, minus fees.
+
+    # Get reference prices for quantity estimation
+    try:
+        if buy_exchange == "binance":
+            price_resp = requests.get(
+                f"{BINANCE_BASE}/ticker/price", params={"symbol": symbol}, timeout=10
+            )
+            price_resp.raise_for_status()
+            buy_ref_price = float(price_resp.json().get("price", 0))
+        else:
+            ticker_resp = requests.get(
+                f"{BITGET_BASE}/spot/market/tickers", params={"symbol": symbol}, timeout=10
+            )
+            ticker_resp.raise_for_status()
+            tdata = ticker_resp.json().get("data", [])
+            buy_ref_price = float(tdata[0].get("lastPr", 0)) if tdata else 0
+    except Exception as e:
+        logger.error(f"Failed to get reference price: {e}")
+        return None
+
+    if buy_ref_price <= 0:
+        logger.error("Invalid reference price")
+        return None
+
+    buy_qty = trade_amount_usdt / buy_ref_price
+    sell_qty = buy_qty * 0.999  # Slight reduction for fee safety
+
+    logger.info(f"Buy:  {buy_qty:.4f} {base_asset} on {buy_exchange} (~${trade_amount_usdt:.2f})")
+    logger.info(f"Sell: {sell_qty:.4f} {base_asset} on {sell_exchange}")
+
+    # ── Dispatch both legs concurrently ───────────────────────────────────
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    buy_result = None
+    sell_result = None
+    buy_error = None
+    sell_error = None
+
+    def do_buy():
+        nonlocal buy_result, buy_error
+        try:
+            if buy_exchange == "binance":
+                buy_result = binance_market_buy(symbol, buy_qty)
+            else:
+                buy_result = bitget_market_buy(symbol, buy_qty)
+            if buy_result is None:
+                buy_error = f"buy_failed_on_{buy_exchange}"
+        except Exception as e:
+            buy_error = str(e)
+
+    def do_sell():
+        nonlocal sell_result, sell_error
+        try:
+            if sell_exchange == "binance":
+                sell_result = binance_market_sell(symbol, sell_qty)
+            else:
+                sell_result = bitget_market_sell(symbol, sell_qty)
+            if sell_result is None:
+                sell_error = f"sell_failed_on_{sell_exchange}"
+        except Exception as e:
+            sell_error = str(e)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = {
+            executor.submit(do_buy): "buy",
+            executor.submit(do_sell): "sell",
+        }
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as e:
+                label = futures[future]
+                if label == "buy":
+                    buy_error = str(e)
+                else:
+                    sell_error = str(e)
+                logger.error(f"{label} leg exception: {e}")
+
+    # ── Parse results ─────────────────────────────────────────────────────
+    buy_leg = None
+    sell_leg = None
+
+    if buy_result and not buy_error:
+        if buy_exchange == "binance":
+            buy_leg = _parse_binance_fill(buy_result, "BUY")
+        else:
+            buy_leg = _parse_bitget_fill(buy_result, "BUY")
+        buy_leg["fee"] = trade_amount_usdt * 0.001
+        logger.info(f"✓ Buy leg filled: {buy_leg['filled_qty']:.4f} @ ${buy_leg['avg_fill_price']:.8f}")
+
+    if sell_result and not sell_error:
+        if sell_exchange == "binance":
+            sell_leg = _parse_binance_fill(sell_result, "SELL")
+        else:
+            sell_leg = _parse_bitget_fill(sell_result, "SELL")
+        sell_gross = (sell_leg["filled_qty"] or 0) * (sell_leg["avg_fill_price"] or 0)
+        sell_leg["fee"] = sell_gross * 0.001
+        logger.info(f"✓ Sell leg filled: {sell_leg['filled_qty']:.4f} @ ${sell_leg['avg_fill_price']:.8f}")
+
+    # ── Handle partial failure: unwind ────────────────────────────────────
+    if buy_leg and not sell_leg:
+        # Buy filled, sell failed — unwind the buy
+        logger.error(f"SELL LEG FAILED ({sell_error}). Unwinding buy leg on {buy_exchange}...")
+        unwind_qty = buy_leg["filled_qty"] or buy_qty
+        if buy_exchange == "binance":
+            unwind_result = binance_market_sell(symbol, unwind_qty)
+        else:
+            unwind_result = bitget_market_sell(symbol, unwind_qty)
+
+        _record_execution_error(
+            cycle_num,
+            "partial_fill_unwind",
+            f"Sell leg failed ({sell_error}), buy unwound on {buy_exchange}",
+            f"unwind_{buy_exchange}",
+        )
+        logger.error("✗ Trade failed — buy leg unwound")
+        return None
+
+    if sell_leg and not buy_leg:
+        # Sell filled, buy failed — unwind the sell (buy back)
+        logger.error(f"BUY LEG FAILED ({buy_error}). Unwinding sell leg on {sell_exchange}...")
+        unwind_qty = sell_leg["filled_qty"] or sell_qty
+        if sell_exchange == "binance":
+            unwind_result = binance_market_buy(symbol, unwind_qty)
+        else:
+            unwind_result = bitget_market_buy(symbol, unwind_qty)
+
+        _record_execution_error(
+            cycle_num,
+            "partial_fill_unwind",
+            f"Buy leg failed ({buy_error}), sell unwound on {sell_exchange}",
+            f"unwind_{sell_exchange}",
+        )
+        logger.error("✗ Trade failed — sell leg unwound")
+        return None
+
+    if not buy_leg or not sell_leg:
+        # Both failed
+        logger.error(f"Both legs failed: buy={buy_error}, sell={sell_error}")
+        _record_execution_error(
+            cycle_num,
+            "dual_leg_failure",
+            f"Buy: {buy_error}, Sell: {sell_error}",
+            "",
+        )
+        return None
+
+    # ── Success: compute net result ───────────────────────────────────────
+    buy_cost = (buy_leg["filled_qty"] or 0) * (buy_leg["avg_fill_price"] or 0) + (buy_leg["fee"] or 0)
+    sell_proceeds = (sell_leg["filled_qty"] or 0) * (sell_leg["avg_fill_price"] or 0) - (sell_leg["fee"] or 0)
+    net_gain = sell_proceeds - buy_cost
+
+    # Compute executable spread at fill
+    if buy_leg["avg_fill_price"] and sell_leg["avg_fill_price"] and buy_leg["avg_fill_price"] > 0:
+        spread_at_fill = ((sell_leg["avg_fill_price"] - buy_leg["avg_fill_price"]) / buy_leg["avg_fill_price"]) * 100
+    else:
+        spread_at_fill = 0.0
+
+    logger.info(f"\n{'='*70}")
+    logger.info(f"TRADE COMPLETED")
+    logger.info(f"  Buy:  {buy_leg['filled_qty']:.4f} @ ${buy_leg['avg_fill_price']:.8f} on {buy_exchange}")
+    logger.info(f"  Sell: {sell_leg['filled_qty']:.4f} @ ${sell_leg['avg_fill_price']:.8f} on {sell_exchange}")
+    logger.info(f"  Net gain: ${net_gain:.4f}")
+    logger.info(f"  Spread at fill: {spread_at_fill:.4f}%")
+    logger.info(f"{'='*70}\n")
+
+    return {
+        "symbol": symbol,
+        "direction": direction,
+        "buy_leg": buy_leg,
+        "sell_leg": sell_leg,
+        "net_gain": net_gain,
+        "spread_at_fill": spread_at_fill,
+        "buy_exchange": buy_exchange,
+        "sell_exchange": sell_exchange,
+        "trade_amount_usdt": trade_amount_usdt,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  LEGACY: Original transfer-based functions kept for backward compatibility
+#  (not used by refactored orchestrator; preserved to avoid breaking any
+#   external callers outside the arbitrage scope.)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
 def main_menu():
     """Main interactive menu."""
     while True:
