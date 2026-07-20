@@ -74,7 +74,7 @@ def api_status():
         "uptime_seconds": round(time.time() - START_TIME),
         "dex_mode": dex_mode["value"] if dex_mode else "unknown",
         "cex_mode": cex_mode["value"] if cex_mode else "unknown",
-        "ml_threshold": float(os.getenv("ML_THRESHOLD", "0.80")),
+        "ml_threshold": float(os.getenv("ML_THRESHOLD", "0.68")),
         "model_loaded": os.path.exists(MODEL_PATH),
     }
 
