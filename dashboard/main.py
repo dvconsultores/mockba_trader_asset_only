@@ -215,7 +215,7 @@ def api_ml_info():
             hist = {}
 
         return {
-            "threshold": 0.80,
+            "threshold": float(os.getenv("ML_THRESHOLD", "0.68")),
             "model_loaded": os.path.exists(MODEL_PATH),
             "recent_scores": scores[-50:] if scores else [],
             "score_distribution": hist,
