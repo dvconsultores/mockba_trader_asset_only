@@ -66,15 +66,23 @@ def api_status():
         cex_mode = db.execute(
             "SELECT value FROM settings WHERE key='auto_trade_cex'"
         ).fetchone()
+        ml_threshold_row = db.execute(
+            "SELECT value FROM settings WHERE key='ml_threshold'"
+        ).fetchone()
         db.close()
     except Exception:
-        dex_mode, cex_mode = None, None
+        dex_mode, cex_mode, ml_threshold_row = None, None, None
+
+    try:
+        ml_threshold = float(ml_threshold_row["value"]) if ml_threshold_row else 0.80
+    except (ValueError, TypeError):
+        ml_threshold = 0.80
 
     return {
         "uptime_seconds": round(time.time() - START_TIME),
         "dex_mode": dex_mode["value"] if dex_mode else "unknown",
         "cex_mode": cex_mode["value"] if cex_mode else "unknown",
-        "ml_threshold": float(os.getenv("ML_THRESHOLD", "0.80")),
+        "ml_threshold": ml_threshold,
         "model_loaded": os.path.exists(MODEL_PATH),
     }
 
@@ -203,7 +211,16 @@ def api_ml_info():
         rejected_count = db.execute(
             "SELECT COUNT(*) as c FROM signal_history WHERE ml_decision = 'rejected'"
         ).fetchone()["c"]
+
+        ml_threshold_row = db.execute(
+            "SELECT value FROM settings WHERE key='ml_threshold'"
+        ).fetchone()
         db.close()
+
+        try:
+            ml_threshold = float(ml_threshold_row["value"]) if ml_threshold_row else 0.80
+        except (ValueError, TypeError):
+            ml_threshold = 0.80
 
         # Histogram buckets
         if scores:
@@ -215,7 +232,7 @@ def api_ml_info():
             hist = {}
 
         return {
-            "threshold": float(os.getenv("ML_THRESHOLD", "0.80")),
+            "threshold": ml_threshold,
             "model_loaded": os.path.exists(MODEL_PATH),
             "recent_scores": scores[-50:] if scores else [],
             "score_distribution": hist,

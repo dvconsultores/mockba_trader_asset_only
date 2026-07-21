@@ -77,7 +77,17 @@ def _record_execution(exchange: str, asset: str, side: str):
 
 # ML Gate — loaded lazily on first use
 _ml_model = None
-_ML_THRESHOLD = 0.80  # score > threshold → ML approves
+
+
+def _get_ml_threshold() -> float:
+    """Read ML threshold from DB, fallback to 0.80."""
+    try:
+        val = get_setting("ml_threshold")
+        if val is not None:
+            return float(val)
+    except Exception:
+        pass
+    return 0.80
 
 # LLM Gate — always active second-opinion layer after ML
 _LLM_GATE_TIMEOUT = 8         # seconds before fallback to ML decision
@@ -123,9 +133,9 @@ def _evaluate_ml_gate(regime: str, obi: float, atr: float, entry_price: float,
             candle_count=candle_count,
         )
         X = features_to_array(features)
-        decision, score = model.decide(X, threshold=_ML_THRESHOLD)
+        decision, score = model.decide(X, threshold=_get_ml_threshold())
         if decision == "rejected":
-            reason = f"ML gate rejected: Score {score:.3f} < threshold {_ML_THRESHOLD}"
+            reason = f"ML gate rejected: Score {score:.3f} < threshold {_get_ml_threshold()}"
         else:
             reason = None
         return round(score, 4), decision, reason
@@ -200,7 +210,7 @@ def _evaluate_llm_gate(signal_summary: str, ml_score: float | None, exchange: st
             "- TREND_DOWN: negative slope exceeding threshold + volume ≥ 120% avg\n"
             "The signal_summary reports which regime was detected.\n\n"
             "=== ML MODEL CONTEXT ===\n"
-            f"XGBoost score: {ml_score:.3f} (threshold: {_ML_THRESHOLD}, trained on historical NEAR reversals)\n\n"
+            f"XGBoost score: {ml_score:.3f} (threshold: {_get_ml_threshold()}, trained on historical NEAR reversals)\n\n"
             "=== DECISION FRAMEWORK ===\n\n"
             "1. PATTERN VALIDATION — quick sanity-check:\n"
             "   Verify the detected pattern against its definition:\n"
@@ -1841,7 +1851,7 @@ class ReversalScalper:
         if ml_decision == "approved":
             display_lines.append(f"\n🤖 ML Gate: score={ml_score:.3f} → APPROVED ✅")
         elif ml_decision == "rejected":
-            ml_reason = f"ML gate rejected: Score {ml_score:.3f} < threshold {_ML_THRESHOLD}"
+            ml_reason = f"ML gate rejected: Score {ml_score:.3f} < threshold {_get_ml_threshold()}"
             display_lines.append(f"\n🤖 ML Gate: score={ml_score:.3f} → REJECTED ❌ ({ml_reason})")
             if _get_exchange_mode(exchange) != "Automatic":
                 display_lines.append("  ℹ️ Signal mode — trade still allowed, ML verdict is reference")
@@ -2010,8 +2020,8 @@ def autotrade():
                     if dex_result.get("approved"):
                         ml_score = dex_result.get('ml_score')
                         if dex_mode == "Signal":
-                            if ml_score is not None and ml_score < _ML_THRESHOLD:
-                                logger.info(f"📡 DEX signal skipped — ML score {ml_score:.3f} < threshold {_ML_THRESHOLD}")
+                            if ml_score is not None and ml_score < _get_ml_threshold():
+                                logger.info(f"📡 DEX signal skipped — ML score {ml_score:.3f} < threshold {_get_ml_threshold()}")
                             elif _should_send_signal_alert("dex", asset, dex_result['side'], dex_result.get('signal_reason', 'Unknown')):
                                 send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 DEX SIGNAL ALERT\n{dex_result['resume_of_analysis']}")
                                 logger.info(f"📡 DEX signal alert sent for {asset}")
@@ -2041,8 +2051,8 @@ def autotrade():
                     if cex_result.get("approved"):
                         ml_score = cex_result.get('ml_score')
                         if cex_mode == "Signal":
-                            if ml_score is not None and ml_score < _ML_THRESHOLD:
-                                logger.info(f"📡 CEX signal skipped — ML score {ml_score:.3f} < threshold {_ML_THRESHOLD}")
+                            if ml_score is not None and ml_score < _get_ml_threshold():
+                                logger.info(f"📡 CEX signal skipped — ML score {ml_score:.3f} < threshold {_get_ml_threshold()}")
                             elif _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
                                 send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
                                 logger.info(f"📡 CEX signal alert sent for {asset}")

@@ -228,6 +228,7 @@ def callback_handler(call):
             "risk_level": set_risk,
             "capital_usage": set_capital_usage,
             "leverage": set_leverage,
+            "ml_threshold": set_ml_threshold,
             "show_prompt": set_show_prompt,
             "prompt_mode": set_prompt_mode,
         }
@@ -263,6 +264,7 @@ def callback_handler(call):
             'set_risk': set_risk,
             'set_capital_usage': set_capital_usage,
             'set_leverage': set_leverage,
+            'set_ml_threshold': set_ml_threshold,
             'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
@@ -295,7 +297,8 @@ def settings(m):
         "set_cex_capital": "💵 CEX Capital (USDT)",
         "set_risk": "⚠️ Risk Level (DEX only)",
         "set_capital_usage": "💰 Capital Usage (DEX only)",
-        "set_leverage": "⚖️ Leverage (DEX only)"
+        "set_leverage": "⚖️ Leverage (DEX only)",
+        "set_ml_threshold": "🎯 ML Threshold (CEX only)"
     }
     
     markup = InlineKeyboardMarkup()
@@ -336,6 +339,9 @@ def upsert_assets(m):
     elif gp1 == "cex_capital":
         if not is_float(valor) or float(valor) <= 0:
             valid, error_msg = False, "CEX capital must be a positive number in USDT"
+    elif gp1 == "ml_threshold":
+        if not is_float(valor) or not (0 < float(valor) <= 1.0):
+            valid, error_msg = False, "ML threshold must be between 0.01 and 1.00"
     elif gp1 == "auto_trade":
         if valor not in ("True", "False"):
             valid, error_msg = False, "Auto Trade must be 'True' or 'False'"
@@ -594,9 +600,27 @@ def set_leverage(m):
         ))
 
     markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
+               InlineKeyboardButton(translate("Next: ML Threshold ➡️", cid), callback_data="set_ml_threshold"))
 
     bot.send_message(cid, translate("Select Leverage (DEX futures multiplier):", cid), reply_markup=markup)
+
+def set_ml_threshold(m):
+    if m.chat.type != 'private': return
+    global gp1; gp1 = "ml_threshold"
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    current = get_setting("ml_threshold") or "0.80"
+    markup = InlineKeyboardMarkup()
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
+
+    bot.send_message(
+        cid,
+        translate(f"Enter ML Threshold (0.01–1.00) — CEX only. Current: {current}", cid),
+        reply_markup=markup
+    )
+    bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
 
 def set_prompt(m):
     if m.chat.type != 'private': return
@@ -890,6 +914,8 @@ def ListSettings(m):
     message_lines.append("🟢 Mode: BUY only (long-only)\n")
     cex_capital = settings.get("cex_capital", "10")
     message_lines.append(f"💵 Capital per position: {cex_capital} USDT\n")
+    ml_threshold = settings.get("ml_threshold", "0.80")
+    message_lines.append(f"🎯 ML Threshold: {ml_threshold}\n")
     
     # Add timestamp
     from datetime import datetime
