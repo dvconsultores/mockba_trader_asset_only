@@ -14,11 +14,9 @@ services:
 
   # ── Dashboard API (FastAPI) ──────────────────────────────
   dashboard:
-    image: andresdom2004/mockba-dashboard:latest
+    build: ./dashboard
     container_name: mockba-dashboard-api
     restart: always
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "8080:8080"
     volumes:
@@ -31,11 +29,9 @@ services:
 
   # ── Dashboard UI (React + nginx) ─────────────────────────
   dashboard-ui:
-    image: andresdom2004/mockba-dashboard-ui:latest
+    build: ./dashboard-ui
     container_name: mockba-dashboard-ui
     restart: always
-    labels:
-      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "86:80"
     depends_on:
