@@ -77,7 +77,7 @@ def _record_execution(exchange: str, asset: str, side: str):
 
 # ML Gate — loaded lazily on first use
 _ml_model = None
-_ML_THRESHOLD = 0.68  # score > threshold → ML approves
+_ML_THRESHOLD = 0.80  # score > threshold → ML approves
 
 # LLM Gate — always active second-opinion layer after ML
 _LLM_GATE_TIMEOUT = 8         # seconds before fallback to ML decision
