@@ -49,7 +49,7 @@ from trading_bot.send_bot_message import send_bot_message
 # Initialize database tables on startup
 initialize_database_tables()
 
-# Ensure ml_threshold setting exists (CEX-only ML gate, default 0.80)
+# Ensure ml_threshold setting exists (ML gate, default 0.80)
 with get_db_connection() as conn:
     conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ml_threshold', '0.80')")
     conn.commit()

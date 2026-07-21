@@ -298,7 +298,7 @@ def settings(m):
         "set_risk": "⚠️ Risk Level (DEX only)",
         "set_capital_usage": "💰 Capital Usage (DEX only)",
         "set_leverage": "⚖️ Leverage (DEX only)",
-        "set_ml_threshold": "🎯 ML Threshold (CEX only)"
+        "set_ml_threshold": "🎯 ML Threshold"
     }
     
     markup = InlineKeyboardMarkup()
@@ -617,7 +617,7 @@ def set_ml_threshold(m):
 
     bot.send_message(
         cid,
-        translate(f"Enter ML Threshold (0.01–1.00) — CEX only. Current: {current}", cid),
+        translate(f"Enter ML Threshold (0.01–1.00). Current: {current}", cid),
         reply_markup=markup
     )
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
@@ -875,6 +875,7 @@ def ListSettings(m):
         ("🌟", "current_asset", "Current Asset"),
         ("⏱️", "interval", "Interval"),
         ("🎯", "take_profit", "Take Profit"),
+        ("🧠", "ml_threshold", "ML Threshold"),
     ]
     for emoji, key, label in shared_keys:
         if key in settings:
@@ -914,8 +915,6 @@ def ListSettings(m):
     message_lines.append("🟢 Mode: BUY only (long-only)\n")
     cex_capital = settings.get("cex_capital", "10")
     message_lines.append(f"💵 Capital per position: {cex_capital} USDT\n")
-    ml_threshold = settings.get("ml_threshold", "0.80")
-    message_lines.append(f"🎯 ML Threshold: {ml_threshold}\n")
     
     # Add timestamp
     from datetime import datetime

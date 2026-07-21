@@ -95,7 +95,7 @@ def initialize_database_tables():
             ('risk_level', '1.0'),  # % of balance risked per trade
             ('capital_usage', '50'),  # % of buying power to deploy per trade
             ('exchange', 'dex'),  # 'dex' (Orderly futures) or 'cex' (Binance spot)
-            ('ml_threshold', '0.80'),  # ML gate decision threshold — CEX only
+            ('ml_threshold', '0.80'),  # ML gate decision threshold
         ]
         for key, value in default_settings:
             cur.execute("""
