@@ -12,11 +12,12 @@ services:
       - ./data:/app/data
       - apolo-logs:/app/logs
 
-  # ── Dashboard API (FastAPI) ──────────────────────────────
   dashboard:
-    build: ./dashboard
+    image: andresdom2004/mockba-dashboard:latest
     container_name: mockba-dashboard-api
     restart: always
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "8080:8080"
     volumes:
@@ -27,11 +28,12 @@ services:
       - LOG_PATH=/app/logs/apolo.log
       - MODEL_PATH=/app/data/signal_model.json
 
-  # ── Dashboard UI (React + nginx) ─────────────────────────
   dashboard-ui:
-    build: ./dashboard-ui
+    image: andresdom2004/mockba-dashboard-ui:latest
     container_name: mockba-dashboard-ui
     restart: always
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
     ports:
       - "86:80"
     depends_on:
