@@ -49,6 +49,11 @@ from trading_bot.send_bot_message import send_bot_message
 # Initialize database tables on startup
 initialize_database_tables()
 
+# Ensure ml_threshold setting exists (CEX-only ML gate, default 0.80)
+with get_db_connection() as conn:
+    conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('ml_threshold', '0.80')")
+    conn.commit()
+
 _LAST_SIGNAL_ALERTS: Dict[str, float] = {}
 _LAST_EXCHANGE_SCAN_AT: Dict[str, float] = {"dex": 0.0, "cex": 0.0}
 _LAST_LABELER_RUN_AT: float = 0.0
