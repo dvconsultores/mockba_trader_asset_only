@@ -281,24 +281,35 @@ def settings(m):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     labels = {
+        # Row 1 — General
         "manage_assets": "💰 Manage Assets",
         "set_current_asset": "🎯 Current Asset",
-        "set_take_profit": "📈 Take Profit",
+        # Row 2 — Trading
         "set_auto_trade": "🤖 Auto Trade",
-        "set_cex_capital": "💵 CEX Capital (USDT)",
-        "set_risk": "⚠️ Risk Level (DEX only)",
-        "set_capital_usage": "💰 Capital Usage (DEX only)",
-        "set_leverage": "⚖️ Leverage (DEX only)",
-        "set_ml_threshold": "🎯 ML Threshold",
+        "set_take_profit": "📈 Take Profit",
+        # Row 3 — CEX
+        "set_cex_capital": "💵 CEX Capital",
+        "set_ml_threshold": "🧠 ML Threshold",
+        # Row 4 — DEX
+        "set_risk": "⚠️ Risk Level",
+        "set_capital_usage": "💰 Capital Usage",
+        # Row 5 — DEX
+        "set_leverage": "⚖️ Leverage",
+        # Row 6 — Grid
         "grid_obi_buy": "📉 Grid OBI Buy",
         "grid_obi_sell": "📈 Grid OBI Sell",
+        # Row 7 — Grid
         "grid_tp_pct": "🎯 Grid TP %",
         "grid_cooldown_sec": "⏱️ Grid Cooldown",
     }
-    
+
     markup = InlineKeyboardMarkup()
-    for key, label in labels.items():
-        markup.row(InlineKeyboardButton(translate(label, cid), callback_data=key))
+    keys = list(labels.keys())
+    for i in range(0, len(keys), 2):
+        row = [InlineKeyboardButton(translate(labels[keys[i]], cid), callback_data=keys[i])]
+        if i + 1 < len(keys):
+            row.append(InlineKeyboardButton(translate(labels[keys[i + 1]], cid), callback_data=keys[i + 1]))
+        markup.row(*row)
         
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
 
@@ -1055,6 +1066,25 @@ def ListSettings(m):
     message_lines.append("🟢 Mode: BUY only (long-only)\n")
     cex_capital = settings.get("cex_capital", "10")
     message_lines.append(f"💵 Capital per position: {cex_capital} USDT\n")
+
+    # Grid scalper settings (CEX, RANGE regime)
+    grid_keys = [
+        ("📉", "grid_obi_buy", "Grid OBI Buy"),
+        ("📈", "grid_obi_sell", "Grid OBI Sell"),
+        ("🎯", "grid_tp_pct", "Grid TP"),
+        ("⏱️", "grid_cooldown_sec", "Grid Cooldown"),
+    ]
+    has_grid = any(k in settings for _, k, _ in grid_keys)
+    if has_grid:
+        message_lines.append("\n📊 Grid Scalper (CEX RANGE regime):\n")
+        for emoji, key, label in grid_keys:
+            if key in settings:
+                value = settings[key]
+                if key == "grid_tp_pct":
+                    value = f"{value}%"
+                elif key == "grid_cooldown_sec":
+                    value = f"{value}s"
+                message_lines.append(f"{emoji} {label}: {value}\n")
     
     # Add timestamp
     from datetime import datetime
