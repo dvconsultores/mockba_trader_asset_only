@@ -213,6 +213,10 @@ def callback_handler(call):
             "capital_usage": set_capital_usage,
             "leverage": set_leverage,
             "ml_threshold": set_ml_threshold,
+            "grid_obi_buy": set_grid_obi_buy,
+            "grid_obi_sell": set_grid_obi_sell,
+            "grid_tp_pct": set_grid_tp_pct,
+            "grid_cooldown_sec": set_grid_cooldown_sec,
             "show_prompt": set_show_prompt,
             "prompt_mode": set_prompt_mode,
         }
@@ -249,6 +253,10 @@ def callback_handler(call):
             'set_capital_usage': set_capital_usage,
             'set_leverage': set_leverage,
             'set_ml_threshold': set_ml_threshold,
+            'grid_obi_buy': set_grid_obi_buy,
+            'grid_obi_sell': set_grid_obi_sell,
+            'grid_tp_pct': set_grid_tp_pct,
+            'grid_cooldown_sec': set_grid_cooldown_sec,
             'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
@@ -281,7 +289,11 @@ def settings(m):
         "set_risk": "⚠️ Risk Level (DEX only)",
         "set_capital_usage": "💰 Capital Usage (DEX only)",
         "set_leverage": "⚖️ Leverage (DEX only)",
-        "set_ml_threshold": "🎯 ML Threshold"
+        "set_ml_threshold": "🎯 ML Threshold",
+        "grid_obi_buy": "📉 Grid OBI Buy",
+        "grid_obi_sell": "📈 Grid OBI Sell",
+        "grid_tp_pct": "🎯 Grid TP %",
+        "grid_cooldown_sec": "⏱️ Grid Cooldown",
     }
     
     markup = InlineKeyboardMarkup()
@@ -604,6 +616,185 @@ def set_ml_threshold(m):
         reply_markup=markup
     )
     bot.register_next_step_handler_by_chat_id(cid, upsert_assets)
+
+# ── Grid Scalper Settings ─────────────────────────────────────────────────────
+
+def _grid_capital() -> float:
+    """Return current CEX capital in USDT for recommendation logic."""
+    try:
+        val = get_setting("cex_capital")
+        if val is not None:
+            return float(val)
+    except Exception:
+        pass
+    return 100.0
+
+
+def _grid_recommend(capital: float, key: str) -> str:
+    """Return recommended value for a grid setting based on capital tier."""
+    if key == "grid_obi_buy":
+        return "0.70" if capital > 500 else "0.75" if capital > 200 else "0.82"
+    if key == "grid_obi_sell":
+        return "1.30" if capital > 500 else "1.22" if capital > 200 else "1.18"
+    if key == "grid_tp_pct":
+        return "0.75" if capital > 500 else "0.5" if capital > 100 else "0.3"
+    if key == "grid_cooldown_sec":
+        return "900" if capital > 500 else "600" if capital > 200 else "300"
+    return ""
+
+
+def set_grid_obi_buy(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    capital = _grid_capital()
+    current = get_setting("grid_obi_buy") or "0.82"
+    rec = _grid_recommend(capital, "grid_obi_buy")
+
+    levels = [
+        ("🔴 0.70 — Whale panic", "0.70"),
+        ("🟠 0.75 — Strong bearish", "0.75"),
+        ("🟡 0.82 — Moderate bearish", "0.82"),
+        ("🟢 0.90 — Slight dip", "0.90"),
+    ]
+
+    markup = InlineKeyboardMarkup()
+    for label, val in levels:
+        marks = []
+        if current == val:
+            marks.append("✅")
+        if val == rec:
+            marks.append("⭐")
+        prefix = " ".join(marks) + " " if marks else "   "
+        markup.add(InlineKeyboardButton(
+            f"{prefix}{label}",
+            callback_data=f"set_val:grid_obi_buy:{val}"
+        ))
+
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Next: Grid OBI Sell ➡️", cid), callback_data="grid_obi_sell"))
+
+    bot.send_message(cid, translate(
+        f"📉 Grid OBI Buy — OBI below → BUY in RANGE\n"
+        f"💰 Capital: ${capital:.0f} → ⭐ {rec} recommended\n"
+        f"Current: {current}", cid), reply_markup=markup)
+
+
+def set_grid_obi_sell(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    capital = _grid_capital()
+    current = get_setting("grid_obi_sell") or "1.22"
+    rec = _grid_recommend(capital, "grid_obi_sell")
+
+    levels = [
+        ("🟢 1.10 — Slight pump", "1.10"),
+        ("🟡 1.18 — Moderate bullish", "1.18"),
+        ("🟠 1.22 — Strong bullish", "1.22"),
+        ("🔴 1.30 — Euphoria", "1.30"),
+    ]
+
+    markup = InlineKeyboardMarkup()
+    for label, val in levels:
+        marks = []
+        if current == val:
+            marks.append("✅")
+        if val == rec:
+            marks.append("⭐")
+        prefix = " ".join(marks) + " " if marks else "   "
+        markup.add(InlineKeyboardButton(
+            f"{prefix}{label}",
+            callback_data=f"set_val:grid_obi_sell:{val}"
+        ))
+
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Next: Grid TP % ➡️", cid), callback_data="grid_tp_pct"))
+
+    bot.send_message(cid, translate(
+        f"📈 Grid OBI Sell — OBI above → signal in RANGE\n"
+        f"💰 Capital: ${capital:.0f} → ⭐ {rec} recommended\n"
+        f"Current: {current}", cid), reply_markup=markup)
+
+
+def set_grid_tp_pct(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    capital = _grid_capital()
+    current = get_setting("grid_tp_pct") or "0.5"
+    rec = _grid_recommend(capital, "grid_tp_pct")
+    profit = capital * float(rec) / 100
+
+    levels = [
+        ("🟢 0.3% — Scalp",  "0.3"),
+        ("🟡 0.5% — Balanced", "0.5"),
+        ("🟠 0.75% — Swing",  "0.75"),
+        ("🔴 1.0% — Wide",   "1.0"),
+    ]
+
+    markup = InlineKeyboardMarkup()
+    for label, val in levels:
+        marks = []
+        if current == val:
+            marks.append("✅")
+        if val == rec:
+            marks.append("⭐")
+        prefix = " ".join(marks) + " " if marks else "   "
+        markup.add(InlineKeyboardButton(
+            f"{prefix}{label}",
+            callback_data=f"set_val:grid_tp_pct:{val}"
+        ))
+
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Next: Grid Cooldown ➡️", cid), callback_data="grid_cooldown_sec"))
+
+    bot.send_message(cid, translate(
+        f"🎯 Grid TP % — profit target above fill\n"
+        f"💰 Capital: ${capital:.0f} → ⭐ {rec}% = ~${profit:.2f}/trade\n"
+        f"Current: {current}%", cid), reply_markup=markup)
+
+
+def set_grid_cooldown_sec(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    capital = _grid_capital()
+    current = get_setting("grid_cooldown_sec") or "300"
+    rec = _grid_recommend(capital, "grid_cooldown_sec")
+
+    levels = [
+        ("⚡ 120s — Fast",   "120"),
+        ("🟡 300s — Normal",  "300"),
+        ("🟠 600s — Patient", "600"),
+        ("🐢 900s — Slow",   "900"),
+    ]
+
+    markup = InlineKeyboardMarkup()
+    for label, val in levels:
+        marks = []
+        if current == val:
+            marks.append("✅")
+        if val == rec:
+            marks.append("⭐")
+        prefix = " ".join(marks) + " " if marks else "   "
+        markup.add(InlineKeyboardButton(
+            f"{prefix}{label}",
+            callback_data=f"set_val:grid_cooldown_sec:{val}"
+        ))
+
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
+
+    bot.send_message(cid, translate(
+        f"⏱️ Grid Cooldown — seconds between entries\n"
+        f"💰 Capital: ${capital:.0f} → ⭐ {rec}s recommended\n"
+        f"Current: {current}s", cid), reply_markup=markup)
+
 
 def set_prompt(m):
     if m.chat.type != 'private': return

@@ -96,6 +96,11 @@ def initialize_database_tables():
             ('capital_usage', '50'),  # % of buying power to deploy per trade
             ('exchange', 'dex'),  # 'dex' (Orderly futures) or 'cex' (Binance spot)
             ('ml_threshold', '0.80'),  # ML gate decision threshold
+            # Grid scalper defaults
+            ('grid_obi_buy', '0.82'),
+            ('grid_obi_sell', '1.22'),
+            ('grid_tp_pct', '0.5'),
+            ('grid_cooldown_sec', '300'),
         ]
         for key, value in default_settings:
             cur.execute("""

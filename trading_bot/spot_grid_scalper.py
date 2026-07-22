@@ -43,12 +43,23 @@ from trading_bot.spot_executor_binance import (
 from trading_bot.send_bot_message import send_bot_message
 from trade.binance_data import get_orderbook_binance, get_binance_price
 
-# ── Configuration ────────────────────────────────────────────────────────────
-GRID_OBI_BUY_THRESHOLD = float(os.getenv("GRID_OBI_BUY_THRESHOLD", "0.90"))
-GRID_OBI_SELL_THRESHOLD = float(os.getenv("GRID_OBI_SELL_THRESHOLD", "1.10"))
-GRID_TP_PCT = float(os.getenv("GRID_TP_PCT", "0.5"))          # take-profit as % above fill
-GRID_COOLDOWN_SEC = float(os.getenv("GRID_COOLDOWN_SEC", "300"))  # 5 min between same-direction entries
-GRID_MAX_POSITIONS = int(os.getenv("GRID_MAX_POSITIONS", "1"))    # max concurrent open positions
+# ── Configuration (DB settings with .env fallback) ────────────────────────────
+def _grid_setting(key: str, default: str) -> float:
+    """Read a grid scalper setting from DB, falling back to env, then default."""
+    try:
+        val = get_setting(key)
+        if val is not None:
+            return float(val)
+    except Exception:
+        pass
+    return float(os.getenv(key.upper(), default))
+
+
+GRID_OBI_BUY_THRESHOLD = _grid_setting("grid_obi_buy", "0.82")
+GRID_OBI_SELL_THRESHOLD = _grid_setting("grid_obi_sell", "1.22")
+GRID_TP_PCT = _grid_setting("grid_tp_pct", "0.5")
+GRID_COOLDOWN_SEC = _grid_setting("grid_cooldown_sec", "300")
+GRID_MAX_POSITIONS = int(os.getenv("GRID_MAX_POSITIONS", "1"))
 
 BINANCE_BASE_URL = "https://api.binance.com"
 
