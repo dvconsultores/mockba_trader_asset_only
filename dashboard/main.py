@@ -78,12 +78,26 @@ def api_status():
     except (ValueError, TypeError):
         ml_threshold = 0.80
 
+    # Current regime: read from latest signal in signal_history
+    current_regime = None
+    try:
+        db = _get_db()
+        regime_row = db.execute(
+            "SELECT regime FROM signal_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if regime_row:
+            current_regime = regime_row["regime"]
+        db.close()
+    except Exception:
+        pass
+
     return {
         "uptime_seconds": round(time.time() - START_TIME),
         "dex_mode": dex_mode["value"] if dex_mode else "unknown",
         "cex_mode": cex_mode["value"] if cex_mode else "unknown",
         "ml_threshold": ml_threshold,
         "model_loaded": os.path.exists(MODEL_PATH),
+        "current_regime": current_regime,
     }
 
 

@@ -46,23 +46,7 @@ def _load_analyze_trade_performance():
     return getattr(module, "analyze_trade_performance", None)
 
 
-def _load_spread_llm_main():
-    module_path = os.path.join(
-        os.path.dirname(__file__),
-        "trade",
-        "spread_llm_analyzer.py",
-    )
-    spec = importlib.util.spec_from_file_location("spread_llm_analyzer", module_path)
-    if spec is None or spec.loader is None:
-        return None
-
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return getattr(module, "main", None)
-
-
 analyze_trade_performance = _load_analyze_trade_performance()
-spread_llm_main = _load_spread_llm_main()
 
 
 def is_float(value):
@@ -268,7 +252,6 @@ def callback_handler(call):
             'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
-            # 'SpreadLLMAnalyzer': execute_spread_llm_analyzer,  # LLM option removed
         }
         func = options.get(call.data)
         if func:
@@ -678,40 +661,6 @@ def set_order_book_threshold(m):
 
 
 # === Main Actions ===
-
-def execute_spread_llm_analyzer(m):
-    if m.chat.type != 'private':
-        return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
-        return
-
-    if spread_llm_main is None:
-        bot.send_message(cid, translate("❌ Spread LLM analyzer is not available.", cid))
-        return
-
-    bot.send_message(cid, translate("Running Spread LLM analyzer...", cid))
-
-    try:
-        output_buffer = io.StringIO()
-        with redirect_stdout(output_buffer):
-            spread_llm_main()
-        out = output_buffer.getvalue()
-        lines = out.splitlines()
-
-        # Send only sampled + top opportunities block
-        sampled_idx = next((i for i, ln in enumerate(lines) if "Successfully sampled" in ln), None)
-        if sampled_idx is not None:
-            end_idx = next(
-                (i for i, ln in enumerate(lines[sampled_idx + 1:], start=sampled_idx + 1)
-                 if "Results saved to" in ln),
-                len(lines),
-            )
-            top_block = "\n".join(lines[sampled_idx:end_idx]).strip()
-            if top_block:
-                send_text_message_chunked(cid, top_block)
-    except Exception as e:
-        bot.send_message(cid, translate(f"Error running spread LLM analyzer: {str(e)}", cid))
 
 def execute_trade_performance(m):
     if m.chat.type != 'private':

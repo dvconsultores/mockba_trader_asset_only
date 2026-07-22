@@ -54,6 +54,7 @@ body {
 .log-approved { color: #D0CFCC; font-weight: bold; }
 .log-rejected { color: #ff6666; }
 .log-ml       { color: #66ccff; }
+.log-grid     { color: #ffcc00; }
 
 /* ── Blinking Cursor ────────────────────────────────────── */
 .cursor::after {

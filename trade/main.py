@@ -1340,6 +1340,47 @@ class ReversalScalper:
             reason_str = ', '.join(reasons) if reasons else 'unknown'
             logger.info(f"📊 [{exch}] {asset} @ {price:.6f} | {regime} | {cons} | ❌ REJECTED: {reason_str}{ml_str}")
 
+    def quick_scan(self, asset: str, exchange_override: str = None) -> Dict:
+        """Lightweight scan: fetch orderbook + 5m candles, return regime, OBI, and live price.
+        Does NOT run pattern detection, ML gate, or LLM gate.
+        Used by grid scalper to decide strategy routing.
+        """
+        exchange = exchange_override or get_setting("exchange") or "dex"
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            if exchange == "cex":
+                f_df_5m = pool.submit(get_historical_data_binance, symbol=asset, interval='5m', limit=60)
+                f_live = pool.submit(get_binance_price, asset)
+                f_orderbook = pool.submit(get_orderbook_binance, asset, self.OB_DEPTH)
+            else:
+                f_df_5m = pool.submit(get_historical_data_limit_apolo, symbol=asset, interval='5m', limit=60)
+                f_live = pool.submit(get_close_price, ORDERLY_ACCOUNT_ID, asset, '5m')
+                f_orderbook = pool.submit(get_orderbook, asset, self.OB_DEPTH)
+            try:
+                df_5m = f_df_5m.result(timeout=10)
+                live_price = f_live.result(timeout=10)
+                orderbook = f_orderbook.result(timeout=10)
+            except TimeoutError:
+                return {'regime': 'UNKNOWN', 'obi': 1.0, 'live_price': 0.0, 'exchange': exchange}
+
+        if df_5m is None or len(df_5m) < 20:
+            return {'regime': 'UNKNOWN', 'obi': 1.0, 'live_price': live_price or 0.0, 'exchange': exchange}
+
+        if orderbook is None:
+            orderbook = {'bids': [], 'asks': []}
+        obi, _ = self._calculate_obi(orderbook)
+
+        # Detect regime without HTF confirmation (quick scan, 5m only)
+        regime_info = self._detect_regime(df_5m, None, obi=obi, obi_details={})
+        regime = regime_info.get('regime', 'UNKNOWN') if isinstance(regime_info, dict) else 'UNKNOWN'
+
+        return {
+            'regime': regime,
+            'obi': round(obi, 4),
+            'live_price': live_price or 0.0,
+            'exchange': exchange,
+        }
+
     def analyze_signal(self, asset: str, interval: str = '5m', exchange_override: str = None) -> Dict:
         """Main analysis function - orchestrates all checks and returns decision."""
         exchange = exchange_override or get_setting("exchange") or "dex"
@@ -2050,31 +2091,49 @@ def autotrade():
             # CEX cycle
             if cex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("cex", 60):
                 if has_cex_order:
-                    logger.info("📋 CEX has open order(s) — skipping CEX pattern search")
+                    logger.info("📋 CEX has open order(s) — skipping CEX analysis")
                 else:
-                    cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
-                    if cex_result.get("approved"):
-                        ml_score = cex_result.get('ml_score')
-                        if cex_mode == "Signal":
-                            if ml_score is not None and ml_score < _get_ml_threshold():
-                                logger.info(f"📡 CEX signal skipped — ML score {ml_score:.3f} < threshold {_get_ml_threshold()}")
-                            elif _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
-                                send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
-                                logger.info(f"📡 CEX signal alert sent for {asset}")
-                        else:
-                            # === COOLDOWN CHECK: prevent repeated entries on same pattern ===
-                            if not _should_allow_execution("cex", asset, cex_result['side']):
-                                logger.info(f"⏳ CEX execution skipped — cooldown active for {asset} {cex_result['side']}")
+                    # ── Quick scan for regime routing ──────────────────────
+                    scan = scalper.quick_scan(asset, exchange_override="cex")
+                    regime = scan.get('regime', 'UNKNOWN')
+                    obi = scan.get('obi', 1.0)
+                    live_price = scan.get('live_price', 0.0)
+                    logger.info(f"🔍 CEX quick scan: regime={regime}, OBI={obi:.3f}, price=${live_price:.4f}")
+
+                    if regime == "RANGE":
+                        # ── Grid scalper (OBI thresholds, no ML/LLM) ──────
+                        try:
+                            from trading_bot.spot_grid_scalper import grid_scalp_cycle
+                            action = grid_scalp_cycle(asset=asset, regime=regime, obi=obi, live_price=live_price)
+                            if action:
+                                logger.info(f"📊 Grid scalper action: {action}")
+                        except ImportError as e:
+                            logger.warning(f"Grid scalper not available: {e}")
+                    else:
+                        # ── Reversal scalper (pattern + ML + LLM gates) ───
+                        cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
+                        if cex_result.get("approved"):
+                            ml_score = cex_result.get('ml_score')
+                            if cex_mode == "Signal":
+                                if ml_score is not None and ml_score < _get_ml_threshold():
+                                    logger.info(f"📡 CEX signal skipped — ML score {ml_score:.3f} < threshold {_get_ml_threshold()}")
+                                elif _should_send_signal_alert("cex", asset, cex_result['side'], cex_result.get('signal_reason', 'Unknown')):
+                                    send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 CEX SIGNAL ALERT\n{cex_result['resume_of_analysis']}")
+                                    logger.info(f"📡 CEX signal alert sent for {asset}")
                             else:
-                                order_payload = {
-                                    "symbol": cex_result['symbol'],
-                                    "side": cex_result['side'],
-                                    "entry": cex_result['entry'],
-                                    "take_profit": cex_result['take_profit'],
-                                }
-                                place_spot_order(order_payload)
-                                _record_execution("cex", asset, cex_result['side'])
-                                logger.info(f"🚀 Binance spot order placed: {order_payload}")
+                                # === COOLDOWN CHECK: prevent repeated entries on same pattern ===
+                                if not _should_allow_execution("cex", asset, cex_result['side']):
+                                    logger.info(f"⏳ CEX execution skipped — cooldown active for {asset} {cex_result['side']}")
+                                else:
+                                    order_payload = {
+                                        "symbol": cex_result['symbol'],
+                                        "side": cex_result['side'],
+                                        "entry": cex_result['entry'],
+                                        "take_profit": cex_result['take_profit'],
+                                    }
+                                    place_spot_order(order_payload)
+                                    _record_execution("cex", asset, cex_result['side'])
+                                    logger.info(f"🚀 Binance spot order placed: {order_payload}")
 
             # Periodic outcome labeling (background, every 2 hours)
             if _should_run_labeler():

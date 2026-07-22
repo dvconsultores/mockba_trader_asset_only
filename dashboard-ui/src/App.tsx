@@ -14,6 +14,7 @@ interface BotStatus {
   cex_mode: string
   ml_threshold: number
   model_loaded: boolean
+  current_regime: string | null
 }
 
 export default function App() {
@@ -55,6 +56,15 @@ export default function App() {
               </span>
               {status.model_loaded && (
                 <span className="text-cyan-500">ML:on</span>
+              )}
+              {status.current_regime && (
+                <span className={
+                  status.current_regime === 'RANGE' ? 'text-yellow-400' :
+                  status.current_regime === 'TREND_UP' ? 'text-green-400' :
+                  'text-red-400'
+                }>
+                  {status.current_regime === 'RANGE' ? '⚡Grid' : status.current_regime}
+                </span>
               )}
             </>
           )}

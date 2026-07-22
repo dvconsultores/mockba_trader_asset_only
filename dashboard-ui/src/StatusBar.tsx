@@ -4,6 +4,7 @@ interface BotStatus {
   cex_mode: string
   ml_threshold: number
   model_loaded: boolean
+  current_regime: string | null
 }
 
 function fmtUptime(s: number): string {
@@ -56,6 +57,32 @@ export default function StatusBar({ status }: { status: BotStatus | null }) {
           <div className="text-[#4a4060] text-[10px]">ML MODEL</div>
           <div className={status.model_loaded ? 'text-[#D0CFCC]' : 'text-red-400'}>
             {status.model_loaded ? '✅ LOADED' : '❌ NOT FOUND'}
+          </div>
+        </div>
+
+        {/* Current Regime */}
+        <div className="bg-[#1a1528] border border-[#2a2240] p-3">
+          <div className="text-[#4a4060] text-[10px]">REGIME</div>
+          <div className={`text-lg font-bold ${
+            status.current_regime === 'RANGE'
+              ? 'text-yellow-400'
+              : status.current_regime === 'TREND_UP'
+                ? 'text-green-400'
+                : status.current_regime === 'TREND_DOWN'
+                  ? 'text-red-400'
+                  : 'text-[#4a4060]'
+          }`}>
+            {(status.current_regime || 'UNKNOWN').toUpperCase()}
+          </div>
+        </div>
+
+        {/* Active Strategy */}
+        <div className="bg-[#1a1528] border border-[#2a2240] p-3">
+          <div className="text-[#4a4060] text-[10px]">CEX STRATEGY</div>
+          <div className={`text-lg font-bold ${
+            status.current_regime === 'RANGE' ? 'text-yellow-400' : 'text-cyan-500'
+          }`}>
+            {status.current_regime === 'RANGE' ? 'GRID SCALP' : 'REVERSAL'}
           </div>
         </div>
       </div>

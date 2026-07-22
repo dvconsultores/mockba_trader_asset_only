@@ -10,6 +10,7 @@ function classifyLine(line: string): string {
   if (line.includes('✅ APPROVED') || line.includes('TRADE APPROVED')) return 'log-approved'
   if (line.includes('❌ REJECTED') || line.includes('REJECTED ❌')) return 'log-rejected'
   if (line.includes('ML:') || line.includes('ML Gate')) return 'log-ml'
+  if (line.includes('Grid') || line.includes('GRID') || line.includes('grid_scalp')) return 'log-grid'
   return 'log-info'
 }
 
