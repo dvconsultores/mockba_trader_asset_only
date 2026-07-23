@@ -55,13 +55,34 @@ def _grid_setting(key: str, default: str) -> float:
     return float(os.getenv(key.upper(), default))
 
 
-GRID_OBI_BUY_THRESHOLD = _grid_setting("grid_obi_buy", "0.82")
+GRID_OBI_BUY_THRESHOLD = _grid_setting("grid_obi_buy", "0.96")
 GRID_OBI_SELL_THRESHOLD = _grid_setting("grid_obi_sell", "1.22")
 GRID_TP_PCT = _grid_setting("grid_tp_pct", "0.5")
 GRID_COOLDOWN_SEC = _grid_setting("grid_cooldown_sec", "300")
+GRID_PRICE_DIP_PCT = _grid_setting("grid_price_dip_pct", "0.4")  # buy when price dips this % below recent peak
 GRID_MAX_POSITIONS = int(os.getenv("GRID_MAX_POSITIONS", "1"))
 
 BINANCE_BASE_URL = "https://api.binance.com"
+
+# ── Price-dip tracking (rolling memory, no API calls needed) ──────────────────
+from collections import deque
+_price_history: deque = deque(maxlen=40)  # ~20 min at ~30s cycles
+_peak_price: float = 0.0
+
+
+def _update_price_memory(price: float) -> None:
+    """Feed each cycle's live price into rolling memory."""
+    global _peak_price
+    if price > 0:
+        _price_history.append(price)
+        _peak_price = max(_price_history)
+
+
+def _is_price_dip(price: float) -> bool:
+    """True if price has dipped GRID_PRICE_DIP_PCT % below the rolling peak."""
+    if _peak_price <= 0 or len(_price_history) < 10:
+        return False  # still warming up
+    return (_peak_price - price) / _peak_price * 100 >= GRID_PRICE_DIP_PCT
 
 # ── State ────────────────────────────────────────────────────────────────────
 _last_buy_at: float = 0.0
@@ -213,49 +234,52 @@ def grid_scalp_cycle(asset: str = "NEAR", regime: str = "RANGE", obi: float = 1.
     if len(_open_positions) >= GRID_MAX_POSITIONS:
         return None  # already at max positions
 
+    # ── Update price memory for dip detection ─────────────────────────────
+    if live_price > 0:
+        _update_price_memory(live_price)
+
     # ── Decide ─────────────────────────────────────────────────────────────
     chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+    import math
 
-    if obi < GRID_OBI_BUY_THRESHOLD and (now - _last_buy_at) > GRID_COOLDOWN_SEC:
-        # Bearish extreme → BUY
+    # Helper: execute a buy at current price
+    def _execute_buy(trigger_reason: str) -> Optional[str]:
+        global _last_buy_at
         trade_amount = _get_trade_amount()
         if trade_amount < 10:
-            logger.info(f"📉 Grid: OBI={obi:.3f} < {GRID_OBI_BUY_THRESHOLD} but insufficient capital (${trade_amount:.0f})")
+            logger.info(f"📉 Grid {trigger_reason}: insufficient capital (${trade_amount:.0f})")
             return None
 
         entry = live_price if live_price > 0 else get_binance_price(symbol)
         if entry <= 0:
-            logger.warning("Grid: could not get live price for BUY")
+            logger.warning(f"Grid {trigger_reason}: could not get live price")
             return None
 
         info = get_binance_exchange_info(symbol)
         if not info:
-            logger.error("Grid: could not get exchange info")
+            logger.error(f"Grid {trigger_reason}: could not get exchange info")
             return None
 
         qty = trade_amount / entry
-        import math
         qty = qty - (qty % info['base_tick']) if info['base_tick'] > 0 else qty
 
         if qty < info['base_min'] or (qty * entry) < info['min_notional']:
-            logger.info(f"📉 Grid: OBI={obi:.3f} but qty too small: {qty:.4f}")
+            logger.info(f"📉 Grid {trigger_reason}: qty too small ({qty:.4f})")
             return None
 
-        # Place LIMIT BUY at current bid (maker)
         quote_tick = info['quote_tick']
         price_precision = max(0, int(round(-math.log10(quote_tick)))) if quote_tick > 0 else 4
         limit_price = round(entry, price_precision)
 
-        logger.info(f"📉 Grid BUY signal: OBI={obi:.3f}, price=${entry:.4f}, qty={qty:.4f}, notional=${qty*entry:.2f}")
+        logger.info(f"📉 Grid BUY ({trigger_reason}): price=${entry:.4f}, qty={qty:.4f}, notional=${qty*entry:.2f}")
         buy_result = _limit_buy_with_fallback(binance_symbol, qty, limit_price, timeout_seconds=30,
                                                notify_chat_id=chat_id)
         if buy_result is None:
-            logger.error("Grid: LIMIT BUY failed")
+            logger.error(f"Grid {trigger_reason}: LIMIT BUY failed")
             return None
 
         _last_buy_at = now
 
-        # Place TP sell
         filled_qty = float(buy_result.get("executedQty", 0))
         cumm_quote = float(buy_result.get("cummulativeQuoteQty", 0))
         avg_price = cumm_quote / filled_qty if filled_qty > 0 else entry
@@ -272,12 +296,22 @@ def grid_scalp_cycle(asset: str = "NEAR", regime: str = "RANGE", obi: float = 1.
             })
             if chat_id:
                 send_bot_message(chat_id,
-                    f"📉 Grid Scalp BUY\n"
+                    f"📉 Grid Scalp BUY ({trigger_reason})\n"
                     f"   {binance_symbol}: {filled_qty:.4f} @ ${avg_price:.4f}\n"
                     f"   TP: ${tp_price:.4f} (+{GRID_TP_PCT}%)\n"
-                    f"   OBI: {obi:.3f}")
-
+                    f"   Peak: ${_peak_price:.4f} | OBI: {obi:.3f}")
         return "buy"
+
+    # ── Entry path 1: Price dip (price dropped below recent peak) ─────────
+    if _is_price_dip(live_price) and (now - _last_buy_at) > GRID_COOLDOWN_SEC:
+        dip_pct = (_peak_price - live_price) / _peak_price * 100
+        logger.info(f"📉 Grid: price dip {dip_pct:.2f}% from peak ${_peak_price:.4f}")
+        return _execute_buy(f"dip {dip_pct:.1f}%")
+
+    # ── Entry path 2: OBI extreme (bearish order book imbalance) ──────────
+    if obi < GRID_OBI_BUY_THRESHOLD and (now - _last_buy_at) > GRID_COOLDOWN_SEC:
+        logger.info(f"📉 Grid: OBI={obi:.3f} < {GRID_OBI_BUY_THRESHOLD}")
+        return _execute_buy(f"OBI {obi:.3f}")
 
     elif obi > GRID_OBI_SELL_THRESHOLD and _open_positions and (now - _last_sell_at) > GRID_COOLDOWN_SEC:
         # Bullish extreme + we hold → could sell, but TP orders already handle this.

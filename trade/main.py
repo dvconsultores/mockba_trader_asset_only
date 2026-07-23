@@ -2100,17 +2100,20 @@ def autotrade():
                     live_price = scan.get('live_price', 0.0)
                     logger.info(f"🔍 CEX quick scan: regime={regime}, OBI={obi:.3f}, price=${live_price:.4f}")
 
+                    # ── Grid scalper (RANGE only, OBI thresholds, no ML/LLM) ──────
+                    grid_entered = False
                     if regime == "RANGE":
-                        # ── Grid scalper (OBI thresholds, no ML/LLM) ──────
                         try:
                             from trading_bot.spot_grid_scalper import grid_scalp_cycle
                             action = grid_scalp_cycle(asset=asset, regime=regime, obi=obi, live_price=live_price)
                             if action:
                                 logger.info(f"📊 Grid scalper action: {action}")
+                                grid_entered = True
                         except ImportError as e:
                             logger.warning(f"Grid scalper not available: {e}")
-                    else:
-                        # ── Reversal scalper (pattern + ML + LLM gates) ───
+
+                    # ── Reversal scalper (pattern + ML + LLM gates, all regimes) ───
+                    if not grid_entered:
                         cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
                         if cex_result.get("approved"):
                             ml_score = cex_result.get('ml_score')

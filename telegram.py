@@ -217,6 +217,7 @@ def callback_handler(call):
             "grid_obi_sell": set_grid_obi_sell,
             "grid_tp_pct": set_grid_tp_pct,
             "grid_cooldown_sec": set_grid_cooldown_sec,
+            "grid_price_dip_pct": set_grid_price_dip_pct,
             "show_prompt": set_show_prompt,
             "prompt_mode": set_prompt_mode,
         }
@@ -257,6 +258,7 @@ def callback_handler(call):
             'grid_obi_sell': set_grid_obi_sell,
             'grid_tp_pct': set_grid_tp_pct,
             'grid_cooldown_sec': set_grid_cooldown_sec,
+            'grid_price_dip_pct': set_grid_price_dip_pct,
             'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
@@ -301,6 +303,7 @@ def settings(m):
         # Row 7 — Grid
         "grid_tp_pct": "🎯 Grid TP %",
         "grid_cooldown_sec": "⏱️ Grid Cooldown",
+        "grid_price_dip_pct": "📊 Grid Price Dip %",
     }
 
     markup = InlineKeyboardMarkup()
@@ -644,13 +647,15 @@ def _grid_capital() -> float:
 def _grid_recommend(capital: float, key: str) -> str:
     """Return recommended value for a grid setting based on capital tier."""
     if key == "grid_obi_buy":
-        return "0.70" if capital > 500 else "0.75" if capital > 200 else "0.82"
+        return "0.94" if capital > 500 else "0.95" if capital > 200 else "0.96"
     if key == "grid_obi_sell":
         return "1.30" if capital > 500 else "1.22" if capital > 200 else "1.18"
     if key == "grid_tp_pct":
         return "0.75" if capital > 500 else "0.5" if capital > 100 else "0.3"
     if key == "grid_cooldown_sec":
         return "900" if capital > 500 else "600" if capital > 200 else "300"
+    if key == "grid_price_dip_pct":
+        return "0.5" if capital > 500 else "0.4" if capital > 200 else "0.3"
     return ""
 
 
@@ -660,14 +665,14 @@ def set_grid_obi_buy(m):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     capital = _grid_capital()
-    current = get_setting("grid_obi_buy") or "0.82"
+    current = get_setting("grid_obi_buy") or "0.96"
     rec = _grid_recommend(capital, "grid_obi_buy")
 
     levels = [
-        ("🔴 0.70 — Whale panic", "0.70"),
-        ("🟠 0.75 — Strong bearish", "0.75"),
-        ("🟡 0.82 — Moderate bearish", "0.82"),
-        ("🟢 0.90 — Slight dip", "0.90"),
+        ("🟢 0.92 — Aggressive (more entries)", "0.92"),
+        ("🟡 0.94 — Balanced", "0.94"),
+        ("🟠 0.96 — Moderate (recommended)", "0.96"),
+        ("🔴 0.98 — Conservative (fewer entries)", "0.98"),
     ]
 
     markup = InlineKeyboardMarkup()
@@ -805,6 +810,44 @@ def set_grid_cooldown_sec(m):
         f"⏱️ Grid Cooldown — seconds between entries\n"
         f"💰 Capital: ${capital:.0f} → ⭐ {rec}s recommended\n"
         f"Current: {current}s", cid), reply_markup=markup)
+
+
+def set_grid_price_dip_pct(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    capital = _grid_capital()
+    current = get_setting("grid_price_dip_pct") or "0.4"
+    rec = _grid_recommend(capital, "grid_price_dip_pct")
+
+    levels = [
+        ("⚡ 0.2% — Aggressive", "0.2"),
+        ("🟡 0.3% — Active",     "0.3"),
+        ("🟠 0.4% — Moderate",   "0.4"),
+        ("🐢 0.6% — Conservative","0.6"),
+    ]
+
+    markup = InlineKeyboardMarkup()
+    for label, val in levels:
+        marks = []
+        if current == val:
+            marks.append("✅")
+        if val == rec:
+            marks.append("⭐")
+        prefix = " ".join(marks) + " " if marks else "   "
+        markup.add(InlineKeyboardButton(
+            f"{prefix}{label}",
+            callback_data=f"set_val:grid_price_dip_pct:{val}"
+        ))
+
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
+
+    bot.send_message(cid, translate(
+        f"📊 Grid Price Dip % — buy when price drops this far below recent peak\n"
+        f"💰 Capital: ${capital:.0f} → ⭐ {rec}% recommended\n"
+        f"Current: {current}%", cid), reply_markup=markup)
 
 
 def set_prompt(m):
@@ -1073,6 +1116,7 @@ def ListSettings(m):
         ("📈", "grid_obi_sell", "Grid OBI Sell"),
         ("🎯", "grid_tp_pct", "Grid TP"),
         ("⏱️", "grid_cooldown_sec", "Grid Cooldown"),
+        ("📊", "grid_price_dip_pct", "Grid Price Dip %"),
     ]
     has_grid = any(k in settings for _, k, _ in grid_keys)
     if has_grid:
@@ -1080,7 +1124,7 @@ def ListSettings(m):
         for emoji, key, label in grid_keys:
             if key in settings:
                 value = settings[key]
-                if key == "grid_tp_pct":
+                if key in ("grid_tp_pct", "grid_price_dip_pct"):
                     value = f"{value}%"
                 elif key == "grid_cooldown_sec":
                     value = f"{value}s"
