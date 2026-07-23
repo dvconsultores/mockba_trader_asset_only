@@ -60,7 +60,7 @@ GRID_OBI_SELL_THRESHOLD = _grid_setting("grid_obi_sell", "1.22")
 GRID_TP_PCT = _grid_setting("grid_tp_pct", "0.5")
 GRID_COOLDOWN_SEC = _grid_setting("grid_cooldown_sec", "300")
 GRID_PRICE_DIP_PCT = _grid_setting("grid_price_dip_pct", "0.4")  # buy when price dips this % below recent peak
-GRID_MAX_POSITIONS = int(os.getenv("GRID_MAX_POSITIONS", "1"))
+GRID_MAX_POSITIONS = int(_grid_setting("grid_max_positions", "1"))  # max concurrent open grid positions
 
 BINANCE_BASE_URL = "https://api.binance.com"
 

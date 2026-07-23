@@ -218,6 +218,7 @@ def callback_handler(call):
             "grid_tp_pct": set_grid_tp_pct,
             "grid_cooldown_sec": set_grid_cooldown_sec,
             "grid_price_dip_pct": set_grid_price_dip_pct,
+            "grid_max_positions": set_grid_max_positions,
             "show_prompt": set_show_prompt,
             "prompt_mode": set_prompt_mode,
         }
@@ -259,6 +260,7 @@ def callback_handler(call):
             'grid_tp_pct': set_grid_tp_pct,
             'grid_cooldown_sec': set_grid_cooldown_sec,
             'grid_price_dip_pct': set_grid_price_dip_pct,
+            'grid_max_positions': set_grid_max_positions,
             'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
@@ -304,6 +306,7 @@ def settings(m):
         "grid_tp_pct": "🎯 Grid TP %",
         "grid_cooldown_sec": "⏱️ Grid Cooldown",
         "grid_price_dip_pct": "📊 Grid Price Dip %",
+        "grid_max_positions": "📦 Grid Max Positions",
     }
 
     markup = InlineKeyboardMarkup()
@@ -656,6 +659,8 @@ def _grid_recommend(capital: float, key: str) -> str:
         return "900" if capital > 500 else "600" if capital > 200 else "300"
     if key == "grid_price_dip_pct":
         return "0.5" if capital > 500 else "0.4" if capital > 200 else "0.3"
+    if key == "grid_max_positions":
+        return "2" if capital > 500 else "2" if capital > 200 else "1"
     return ""
 
 
@@ -848,6 +853,44 @@ def set_grid_price_dip_pct(m):
         f"📊 Grid Price Dip % — buy when price drops this far below recent peak\n"
         f"💰 Capital: ${capital:.0f} → ⭐ {rec}% recommended\n"
         f"Current: {current}%", cid), reply_markup=markup)
+
+
+def set_grid_max_positions(m):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    capital = _grid_capital()
+    current = get_setting("grid_max_positions") or "1"
+    rec = _grid_recommend(capital, "grid_max_positions")
+
+    levels = [
+        ("1️⃣  1 — Single (safe)",     "1"),
+        ("2️⃣  2 — Double stack",      "2"),
+        ("3️⃣  3 — Triple stack",      "3"),
+        ("5️⃣  5 — Aggressive",        "5"),
+    ]
+
+    markup = InlineKeyboardMarkup()
+    for label, val in levels:
+        marks = []
+        if current == val:
+            marks.append("✅")
+        if val == rec:
+            marks.append("⭐")
+        prefix = " ".join(marks) + " " if marks else "   "
+        markup.add(InlineKeyboardButton(
+            f"{prefix}{label}",
+            callback_data=f"set_val:grid_max_positions:{val}"
+        ))
+
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
+               InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
+
+    bot.send_message(cid, translate(
+        f"📦 Grid Max Positions — concurrent buys allowed\n"
+        f"💰 Capital: ${capital:.0f} → ⭐ {rec} recommended\n"
+        f"Current: {current}", cid), reply_markup=markup)
 
 
 def set_prompt(m):
@@ -1117,6 +1160,7 @@ def ListSettings(m):
         ("🎯", "grid_tp_pct", "Grid TP"),
         ("⏱️", "grid_cooldown_sec", "Grid Cooldown"),
         ("📊", "grid_price_dip_pct", "Grid Price Dip %"),
+        ("📦", "grid_max_positions", "Grid Max Positions"),
     ]
     has_grid = any(k in settings for _, k, _ in grid_keys)
     if has_grid:

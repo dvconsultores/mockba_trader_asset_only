@@ -102,6 +102,7 @@ def initialize_database_tables():
             ('grid_tp_pct', '0.5'),
             ('grid_cooldown_sec', '300'),
             ('grid_price_dip_pct', '0.4'),  # % below recent peak to trigger price-dip buy
+            ('grid_max_positions', '1'),    # max concurrent open grid positions
         ]
         for key, value in default_settings:
             cur.execute("""
