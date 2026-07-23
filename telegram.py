@@ -693,13 +693,13 @@ def set_grid_obi_buy(m):
             callback_data=f"set_val:grid_obi_buy:{val}"
         ))
 
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Grid OBI Sell ➡️", cid), callback_data="grid_obi_sell"))
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"))
 
-    bot.send_message(cid, translate(
+    bot.edit_message_text(translate(
         f"📉 Grid OBI Buy — OBI below → BUY in RANGE\n"
         f"💰 Capital: ${capital:.0f} → ⭐ {rec} recommended\n"
-        f"Current: {current}", cid), reply_markup=markup)
+        f"Current: {current}", cid),
+        chat_id=cid, message_id=m.message_id, reply_markup=markup)
 
 
 def set_grid_obi_sell(m):
@@ -731,13 +731,13 @@ def set_grid_obi_sell(m):
             callback_data=f"set_val:grid_obi_sell:{val}"
         ))
 
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Grid TP % ➡️", cid), callback_data="grid_tp_pct"))
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"))
 
-    bot.send_message(cid, translate(
+    bot.edit_message_text(translate(
         f"📈 Grid OBI Sell — OBI above → signal in RANGE\n"
         f"💰 Capital: ${capital:.0f} → ⭐ {rec} recommended\n"
-        f"Current: {current}", cid), reply_markup=markup)
+        f"Current: {current}", cid),
+        chat_id=cid, message_id=m.message_id, reply_markup=markup)
 
 
 def set_grid_tp_pct(m):
@@ -770,13 +770,13 @@ def set_grid_tp_pct(m):
             callback_data=f"set_val:grid_tp_pct:{val}"
         ))
 
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Next: Grid Cooldown ➡️", cid), callback_data="grid_cooldown_sec"))
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"))
 
-    bot.send_message(cid, translate(
+    bot.edit_message_text(translate(
         f"🎯 Grid TP % — profit target above fill\n"
         f"💰 Capital: ${capital:.0f} → ⭐ {rec}% = ~${profit:.2f}/trade\n"
-        f"Current: {current}%", cid), reply_markup=markup)
+        f"Current: {current}%", cid),
+        chat_id=cid, message_id=m.message_id, reply_markup=markup)
 
 
 def set_grid_cooldown_sec(m):
@@ -808,13 +808,13 @@ def set_grid_cooldown_sec(m):
             callback_data=f"set_val:grid_cooldown_sec:{val}"
         ))
 
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"))
 
-    bot.send_message(cid, translate(
+    bot.edit_message_text(translate(
         f"⏱️ Grid Cooldown — seconds between entries\n"
         f"💰 Capital: ${capital:.0f} → ⭐ {rec}s recommended\n"
-        f"Current: {current}s", cid), reply_markup=markup)
+        f"Current: {current}s", cid),
+        chat_id=cid, message_id=m.message_id, reply_markup=markup)
 
 
 def set_grid_price_dip_pct(m):
@@ -846,13 +846,13 @@ def set_grid_price_dip_pct(m):
             callback_data=f"set_val:grid_price_dip_pct:{val}"
         ))
 
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"))
 
-    bot.send_message(cid, translate(
+    bot.edit_message_text(translate(
         f"📊 Grid Price Dip % — buy when price drops this far below recent peak\n"
         f"💰 Capital: ${capital:.0f} → ⭐ {rec}% recommended\n"
-        f"Current: {current}%", cid), reply_markup=markup)
+        f"Current: {current}%", cid),
+        chat_id=cid, message_id=m.message_id, reply_markup=markup)
 
 
 def set_grid_max_positions(m):
@@ -884,13 +884,13 @@ def set_grid_max_positions(m):
             callback_data=f"set_val:grid_max_positions:{val}"
         ))
 
-    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"),
-               InlineKeyboardButton(translate("Finish ✅", cid), callback_data="Settings"))
+    markup.add(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="Settings"))
 
-    bot.send_message(cid, translate(
+    bot.edit_message_text(translate(
         f"📦 Grid Max Positions — concurrent buys allowed\n"
         f"💰 Capital: ${capital:.0f} → ⭐ {rec} recommended\n"
-        f"Current: {current}", cid), reply_markup=markup)
+        f"Current: {current}", cid),
+        chat_id=cid, message_id=m.message_id, reply_markup=markup)
 
 
 def set_prompt(m):
