@@ -654,9 +654,9 @@ def _grid_recommend(capital: float, key: str) -> str:
     if key == "grid_obi_sell":
         return "1.30" if capital > 500 else "1.22" if capital > 200 else "1.18"
     if key == "grid_tp_pct":
-        return "0.75" if capital > 500 else "0.5" if capital > 100 else "0.3"
+        return "0.5" if capital > 500 else "0.3" if capital > 100 else "0.2"
     if key == "grid_cooldown_sec":
-        return "900" if capital > 500 else "600" if capital > 200 else "300"
+        return "120" if capital > 500 else "90" if capital > 200 else "60"
     if key == "grid_price_dip_pct":
         return "0.5" if capital > 500 else "0.4" if capital > 200 else "0.3"
     if key == "grid_max_positions":
@@ -751,10 +751,10 @@ def set_grid_tp_pct(m):
     profit = capital * float(rec) / 100
 
     levels = [
-        ("🟢 0.3% — Scalp",  "0.3"),
-        ("🟡 0.5% — Balanced", "0.5"),
-        ("🟠 0.75% — Swing",  "0.75"),
-        ("🔴 1.0% — Wide",   "1.0"),
+        ("⚡ 0.2% — Micro scalp", "0.2"),
+        ("🟢 0.3% — Scalp",       "0.3"),
+        ("🟡 0.5% — Balanced",    "0.5"),
+        ("🟠 0.75% — Swing",      "0.75"),
     ]
 
     markup = InlineKeyboardMarkup()
@@ -789,10 +789,10 @@ def set_grid_cooldown_sec(m):
     rec = _grid_recommend(capital, "grid_cooldown_sec")
 
     levels = [
-        ("⚡ 120s — Fast",   "120"),
-        ("🟡 300s — Normal",  "300"),
-        ("🟠 600s — Patient", "600"),
-        ("🐢 900s — Slow",   "900"),
+        ("🚀 60s — Aggressive",  "60"),
+        ("⚡ 90s — Fast",        "90"),
+        ("🟡 120s — Moderate",   "120"),
+        ("🟠 300s — Patient",    "300"),
     ]
 
     markup = InlineKeyboardMarkup()
