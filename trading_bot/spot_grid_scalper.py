@@ -61,6 +61,7 @@ GRID_TP_PCT = _grid_setting("grid_tp_pct", "0.5")
 GRID_COOLDOWN_SEC = _grid_setting("grid_cooldown_sec", "300")
 GRID_PRICE_DIP_PCT = _grid_setting("grid_price_dip_pct", "0.4")  # buy when price dips this % below recent peak
 GRID_MAX_POSITIONS = int(_grid_setting("grid_max_positions", "1"))  # max concurrent open grid positions
+GRID_POSITION_CAPITAL = float(_grid_setting("grid_position_capital", "15"))  # USDT per grid position
 
 BINANCE_BASE_URL = "https://api.binance.com"
 
@@ -150,7 +151,12 @@ def _place_tp_sell(binance_symbol: str, qty: float, tp_price: float, quote_tick:
 
 
 def _get_trade_amount() -> float:
-    """Get the configured trade amount for CEX spot (shared with reversal scalper)."""
+    """Get the configured trade amount for CEX spot grid scalper.
+    Prefers grid_position_capital; falls back to cex_capital; then full balance."""
+    # Prefer dedicated grid position capital
+    if GRID_POSITION_CAPITAL > 0:
+        return GRID_POSITION_CAPITAL
+
     try:
         configured = float(get_setting('cex_capital') or 0)
     except (TypeError, ValueError):
@@ -233,6 +239,16 @@ def grid_scalp_cycle(asset: str = "NEAR", regime: str = "RANGE", obi: float = 1.
 
     if len(_open_positions) >= GRID_MAX_POSITIONS:
         return None  # already at max positions
+
+    # ── Balance pre-check: ensure enough capital for another position ─────
+    balance = _get_binance_balance("USDT") or 0.0
+    required = (len(_open_positions) + 1) * _get_trade_amount()
+    if required > balance:
+        logger.info(
+            f"📉 Grid: insufficient balance for position #{len(_open_positions) + 1} "
+            f"(need ${required:.0f}, have ${balance:.0f})"
+        )
+        return None
 
     # ── Update price memory for dip detection ─────────────────────────────
     if live_price > 0:

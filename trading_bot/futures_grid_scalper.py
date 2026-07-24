@@ -59,6 +59,7 @@ GRID_COOLDOWN_SEC       = _grid_setting("grid_cooldown_sec", "300")
 GRID_PRICE_DIP_PCT      = _grid_setting("grid_price_dip_pct", "0.4")
 GRID_MAX_POSITIONS      = int(_grid_setting("grid_max_positions", "1"))
 GRID_SL_PCT             = _grid_setting("grid_sl_pct", "0.8")  # DEX-specific: SL percentage
+GRID_POSITION_CAPITAL   = float(_grid_setting("grid_position_capital", "15"))  # USDC per grid position
 
 # ── Leverage & capital ────────────────────────────────────────────────────────
 def _dex_leverage() -> int:
@@ -69,7 +70,12 @@ def _dex_leverage() -> int:
 
 
 def _dex_capital() -> float:
-    """Position size in USDC for DEX grid scalper."""
+    """Position size in USDC for DEX grid scalper.
+    Prefers grid_position_capital; falls back to dex_capital; then cex_capital."""
+    # Prefer dedicated grid position capital
+    if GRID_POSITION_CAPITAL > 0:
+        return GRID_POSITION_CAPITAL
+
     try:
         val = get_setting("dex_capital")
         if val is not None:
@@ -160,6 +166,20 @@ def futures_grid_scalp_cycle(asset: str = "PERP_NEAR_USDC", regime: str = "RANGE
     if open_count >= GRID_MAX_POSITIONS:
         return None  # already at max positions
 
+    # ── Balance pre-check: ensure enough free collateral for another position ─
+    from trading_bot.futures_executor_apolo import get_available_balance
+    free_collateral = get_available_balance()
+    capital = _dex_capital()
+    leverage = _dex_leverage()
+    margin_per_position = capital  # approx margin = capital at current leverage
+    required = (open_count + 1) * margin_per_position
+    if free_collateral is not None and required > free_collateral:
+        logger.info(
+            f"📉 DEX Grid: insufficient free collateral for position #{open_count + 1} "
+            f"(need ${required:.0f}, have ${free_collateral:.0f})"
+        )
+        return None
+
     # ── Update price memory for dip detection ─────────────────────────────
     if live_price > 0:
         _update_price_memory(live_price)
@@ -181,9 +201,6 @@ def futures_grid_scalp_cycle(asset: str = "PERP_NEAR_USDC", regime: str = "RANGE
         return None
 
     # ── Execute LONG with bracket order (SL + TP) ─────────────────────────
-    capital = _dex_capital()
-    leverage = _dex_leverage()
-
     if capital < 10:
         logger.info(f"📉 DEX Grid: insufficient capital (${capital:.0f})")
         return None

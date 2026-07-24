@@ -127,6 +127,7 @@ interface FreeDef { key: string; label: string; hint: string; suffix?: string; s
 const FREE_INPUTS: FreeDef[] = [
   { key: 'cex_capital', label: 'CEX Capital', hint: 'USDT per spot position', step: '1', min: '5' },
   { key: 'dex_capital', label: 'DEX Capital', hint: 'USDC per futures position', step: '1', min: '5' },
+  { key: 'grid_position_capital', label: 'Grid Pos. Capital', hint: 'USDT per grid scalp position', step: '1', min: '5' },
   { key: 'take_profit', label: 'Take Profit', hint: '% above entry (reversal scalper)', step: '0.1', min: '0.1', suffix: '%' },
   { key: 'ml_threshold', label: 'ML Threshold', hint: 'Gate score (0.01–1.00)', step: '0.01', min: '0.5', max: '1.0' },
 ]
@@ -171,8 +172,20 @@ function NumberField({ value, suffix, disabled, step, min, max, error, onChange 
 function ComboList({ label, value, options, onChange, disabled, onOpenChange }: { label: string; value: string; options: ComboOption[]; onChange: (v: string) => void; disabled?: boolean; onOpenChange?: (open: boolean) => void }) {
   const [open, setOpen] = useState(false)
   const [localValue, setLocalValue] = useState(value)
+  const localValueRef = useRef(localValue)
   const selected = options.find(o => o.value === localValue)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  // Keep ref in sync with localValue so commit always reads the latest
+  useEffect(() => {
+    localValueRef.current = localValue
+  }, [localValue])
+
+  // Sync localValue when value prop changes externally
+  useEffect(() => {
+    setLocalValue(value)
+    localValueRef.current = value
+  }, [value])
 
   const updateOpen = useCallback((next: boolean) => {
     setOpen(next)
@@ -185,10 +198,12 @@ function ComboList({ label, value, options, onChange, disabled, onOpenChange }: 
   }, [open])
 
   // Confirm only on close / explicit confirm to avoid reopen-closing loops.
+  // Uses ref to always read the latest localValue, avoiding stale closure issues.
   const commit = useCallback(() => {
     updateOpen(false)
-    if (localValue !== value) onChange(localValue)
-  }, [localValue, value, onChange, updateOpen])
+    const current = localValueRef.current
+    if (current !== value) onChange(current)
+  }, [value, onChange, updateOpen])
 
   // Close on backdrop tap without firing on the first pointer event that may be part of the open gesture.
   const backdropDown = useRef(false)
