@@ -61,7 +61,7 @@ export default function Signals() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex items-center gap-2 px-2 sm:px-3 py-2.5 bg-[#1a1528] border-b border-[#2a2240]">
+      <div className="flex items-center gap-2 px-4 sm:px-6 py-2.5 bg-[#1a1528] border-b border-[#2a2240]">
         <div className="relative flex-1">
           <Search size={18} className="absolute left-3 top-1/2 -translate-y-1/2 text-[#4a4060] pointer-events-none" />
           <input

@@ -20,7 +20,7 @@ export default function StatusBar({ status }: { status: BotStatus | null }) {
   }
 
   return (
-    <div className="h-full overflow-auto p-2 sm:p-4 font-mono text-[10px] sm:text-xs">
+    <div className="h-full overflow-auto px-4 sm:px-6 py-4 font-mono text-[10px] sm:text-xs">
       <h2 className="text-[#D0CFCC] text-sm font-bold mb-3 sm:mb-4">📡 Bot Status</h2>
 
       <div className="grid grid-cols-2 gap-2 sm:gap-4">
