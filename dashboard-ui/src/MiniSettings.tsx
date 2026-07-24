@@ -162,12 +162,28 @@ function NumberField({ value, suffix, disabled, step, min, max, error, onChange 
 
 function ComboList({ label, value, options, onChange, disabled }: { label: string; value: string; options: ComboOption[]; onChange: (v: string) => void; disabled?: boolean }) {
   const [open, setOpen] = useState(false)
-  const selected = options.find(o => o.value === value)
+  const [localValue, setLocalValue] = useState(value)
+  const selected = options.find(o => o.value === localValue)
+  const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (open) document.body.style.overflow = 'hidden'
     return () => { document.body.style.overflow = '' }
   }, [open])
+
+  // Confirm only on close / explicit confirm to avoid reopen-closing loops.
+  const commit = useCallback(() => {
+    setOpen(false)
+    if (localValue !== value) onChange(localValue)
+  }, [localValue, value, onChange])
+
+  // Prevent the backdrop from eating the first tap (common Telegram WebView behavior).
+  const handleBackdropPointerDown = useCallback((e: React.PointerEvent) => {
+    if (e.target === containerRef.current) {
+      e.preventDefault()
+      commit()
+    }
+  }, [commit])
 
   return (
     <>
@@ -185,8 +201,9 @@ function ComboList({ label, value, options, onChange, disabled }: { label: strin
 
       {open && (
         <div
+          ref={containerRef}
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70"
-          onClick={() => setOpen(false)}
+          onPointerDown={handleBackdropPointerDown}
         >
           <div
             className="w-full sm:w-[360px] max-w-full bg-[#1a1528] rounded-t-2xl sm:rounded-2xl border border-[#2a2240] shadow-2xl overflow-hidden"
@@ -196,7 +213,7 @@ function ComboList({ label, value, options, onChange, disabled }: { label: strin
               <span className="text-sm font-semibold text-[#D0CFCC]">{label}</span>
               <button
                 type="button"
-                onClick={() => setOpen(false)}
+                onClick={commit}
                 className="p-1 rounded-full text-[#7a7090] hover:bg-[#2a2240] hover:text-[#D0CFCC] transition-colors"
               >
                 <X size={18} />
@@ -204,12 +221,12 @@ function ComboList({ label, value, options, onChange, disabled }: { label: strin
             </div>
             <div className="max-h-[55vh] overflow-y-auto">
               {options.map((opt) => {
-                const active = value === opt.value
+                const active = localValue === opt.value
                 return (
                   <button
                     key={opt.value}
                     type="button"
-                    onClick={() => { onChange(opt.value); setOpen(false) }}
+                    onClick={() => setLocalValue(opt.value)}
                     className={`w-full flex items-center justify-between px-4 py-3 text-left text-sm border-b border-[#2a2240]/50 last:border-0 transition-colors
                       ${active ? 'bg-[#2a2240] text-[#D0CFCC]' : 'text-[#D0CFCC] hover:bg-[#2a2240]/60'}`}
                   >
