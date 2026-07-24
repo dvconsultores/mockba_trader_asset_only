@@ -2106,9 +2106,11 @@ def autotrade():
                                 grid_entered = True
                         except ImportError as e:
                             logger.warning(f"Grid scalper not available: {e}")
+                        if not grid_entered:
+                            logger.info(f"📊 RANGE: no grid entry (OBI/dip not met) — skipping reversal, grid-only in sideways")
 
-                    # ── Reversal scalper (pattern + ML gate, all regimes) ───
-                    if not grid_entered:
+                    # ── Reversal scalper (pattern + ML gate, non-RANGE only) ───
+                    if regime != "RANGE":
                         cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
                         if cex_result.get("approved"):
                             ml_score = cex_result.get('ml_score')
