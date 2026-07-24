@@ -140,6 +140,94 @@ const SELECTS: SelectDef[] = [
 
 type ComboOption = { label: string; value: string; recommended?: boolean }
 
+function NumberField({ value, suffix, disabled, step, min, max, error, onChange }: { value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string; error?: boolean; onChange: (v: string) => void }) {
+  return (
+    <div className="flex items-center gap-2 w-full">
+      <input
+        type="number"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        disabled={disabled}
+        step={step ?? 'any'}
+        min={min}
+        max={max}
+        className={`flex-1 min-w-0 px-3 py-2.5 text-sm text-left bg-[#171421] border rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] disabled:opacity-50 transition-colors
+          ${error ? 'border-red-500' : 'border-[#2a2240]'}`}
+      />
+      {suffix && <span className="text-xs text-[#7a7090] w-5 text-right shrink-0">{suffix}</span>}
+    </div>
+  )
+}
+
+function ComboList({ label, value, options, onChange, disabled }: { label: string; value: string; options: ComboOption[]; onChange: (v: string) => void; disabled?: boolean }) {
+  const [open, setOpen] = useState(false)
+  const selected = options.find(o => o.value === value)
+
+  useEffect(() => {
+    if (open) document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = '' }
+  }, [open])
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => !disabled && setOpen(true)}
+        disabled={disabled}
+        className={`flex items-center justify-between w-full px-3 py-2.5 text-sm border rounded-lg transition-colors
+          ${selected ? 'text-[#D0CFCC] bg-[#171421] border-[#2a2240]' : 'text-[#4a4060] bg-[#171421]/50 border-[#2a2240]'}
+          ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#7a7090]'}`}
+      >
+        <span className="truncate">{selected?.label ?? 'Select…'}</span>
+        <ChevronDown size={16} className="text-[#7a7090] shrink-0 ml-1.5" />
+      </button>
+
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="w-full sm:w-[360px] max-w-full bg-[#1a1528] rounded-t-2xl sm:rounded-2xl border border-[#2a2240] shadow-2xl overflow-hidden"
+            onClick={e => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2240] bg-[#171421]">
+              <span className="text-sm font-semibold text-[#D0CFCC]">{label}</span>
+              <button
+                type="button"
+                onClick={() => setOpen(false)}
+                className="p-1 rounded-full text-[#7a7090] hover:bg-[#2a2240] hover:text-[#D0CFCC] transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="max-h-[55vh] overflow-y-auto">
+              {options.map((opt) => {
+                const active = value === opt.value
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => { onChange(opt.value); setOpen(false) }}
+                    className={`w-full flex items-center justify-between px-4 py-3 text-left text-sm border-b border-[#2a2240]/50 last:border-0 transition-colors
+                      ${active ? 'bg-[#2a2240] text-[#D0CFCC]' : 'text-[#D0CFCC] hover:bg-[#2a2240]/60'}`}
+                  >
+                    <span className="flex items-center gap-2">
+                      {opt.recommended && <Star size={12} className="text-yellow-500 shrink-0" />}
+                      {opt.label}
+                    </span>
+                    {active && <Check size={18} className="text-green-600 shrink-0" />}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 export default function MiniSettings() {
   const [settings, setSettings] = useState<SettingsData>({})
   const [saving, setSaving] = useState<Set<string>>(new Set())
@@ -188,10 +276,10 @@ export default function MiniSettings() {
   }, [saveSetting])
 
   const StatusIcon = ({ k }: { k: string }) => {
-    if (saving.has(k)) return <Save size={12} className="text-yellow-500 animate-pulse" />
-    if (errors.has(k)) return <AlertCircle size={12} className="text-red-500" />
-    if (settings[k]) return <Check size={12} className="text-green-600" />
-    return <span className="w-3 h-3" />
+    if (saving.has(k)) return <Save size={14} className="text-yellow-500 animate-pulse" />
+    if (errors.has(k)) return <AlertCircle size={14} className="text-red-500" />
+    if (settings[k]) return <Check size={14} className="text-green-600" />
+    return <span className="w-3.5 h-3.5" />
   }
 
   const Section = ({ title, children }: { title: string; children: ReactNode }) => (
@@ -204,99 +292,15 @@ export default function MiniSettings() {
   )
 
   const SettingRow = ({ label, hint, statusKey, children }: { label: string; hint: string; statusKey: string; children: ReactNode }) => (
-    <div className="grid grid-cols-[1fr_140px_20px] sm:grid-cols-[1fr_168px_20px] items-center gap-2 px-3 py-3 hover:bg-[#171421]/30 transition-colors">
-      <div className="min-w-0">
-        <div className="text-xs font-medium text-[#D0CFCC] truncate">{label}</div>
-        <div className="text-[10px] text-[#7a7090] truncate">{hint}</div>
+    <div className="px-3 py-3 hover:bg-[#171421]/30 transition-colors">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-[#D0CFCC]">{label}</div>
+          <div className="text-[10px] text-[#7a7090] leading-tight">{hint}</div>
+        </div>
+        <div className="shrink-0 pt-0.5"><StatusIcon k={statusKey} /></div>
       </div>
-      <div className="flex justify-end">{children}</div>
-      <div className="flex justify-center"><StatusIcon k={statusKey} /></div>
-    </div>
-  )
-
-  const ComboList = ({ label, value, options, onChange, disabled }: { label: string; value: string; options: ComboOption[]; onChange: (v: string) => void; disabled?: boolean }) => {
-    const [open, setOpen] = useState(false)
-    const selected = options.find(o => o.value === value)
-
-    useEffect(() => {
-      if (open) document.body.style.overflow = 'hidden'
-      return () => { document.body.style.overflow = '' }
-    }, [open])
-
-    return (
-      <>
-        <button
-          type="button"
-          onClick={() => !disabled && setOpen(true)}
-          disabled={disabled}
-          className={`flex items-center justify-between w-full px-2.5 py-1.5 text-sm border rounded-lg transition-colors
-            ${selected ? 'text-[#D0CFCC] bg-[#171421] border-[#2a2240]' : 'text-[#4a4060] bg-[#171421]/50 border-[#2a2240]'}
-            ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#7a7090]'}`}
-        >
-          <span className="truncate">{selected?.label ?? 'Select…'}</span>
-          <ChevronDown size={16} className="text-[#7a7090] shrink-0 ml-1.5" />
-        </button>
-
-        {open && (
-          <div
-            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70"
-            onClick={() => setOpen(false)}
-          >
-            <div
-              className="w-full sm:w-[360px] max-w-full bg-[#1a1528] rounded-t-2xl sm:rounded-2xl border border-[#2a2240] shadow-2xl overflow-hidden"
-              onClick={e => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2240] bg-[#171421]">
-                <span className="text-sm font-semibold text-[#D0CFCC]">{label}</span>
-                <button
-                  type="button"
-                  onClick={() => setOpen(false)}
-                  className="p-1 rounded-full text-[#7a7090] hover:bg-[#2a2240] hover:text-[#D0CFCC] transition-colors"
-                >
-                  <X size={18} />
-                </button>
-              </div>
-              <div className="max-h-[55vh] overflow-y-auto">
-                {options.map((opt) => {
-                  const active = value === opt.value
-                  return (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      onClick={() => { onChange(opt.value); setOpen(false) }}
-                      className={`w-full flex items-center justify-between px-4 py-3 text-left text-sm border-b border-[#2a2240]/50 last:border-0 transition-colors
-                        ${active ? 'bg-[#2a2240] text-[#D0CFCC]' : 'text-[#D0CFCC] hover:bg-[#2a2240]/60'}`}
-                    >
-                      <span className="flex items-center gap-2">
-                        {opt.recommended && <Star size={12} className="text-yellow-500 shrink-0" />}
-                        {opt.label}
-                      </span>
-                      {active && <Check size={18} className="text-green-600 shrink-0" />}
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          </div>
-        )}
-      </>
-    )
-  }
-
-  const NumberField = ({ value, suffix, disabled, step, min, max, error, onChange }: { value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string; error?: boolean; onChange: (v: string) => void }) => (
-    <div className="flex items-center gap-1.5 w-full">
-      <input
-        type="number"
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        disabled={disabled}
-        step={step ?? 'any'}
-        min={min}
-        max={max}
-        className={`flex-1 min-w-0 px-2 py-1.5 text-sm text-right bg-[#171421] border rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] disabled:opacity-50 transition-colors
-          ${error ? 'border-red-500' : 'border-[#2a2240]'}`}
-      />
-      {suffix && <span className="text-[10px] text-[#7a7090] w-4 text-right shrink-0">{suffix}</span>}
+      {children}
     </div>
   )
 
