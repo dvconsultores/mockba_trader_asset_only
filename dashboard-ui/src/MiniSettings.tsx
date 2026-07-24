@@ -369,7 +369,7 @@ function MiniSettingsComponent() {
         </div>
       )}
     </div>
-  )}
+  )
 
   if (!loaded) {
     return (
