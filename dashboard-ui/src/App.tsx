@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { TerminalSquare, BarChart3, Bot, Radio, Settings2, MoreHorizontal, X } from 'lucide-react'
+import { TerminalSquare, BarChart3, Bot, Radio, Settings2, MoreHorizontal } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import Terminal from './Terminal'
 import Signals from './Signals'
@@ -49,39 +49,51 @@ export default function App() {
   }, [moreOpen])
 
   // Telegram BackButton: navigate back through tabs instead of closing Mini App
+  // When on Live tab (home): no custom handler → Telegram shows native close button
+  // with its built-in "Close Mini App?" confirmation dialog.
+  const backHandlerRef = useRef<(() => void) | null>(null)
+
   useEffect(() => {
     if (!isTelegram || !TG?.BackButton) return
 
     const backBtn = TG.BackButton
     const mainTabIds: Tab[] = ['live', 'signals', 'ml']
+    const isHome = tab === 'live' && !moreOpen
 
-    const onClick = () => {
-      if (moreOpen) {
-        setMoreOpen(false)
-        return
-      }
-      if (tab === 'status' || tab === 'settings') {
-        setTab('live')
-        return
-      }
-      const idx = mainTabIds.indexOf(tab)
-      if (idx > 0) {
-        setTab(mainTabIds[idx - 1])
-      }
-      // Live tab (home): no handler → Telegram's default back behavior (close with confirmation)
+    // Remove previous handler if any
+    if (backHandlerRef.current) {
+      backBtn.offClick(backHandlerRef.current)
+      backHandlerRef.current = null
     }
 
-    // On Live tab, remove our handler so Telegram's default close-with-confirmation works
-    if (tab === 'live' && !moreOpen) {
-      backBtn.offClick(onClick)
-      backBtn.show()
-    } else {
+    // Only register custom handler when NOT on home tab
+    // Home tab uses Telegram's default back behavior (close with confirmation)
+    if (!isHome) {
+      const onClick = () => {
+        if (moreOpen) {
+          setMoreOpen(false)
+          return
+        }
+        if (tab === 'status' || tab === 'settings') {
+          setTab('live')
+          return
+        }
+        const idx = mainTabIds.indexOf(tab)
+        if (idx > 0) {
+          setTab(mainTabIds[idx - 1])
+        }
+      }
       backBtn.onClick(onClick)
-      backBtn.show()
+      backHandlerRef.current = onClick
     }
+
+    backBtn.show()
+
     return () => {
-      backBtn.offClick(onClick)
-      backBtn.hide()
+      if (backHandlerRef.current) {
+        backBtn.offClick(backHandlerRef.current)
+        backHandlerRef.current = null
+      }
     }
   }, [tab, moreOpen])
 
@@ -152,17 +164,6 @@ export default function App() {
                 </span>
               )}
             </>
-          )}
-          {isTelegram && tab === 'live' && (
-            <button
-              type="button"
-              onClick={() => TG?.close?.()}
-              className="ml-1 inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-[#2a2240] text-[#D0CFCC] hover:bg-[#2a2240] transition-colors"
-              aria-label="Close mini app"
-            >
-              <X size={14} />
-              <span>Close</span>
-            </button>
           )}
         </div>
       </div>
