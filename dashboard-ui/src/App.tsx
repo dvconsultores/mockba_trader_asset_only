@@ -97,35 +97,6 @@ export default function App() {
     }
   }, [tab, moreOpen])
 
-  // Pull-to-refresh: reload the app when pulling down at the top of the page
-  useEffect(() => {
-    if (!isTelegram) return
-
-    let startY = 0
-    let refreshing = false
-
-    const onTouchStart = (e: TouchEvent) => {
-      startY = e.touches[0]?.clientY ?? 0
-    }
-
-    const onTouchMove = (e: TouchEvent) => {
-      if (refreshing) return
-      const y = e.touches[0]?.clientY ?? 0
-      const scrollTop = document.documentElement.scrollTop || document.body.scrollTop
-      if (scrollTop <= 0 && y - startY > 120) {
-        refreshing = true
-        window.location.reload()
-      }
-    }
-
-    document.addEventListener('touchstart', onTouchStart, { passive: true })
-    document.addEventListener('touchmove', onTouchMove, { passive: true })
-    return () => {
-      document.removeEventListener('touchstart', onTouchStart)
-      document.removeEventListener('touchmove', onTouchMove)
-    }
-  }, [])
-
   const mainTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'live', label: 'Live', icon: TerminalSquare },
     { id: 'signals', label: 'Signals', icon: BarChart3 },

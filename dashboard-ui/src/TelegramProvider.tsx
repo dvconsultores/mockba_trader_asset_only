@@ -37,10 +37,27 @@ export function TelegramProvider({ children }: { children: ReactNode }) {
       // Older clients may not support these methods
     }
 
-    setReady(true)
+    // Small delay to ensure WebApp is fully initialized before showing back button
+    setTimeout(() => setReady(true), 50)
   }, [])
+
+  // Show back button by default (Telegram native close on home tab)
+  useEffect(() => {
+    if (!ready || !TG?.BackButton) return
+    TG.BackButton.show()
+  }, [ready])
 
   return <>{children}</>
 }
 
 export { TG }
+export function useTelegramReady() {
+  // Simple hook so App.tsx can wait for Telegram init
+  const [tgReady, setTgReady] = useState(isTelegram)
+  useEffect(() => {
+    if (isTelegram) {
+      setTgReady(true)
+    }
+  }, [])
+  return tgReady
+}
