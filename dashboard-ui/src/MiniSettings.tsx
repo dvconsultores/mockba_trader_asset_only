@@ -5,6 +5,8 @@ interface SettingsData { [key: string]: string }
 
 const TG = (window as any).TelegramWebApp ?? (window as any).Telegram?.WebApp
 const isTelegram = !!TG?.initData
+let browserSessionChecked = false
+let browserSessionValid = false
 
 // ── Preset options (mirrors telegram bot grid setters) ──────────
 interface PresetDef {
@@ -135,7 +137,6 @@ interface SelectDef { key: string; label: string; hint: string; options: string[
 const SELECTS: SelectDef[] = [
   { key: 'auto_trade_dex', label: 'DEX Mode', hint: 'Orderly futures', options: ['False', 'Signal', 'Automatic'] },
   { key: 'auto_trade_cex', label: 'CEX Mode', hint: 'Binance spot', options: ['False', 'Signal', 'Automatic'] },
-  { key: 'exchange', label: 'Exchange', hint: 'Default for manual signal', options: ['dex', 'cex'] },
 ]
 
 type ComboOption = { label: string; value: string; recommended?: boolean }
@@ -233,6 +234,7 @@ export default function MiniSettings() {
   const [saving, setSaving] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Set<string>>(new Set())
   const [loaded, setLoaded] = useState(false)
+  const [editable, setEditable] = useState(isTelegram)
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   const capital = parseFloat(settings.cex_capital || settings.capital_usage || '10')
 
@@ -245,6 +247,14 @@ export default function MiniSettings() {
       })
       .catch(() => setLoaded(true))
     if (TG) { TG.ready(); TG.expand() }
+  }, [])
+
+  useEffect(() => {
+    if (isTelegram || browserSessionChecked) return
+    browserSessionChecked = true
+    fetch('/api/miniapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: '__ping__', value: '' }) })
+      .then(r => { browserSessionValid = r.ok; setEditable(r.ok) })
+      .catch(() => setEditable(false))
   }, [])
 
   const saveSetting = useCallback(async (key: string, value: string) => {
@@ -320,11 +330,11 @@ export default function MiniSettings() {
         <div>
           <h1 className="text-base sm:text-lg font-bold text-[#D0CFCC]">⚙️ Settings</h1>
           <p className="text-xs text-[#7a7090] mt-0.5">
-            {isTelegram ? 'Tap a value to change it' : 'Read-only outside Telegram'}
+            {editable ? 'Tap a value to change it' : 'Read-only outside Telegram'}
           </p>
         </div>
-        <span className={`text-[10px] px-2.5 py-1 rounded-full border ${isTelegram ? 'text-[#D0CFCC] border-[#D0CFCC]/20 bg-[#D0CFCC]/10' : 'text-[#4a4060] border-[#2a2240] bg-[#1a1528]'}`}>
-          {isTelegram ? '⚡ auto-save' : 'read-only'}
+        <span className={`text-[10px] px-2.5 py-1 rounded-full border ${editable ? 'text-[#D0CFCC] border-[#D0CFCC]/20 bg-[#D0CFCC]/10' : 'text-[#4a4060] border-[#2a2240] bg-[#1a1528]'}`}>
+          {editable ? '⚡ auto-save' : 'read-only'}
         </span>
       </div>
 
@@ -340,7 +350,7 @@ export default function MiniSettings() {
                 value={val}
                 options={p.options.map(o => ({ ...o, recommended: o.value === rec }))}
                 onChange={v => selectAndSave(p.key, v)}
-                disabled={!isTelegram}
+                disabled={!editable}
               />
             </SettingRow>
           )
@@ -357,7 +367,7 @@ export default function MiniSettings() {
               step={f.step}
               min={f.min}
               max={f.max}
-              disabled={!isTelegram}
+              disabled={!editable}
               error={errors.has(f.key)}
               onChange={v => debouncedSave(f.key, v)}
             />
@@ -374,14 +384,14 @@ export default function MiniSettings() {
               value={settings[s.key] ?? ''}
               options={s.options.map(o => ({ label: o, value: o }))}
               onChange={v => selectAndSave(s.key, v)}
-              disabled={!isTelegram}
+              disabled={!editable}
             />
           </SettingRow>
         ))}
       </Section>
 
       <div className="text-center text-[10px] text-[#4a4060] pb-6">
-        {isTelegram ? 'Changes save automatically on selection or after typing' : 'Open via Telegram bot to edit'}
+        {editable ? 'Changes save automatically on selection or after typing' : 'Open via Telegram bot to edit'}
       </div>
     </div>
   )

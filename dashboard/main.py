@@ -323,7 +323,7 @@ def health():
 
 # ── Telegram Mini App: Auth ─────────────────────────────────────
 BOT_TOKEN = os.getenv("API_TOKEN", os.getenv("BOT_TOKEN", ""))
-AUTHORIZED_CHAT_ID = 556159355
+AUTHORIZED_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "556159355"))
 
 
 def _validate_telegram_init_data(init_data: str) -> bool:
@@ -347,6 +347,62 @@ def _validate_telegram_init_data(init_data: str) -> bool:
         return computed_hash == received_hash
     except Exception:
         return False
+
+
+async def _validate_admin_session(request: Request) -> bool:
+    """Validate browser admin session via signed cookie.
+
+    Simple signed-cookie scheme using BOT_TOKEN as secret. Cookie value is
+    'AUTHORIZED_CHAT_ID:sha256(BOT_TOKEN:timestamp):timestamp'. Valid for 24h.
+    """
+    if not BOT_TOKEN:
+        return False
+    cookie = request.cookies.get("mockba_session", "")
+    if not cookie or ":" not in cookie:
+        return False
+    try:
+        user_part, sig, ts_str = cookie.rsplit(":", 2)
+        ts = int(ts_str)
+    except ValueError:
+        return False
+    if time.time() - ts > 86400:
+        return False
+    expected = hmac.new(BOT_TOKEN.encode(), f"{user_part}:{ts_str}".encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        return False
+    return user_part == str(AUTHORIZED_CHAT_ID)
+
+
+@app.post("/api/admin/login")
+async def api_admin_login(request: Request):
+    """Issue a signed session cookie after verifying Telegram initData once."""
+    init_data = request.headers.get("X-Telegram-InitData", "")
+    if not _validate_telegram_init_data(init_data):
+        raise HTTPException(status_code=403, detail="Invalid Telegram auth")
+    try:
+        parsed = parse_qs(init_data)
+        user_json = parsed.get("user", [None])[0]
+        user = json.loads(unquote(user_json)) if user_json else {}
+        if user.get("id") != AUTHORIZED_CHAT_ID:
+            raise HTTPException(status_code=403, detail="Unauthorized user")
+    except (json.JSONDecodeError, Exception):
+        raise HTTPException(status_code=403, detail="Cannot parse user data")
+
+    ts = int(time.time())
+    sig = hmac.new(BOT_TOKEN.encode(), f"{AUTHORIZED_CHAT_ID}:{ts}".encode(), hashlib.sha256).hexdigest()
+    response = {"ok": True}
+    from starlette.responses import JSONResponse
+    resp = JSONResponse(response)
+    resp.set_cookie(
+        key="mockba_session",
+        value=f"{AUTHORIZED_CHAT_ID}:{sig}:{ts}",
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=86400,
+        path="/"
+    )
+    return resp
 
 
 def _get_db_rw() -> sqlite3.Connection:
@@ -373,28 +429,43 @@ async def api_miniapp_get(request: Request):
 # ── Mini App: Update a setting ───────────────────────────────────
 @app.post("/api/miniapp")
 async def api_miniapp_update(request: Request):
-    """Update a single setting. Requires valid Telegram initData + authorized user."""
-    init_data = request.headers.get("X-Telegram-InitData", "")
-    if not _validate_telegram_init_data(init_data):
-        raise HTTPException(status_code=403, detail="Invalid Telegram auth")
-
-    # Extract user ID from initData
-    try:
-        parsed = parse_qs(init_data)
-        user_json = parsed.get("user", [None])[0]
-        if user_json:
-            user = json.loads(unquote(user_json))
-            if user.get("id") != AUTHORIZED_CHAT_ID:
-                raise HTTPException(status_code=403, detail="Unauthorized user")
-    except (json.JSONDecodeError, Exception):
-        raise HTTPException(status_code=403, detail="Cannot parse user data")
-
+    """Update a single setting. Requires Telegram initData or a valid admin session."""
     body = await request.json()
     key = body.get("key", "").strip()
     value = str(body.get("value", "")).strip()
 
     if not key:
         raise HTTPException(status_code=400, detail="Missing key")
+
+    if key == "__ping__":
+        # Browser session probe: no DB write, just auth check.
+        init_data = request.headers.get("X-Telegram-InitData", "")
+        valid = False
+        if init_data:
+            valid = _validate_telegram_init_data(init_data)
+        if not valid:
+            valid = await _validate_admin_session(request)
+        if not valid:
+            raise HTTPException(status_code=403, detail="Invalid auth")
+        return {"ok": True}
+
+    init_data = request.headers.get("X-Telegram-InitData", "")
+    telegram_ok = False
+    if init_data:
+        telegram_ok = _validate_telegram_init_data(init_data)
+        if telegram_ok:
+            try:
+                parsed = parse_qs(init_data)
+                user_json = parsed.get("user", [None])[0]
+                if user_json:
+                    user = json.loads(unquote(user_json))
+                    if user.get("id") != AUTHORIZED_CHAT_ID:
+                        telegram_ok = False
+            except (json.JSONDecodeError, Exception):
+                telegram_ok = False
+
+    if not telegram_ok and not await _validate_admin_session(request):
+        raise HTTPException(status_code=403, detail="Invalid auth")
 
     try:
         db = _get_db_rw()
