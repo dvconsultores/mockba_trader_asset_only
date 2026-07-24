@@ -93,7 +93,7 @@ export default function MLMonitor() {
       </div>
 
       {/* Recent Scores */}
-      <div className="mb-4">
+      <div className="mb-4 -mx-4 sm:-mx-6 px-4 sm:px-6">
         <h3 className="text-[#4a4060] mb-2">Recent ML Scores</h3>
         <div className="flex flex-wrap gap-1">
           {recentNewestFirst.map((score, i) => {
@@ -115,7 +115,7 @@ export default function MLMonitor() {
       </div>
 
       {/* Decision Breakdown */}
-      <div>
+      <div className="-mx-4 sm:-mx-6 px-4 sm:px-6">
         <h3 className="text-[#4a4060] mb-2">ML Decision Breakdown</h3>
         <div className="flex gap-4">
           <div className="bg-[#1a1528] border border-[#D0CFCC]/20 p-3 flex-1">

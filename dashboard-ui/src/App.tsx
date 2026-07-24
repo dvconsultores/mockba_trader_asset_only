@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { TerminalSquare, BarChart3, Bot, Radio, Settings2, MoreHorizontal } from 'lucide-react'
+import { TerminalSquare, BarChart3, Bot, Radio, Settings2, MoreHorizontal, X } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import Terminal from './Terminal'
 import Signals from './Signals'
@@ -152,6 +152,17 @@ export default function App() {
                 </span>
               )}
             </>
+          )}
+          {isTelegram && tab === 'live' && (
+            <button
+              type="button"
+              onClick={() => TG?.close?.()}
+              className="ml-1 inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-[#2a2240] text-[#D0CFCC] hover:bg-[#2a2240] transition-colors"
+              aria-label="Close mini app"
+            >
+              <X size={14} />
+              <span>Close</span>
+            </button>
           )}
         </div>
       </div>
