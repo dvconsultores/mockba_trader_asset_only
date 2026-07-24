@@ -1,12 +1,13 @@
 import { useState, useEffect } from 'react'
-import { TerminalSquare, BarChart3, Bot, Radio } from 'lucide-react'
+import { TerminalSquare, BarChart3, Bot, Radio, Settings2 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import Terminal from './Terminal'
 import Signals from './Signals'
 import MLMonitor from './MLMonitor'
 import StatusBar from './StatusBar'
+import MiniSettings from './MiniSettings'
 
-type Tab = 'live' | 'signals' | 'ml' | 'status'
+type Tab = 'live' | 'signals' | 'ml' | 'status' | 'settings'
 
 interface BotStatus {
   uptime_seconds: number
@@ -38,6 +39,7 @@ export default function App() {
     { id: 'signals', label: 'Signals', icon: BarChart3 },
     { id: 'ml', label: 'ML', icon: Bot },
     { id: 'status', label: 'Status', icon: Radio },
+    { id: 'settings', label: 'Settings', icon: Settings2 },
   ]
 
   return (
@@ -77,6 +79,7 @@ export default function App() {
         {tab === 'signals' && <Signals />}
         {tab === 'ml' && <MLMonitor />}
         {tab === 'status' && <StatusBar status={status} />}
+        {tab === 'settings' && <MiniSettings />}
       </div>
 
       {/* Bottom tab bar (native app style) */}

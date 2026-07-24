@@ -3,13 +3,13 @@ Spot Grid Scalper — Binance spot mean-reversion strategy for RANGE regimes.
 
 Rules:
 - Only active when regime = RANGE
-- OBI < GRID_OBI_BUY_THRESHOLD  → LIMIT BUY at bid (maker)
-- OBI > GRID_OBI_SELL_THRESHOLD → LIMIT SELL at ask (maker), if holding
+- Price dip ≥ GRID_PRICE_DIP_PCT AND OBI < GRID_OBI_BUY_THRESHOLD → LIMIT BUY
 - Fixed TP at GRID_TP_PCT above fill price
-- Cooldown between same-direction entries
+- Cooldown between entries
+- Multiple concurrent positions supported (GRID_MAX_POSITIONS)
 - Uses cex_capital setting for position sizing (shared with reversal scalper)
 
-No ML gate, no LLM gate — edge is statistical (OBI extremes snap back in ranges).
+No ML gate, no LLM gate — edge is statistical (dips snap back, OBI confirms).
 """
 
 import os
@@ -302,21 +302,12 @@ def grid_scalp_cycle(asset: str = "NEAR", regime: str = "RANGE", obi: float = 1.
                     f"   Peak: ${_peak_price:.4f} | OBI: {obi:.3f}")
         return "buy"
 
-    # ── Entry path 1: Price dip (price dropped below recent peak) ─────────
-    if _is_price_dip(live_price) and (now - _last_buy_at) > GRID_COOLDOWN_SEC:
+    # ── Entry: Price dip AND OBI bearish confirmation ────────────────────
+    # Both must be true: price dipped below peak AND order book shows bearish tilt
+    if (_is_price_dip(live_price) and obi < GRID_OBI_BUY_THRESHOLD
+            and (now - _last_buy_at) > GRID_COOLDOWN_SEC):
         dip_pct = (_peak_price - live_price) / _peak_price * 100
-        logger.info(f"📉 Grid: price dip {dip_pct:.2f}% from peak ${_peak_price:.4f}")
-        return _execute_buy(f"dip {dip_pct:.1f}%")
-
-    # ── Entry path 2: OBI extreme (bearish order book imbalance) ──────────
-    if obi < GRID_OBI_BUY_THRESHOLD and (now - _last_buy_at) > GRID_COOLDOWN_SEC:
-        logger.info(f"📉 Grid: OBI={obi:.3f} < {GRID_OBI_BUY_THRESHOLD}")
-        return _execute_buy(f"OBI {obi:.3f}")
-
-    elif obi > GRID_OBI_SELL_THRESHOLD and _open_positions and (now - _last_sell_at) > GRID_COOLDOWN_SEC:
-        # Bullish extreme + we hold → could sell, but TP orders already handle this.
-        # The grid scalper doesn't actively sell; it lets TP orders fill.
-        # This branch is a safety valve: if no TP order exists, sell at market.
-        pass
+        logger.info(f"📉 Grid: dip {dip_pct:.2f}% + OBI={obi:.3f} < {GRID_OBI_BUY_THRESHOLD} → BUY")
+        return _execute_buy(f"dip {dip_pct:.1f}% OBI {obi:.3f}")
 
     return None

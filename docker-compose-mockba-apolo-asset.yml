@@ -7,6 +7,8 @@ services:
       - "com.centurylinklabs.watchtower.enable=true"
     env_file:
       - .env
+    environment:
+      - MINI_APP_URL=${MINI_APP_URL:-}
     volumes:
       - ./.env:/app/.env
       - ./data:/app/data
@@ -27,6 +29,8 @@ services:
       - DB_PATH=/app/data/trading.db
       - LOG_PATH=/app/logs/apolo.log
       - MODEL_PATH=/app/data/signal_model.json
+      - API_TOKEN=${API_TOKEN}
+      - BOT_TOKEN=${API_TOKEN}
 
   dashboard-ui:
     image: andresdom2004/mockba-dashboard-ui:latest

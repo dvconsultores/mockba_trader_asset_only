@@ -1908,34 +1908,7 @@ class ReversalScalper:
         else:
             display_lines.append("\n🤖 ML Gate: model not available — skipping")
 
-        # === STEP 9.5: LLM GATE (always active second opinion) ===
-        if result['approved']:
-            llm_decision, llm_reason = _evaluate_llm_gate(
-                signal_summary=result.get('resume_of_analysis', ''),
-                ml_score=ml_score,
-                exchange=exchange,
-            )
-            if llm_decision == "approved":
-                display_lines.append(f"🧠 LLM Gate: APPROVED ✅ — {llm_reason}")
-            elif llm_decision == "rejected":
-                display_lines.append(f"🧠 LLM Gate: REJECTED ❌ — {llm_reason}")
-                if _get_exchange_mode(exchange) == "Automatic":
-                    result['approved'] = False
-                    result['rejection_reasons'].append(f"LLM gate: {llm_reason}")
-                    display_lines.append("  ⛔ Automatic mode — trade BLOCKED by LLM gate")
-                    # Notify via Telegram so user can review the rejection
-                    try:
-                        chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
-                        if chat_id:
-                            send_bot_message(chat_id,
-                                f"🧠 LLM Gate REJECTED a signal for {asset}\n"
-                                f"Reason: {llm_reason}\n"
-                                f"ML score: {ml_score:.3f}\n\n"
-                                f"Full analysis:\n{result.get('resume_of_analysis', '')}")
-                    except Exception:
-                        pass
-                else:
-                    display_lines.append("  ℹ️ Signal mode — LLM verdict is reference only")
+        # LLM gate removed — ML gate is sufficient for scalping decisions
 
         result['resume_of_analysis'] = "\n".join(display_lines)
 
@@ -2112,7 +2085,7 @@ def autotrade():
                         except ImportError as e:
                             logger.warning(f"Grid scalper not available: {e}")
 
-                    # ── Reversal scalper (pattern + ML + LLM gates, all regimes) ───
+                    # ── Reversal scalper (pattern + ML gate, all regimes) ───
                     if not grid_entered:
                         cex_result = scalper.analyze_signal(asset, interval, exchange_override="cex")
                         if cex_result.get("approved"):

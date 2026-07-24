@@ -1,16 +1,19 @@
 """
 Mockba Dashboard API — FastAPI backend
-Serves: SSE log stream, signal history, ML stats, bot status
+Serves: SSE log stream, signal history, ML stats, bot status, Mini App settings
 """
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import sqlite3
 import subprocess
 import time
 from pathlib import Path
+from urllib.parse import unquote, parse_qs
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
@@ -316,6 +319,94 @@ async def api_logs_stream():
 def health():
     return {"status": "ok", "db_exists": os.path.exists(DB_PATH),
             "log_exists": os.path.exists(LOG_PATH)}
+
+
+# ── Telegram Mini App: Auth ─────────────────────────────────────
+BOT_TOKEN = os.getenv("API_TOKEN", os.getenv("BOT_TOKEN", ""))
+AUTHORIZED_CHAT_ID = 556159355
+
+
+def _validate_telegram_init_data(init_data: str) -> bool:
+    """Validate Telegram Mini App initData using HMAC-SHA256."""
+    if not BOT_TOKEN or not init_data:
+        return False
+    try:
+        parsed = parse_qs(init_data)
+        received_hash = parsed.pop("hash", [None])[0]
+        if not received_hash:
+            return False
+        # Build data-check-string: sorted key=value pairs separated by \n
+        parts = []
+        for key in sorted(parsed.keys()):
+            val = parsed[key][0]
+            parts.append(f"{key}={val}")
+        data_check_string = "\n".join(parts)
+        # Compute HMAC-SHA256 with bot token as key
+        secret_key = hmac.new(b"WebAppData", BOT_TOKEN.encode(), hashlib.sha256).digest()
+        computed_hash = hmac.new(secret_key, data_check_string.encode(), hashlib.sha256).hexdigest()
+        return computed_hash == received_hash
+    except Exception:
+        return False
+
+
+def _get_db_rw() -> sqlite3.Connection:
+    """Open a read-write connection for settings updates."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# ── Mini App: Settings API (used by React MiniSettings tab) ──────
+@app.get("/api/miniapp")
+async def api_miniapp_get(request: Request):
+    """Return all settings as key→value dict (read-only, no auth needed)."""
+    try:
+        db = _get_db()
+        rows = db.execute("SELECT key, value FROM settings ORDER BY key").fetchall()
+        db.close()
+        settings = {row["key"]: row["value"] for row in rows}
+        return {"ok": True, "settings": settings}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Mini App: Update a setting ───────────────────────────────────
+@app.post("/api/miniapp")
+async def api_miniapp_update(request: Request):
+    """Update a single setting. Requires valid Telegram initData + authorized user."""
+    init_data = request.headers.get("X-Telegram-InitData", "")
+    if not _validate_telegram_init_data(init_data):
+        raise HTTPException(status_code=403, detail="Invalid Telegram auth")
+
+    # Extract user ID from initData
+    try:
+        parsed = parse_qs(init_data)
+        user_json = parsed.get("user", [None])[0]
+        if user_json:
+            user = json.loads(unquote(user_json))
+            if user.get("id") != AUTHORIZED_CHAT_ID:
+                raise HTTPException(status_code=403, detail="Unauthorized user")
+    except (json.JSONDecodeError, Exception):
+        raise HTTPException(status_code=403, detail="Cannot parse user data")
+
+    body = await request.json()
+    key = body.get("key", "").strip()
+    value = str(body.get("value", "")).strip()
+
+    if not key:
+        raise HTTPException(status_code=400, detail="Missing key")
+
+    try:
+        db = _get_db_rw()
+        db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value)
+        )
+        db.commit()
+        db.close()
+        return {"ok": True, "key": key, "value": value}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
