@@ -23,7 +23,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
       - apolo-logs:/app/logs:ro
     environment:
       - DB_PATH=/app/data/trading.db

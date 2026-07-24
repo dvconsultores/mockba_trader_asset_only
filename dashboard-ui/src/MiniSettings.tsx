@@ -353,7 +353,7 @@ function MiniSettingsComponent() {
     </div>
   )
 
-  const SettingRow = ({ label, hint, statusKey, children }: { label: string; hint: string; statusKey: string; children: ReactNode }) => (
+  const SettingRow = ({ label, hint, statusKey, recommended, children }: { label: string; hint: string; statusKey: string; recommended?: string; children: ReactNode }) => (
     <div className="px-3 py-3 hover:bg-[#171421]/30 transition-colors">
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="min-w-0">
@@ -363,8 +363,13 @@ function MiniSettingsComponent() {
         <div className="shrink-0 pt-0.5"><StatusIcon k={statusKey} /></div>
       </div>
       {children}
+      {recommended && (
+        <div className="mt-1.5 text-[10px] text-[#4a4060]">
+          💡 Recommended: <span className="text-yellow-500">{recommended}</span>
+        </div>
+      )}
     </div>
-  )
+  )}
 
   if (!loaded) {
     return (
@@ -396,7 +401,7 @@ function MiniSettingsComponent() {
           const val = settings[p.key] ?? ''
           const rec = p.rec(capital)
           return (
-            <SettingRow key={p.key} label={p.label} hint={p.hint} statusKey={p.key}>
+            <SettingRow key={p.key} label={p.label} hint={p.hint} statusKey={p.key} recommended={rec + (p.suffix || '')}>
               <ComboList
                 label={p.label}
                 value={val}
@@ -411,20 +416,27 @@ function MiniSettingsComponent() {
 
       {/* ── Capital & Targets ── */}
       <Section title="Capital & Targets">
-        {FREE_INPUTS.map(f => (
-          <SettingRow key={f.key} label={f.label} hint={f.hint} statusKey={f.key}>
-            <NumberField
-              value={settings[f.key] ?? ''}
-              suffix={f.suffix}
-              step={f.step}
-              min={f.min}
-              max={f.max}
-              disabled={!editable}
-              error={errors.has(f.key)}
-              onChange={v => debouncedSave(f.key, v)}
-            />
-          </SettingRow>
-        ))}
+        {FREE_INPUTS.map(f => {
+          const val = settings[f.key] ?? ''
+          const rec = f.key === 'grid_position_capital'
+            ? String(Math.max(15, Math.round(capital / 3)))
+            : f.key === 'ml_threshold' ? '0.80'
+            : undefined
+          return (
+            <SettingRow key={f.key} label={f.label} hint={f.hint} statusKey={f.key} recommended={rec}>
+              <NumberField
+                value={val}
+                suffix={f.suffix}
+                step={f.step}
+                min={f.min}
+                max={f.max}
+                disabled={!editable}
+                error={errors.has(f.key)}
+                onChange={v => debouncedSave(f.key, v)}
+              />
+            </SettingRow>
+          )
+        })}
       </Section>
 
       {/* ── Auto Trade Modes ── */}

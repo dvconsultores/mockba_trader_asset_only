@@ -41,7 +41,7 @@ export default function MLMonitor() {
   const recentNewestFirst = [...recentScores].reverse()
 
   return (
-    <div className="h-full overflow-auto p-2 sm:p-4 font-mono text-[10px] sm:text-xs">
+    <div className="h-full overflow-auto px-4 sm:px-6 py-4 font-mono text-[10px] sm:text-xs">
       {/* Header */}
       <div className="mb-3 sm:mb-4">
         <h2 className="text-[#D0CFCC] text-sm font-bold mb-2">🤖 ML Gate Monitor</h2>
