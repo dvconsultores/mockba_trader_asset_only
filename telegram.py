@@ -12,7 +12,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'machine
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
 from db.db_ops import (
     upsert_setting, get_all_settings, initialize_database_tables, get_setting,
     add_asset, remove_asset, get_asset_list,
@@ -267,11 +267,13 @@ def settings(m):
     markup.add(InlineKeyboardButton(translate("📋 List All Settings", cid), callback_data="ListSettings"))
 
     if mini_app_url:
-        from telebot.types import WebAppInfo
         markup.add(InlineKeyboardButton(
             translate("⚙️ Edit Settings (Mini App)", cid),
             web_app=WebAppInfo(url=mini_app_url)
         ))
+        logger.info(f"Mini App button added with URL: {mini_app_url}")
+    else:
+        logger.warning("MINI_APP_URL not set — Mini App button hidden")
 
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
 
