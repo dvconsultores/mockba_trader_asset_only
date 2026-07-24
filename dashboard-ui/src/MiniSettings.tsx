@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import React, { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { Settings2, Save, Check, AlertCircle, Star, ChevronDown, X } from 'lucide-react'
 
 interface SettingsData { [key: string]: string }
@@ -142,12 +142,20 @@ const SELECTS: SelectDef[] = [
 type ComboOption = { label: string; value: string; recommended?: boolean }
 
 function NumberField({ value, suffix, disabled, step, min, max, error, onChange }: { value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string; error?: boolean; onChange: (v: string) => void }) {
+  const [draft, setDraft] = useState(value)
+
+  useEffect(() => {
+    setDraft(value)
+  }, [value])
+
   return (
     <div className="flex items-center gap-2 w-full">
       <input
         type="number"
-        value={value}
-        onChange={e => onChange(e.target.value)}
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== value) onChange(draft) }}
+        onKeyUp={e => { if (e.key === 'Enter' && draft !== value) onChange(draft) }}
         disabled={disabled}
         step={step ?? 'any'}
         min={min}
@@ -160,11 +168,16 @@ function NumberField({ value, suffix, disabled, step, min, max, error, onChange 
   )
 }
 
-function ComboList({ label, value, options, onChange, disabled }: { label: string; value: string; options: ComboOption[]; onChange: (v: string) => void; disabled?: boolean }) {
+function ComboList({ label, value, options, onChange, disabled, onOpenChange }: { label: string; value: string; options: ComboOption[]; onChange: (v: string) => void; disabled?: boolean; onOpenChange?: (open: boolean) => void }) {
   const [open, setOpen] = useState(false)
   const [localValue, setLocalValue] = useState(value)
   const selected = options.find(o => o.value === localValue)
   const containerRef = useRef<HTMLDivElement>(null)
+
+  const updateOpen = useCallback((next: boolean) => {
+    setOpen(next)
+    onOpenChange?.(next)
+  }, [onOpenChange])
 
   useEffect(() => {
     if (open) document.body.style.overflow = 'hidden'
@@ -173,23 +186,29 @@ function ComboList({ label, value, options, onChange, disabled }: { label: strin
 
   // Confirm only on close / explicit confirm to avoid reopen-closing loops.
   const commit = useCallback(() => {
-    setOpen(false)
+    updateOpen(false)
     if (localValue !== value) onChange(localValue)
-  }, [localValue, value, onChange])
+  }, [localValue, value, onChange, updateOpen])
 
-  // Prevent the backdrop from eating the first tap (common Telegram WebView behavior).
+  // Close on backdrop tap without firing on the first pointer event that may be part of the open gesture.
+  const backdropDown = useRef(false)
   const handleBackdropPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.target === containerRef.current) {
-      e.preventDefault()
+      backdropDown.current = true
+    }
+  }, [])
+  const handleBackdropPointerUp = useCallback((e: React.PointerEvent) => {
+    if (backdropDown.current && e.target === containerRef.current) {
       commit()
     }
+    backdropDown.current = false
   }, [commit])
 
   return (
     <>
       <button
         type="button"
-        onClick={() => !disabled && setOpen(true)}
+        onClick={() => !disabled && updateOpen(true)}
         disabled={disabled}
         className={`flex items-center justify-between w-full px-3 py-2.5 text-sm border rounded-lg transition-colors
           ${selected ? 'text-[#D0CFCC] bg-[#171421] border-[#2a2240]' : 'text-[#4a4060] bg-[#171421]/50 border-[#2a2240]'}
@@ -204,6 +223,7 @@ function ComboList({ label, value, options, onChange, disabled }: { label: strin
           ref={containerRef}
           className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70"
           onPointerDown={handleBackdropPointerDown}
+          onPointerUp={handleBackdropPointerUp}
         >
           <div
             className="w-full sm:w-[360px] max-w-full bg-[#1a1528] rounded-t-2xl sm:rounded-2xl border border-[#2a2240] shadow-2xl overflow-hidden"
@@ -246,7 +266,7 @@ function ComboList({ label, value, options, onChange, disabled }: { label: strin
   )
 }
 
-export default function MiniSettings() {
+function MiniSettingsComponent() {
   const [settings, setSettings] = useState<SettingsData>({})
   const [saving, setSaving] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Set<string>>(new Set())
@@ -413,3 +433,6 @@ export default function MiniSettings() {
     </div>
   )
 }
+
+const MiniSettings = React.memo(MiniSettingsComponent)
+export default MiniSettings
