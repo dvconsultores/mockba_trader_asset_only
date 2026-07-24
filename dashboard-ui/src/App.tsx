@@ -48,9 +48,9 @@ export default function App() {
     return () => document.removeEventListener('mousedown', handler)
   }, [moreOpen])
 
-  // Telegram BackButton: navigate back through tabs instead of closing Mini App
-  // When on Live tab (home): no custom handler → Telegram shows native close button
-  // with its built-in "Close Mini App?" confirmation dialog.
+  // Telegram BackButton: shown only on non-home tabs for tab navigation.
+  // On Live (home) tab the BackButton is HIDDEN → Telegram displays its native
+  // ✕ Close button, and enableClosingConfirmation shows "Close Mini App?" dialog.
   const backHandlerRef = useRef<(() => void) | null>(null)
 
   useEffect(() => {
@@ -66,9 +66,10 @@ export default function App() {
       backHandlerRef.current = null
     }
 
-    // Only register custom handler when NOT on home tab
-    // Home tab uses Telegram's default back behavior (close with confirmation)
-    if (!isHome) {
+    if (isHome) {
+      // Home: hide ← arrow so the native ✕ Close button appears in the header
+      backBtn.hide()
+    } else {
       const onClick = () => {
         if (moreOpen) {
           setMoreOpen(false)
@@ -85,9 +86,8 @@ export default function App() {
       }
       backBtn.onClick(onClick)
       backHandlerRef.current = onClick
+      backBtn.show()
     }
-
-    backBtn.show()
 
     return () => {
       if (backHandlerRef.current) {
