@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { Settings2, Save, Check, AlertCircle, Star } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { Settings2, Save, Check, AlertCircle, Star, ChevronDown, X } from 'lucide-react'
 
 interface SettingsData { [key: string]: string }
 
@@ -120,7 +120,7 @@ const PRESETS: PresetDef[] = [
 ]
 
 // ── Free-input fields ───────────────────────────────────────────
-interface FreeDef { key: string; label: string; hint: string; suffix?: string; step?: string; min?: string }
+interface FreeDef { key: string; label: string; hint: string; suffix?: string; step?: string; min?: string; max?: string }
 
 const FREE_INPUTS: FreeDef[] = [
   { key: 'cex_capital', label: 'CEX Capital', hint: 'USDT per spot position', step: '1', min: '5' },
@@ -137,6 +137,8 @@ const SELECTS: SelectDef[] = [
   { key: 'auto_trade_cex', label: 'CEX Mode', hint: 'Binance spot', options: ['False', 'Signal', 'Automatic'] },
   { key: 'exchange', label: 'Exchange', hint: 'Default for manual signal', options: ['dex', 'cex'] },
 ]
+
+type ComboOption = { label: string; value: string; recommended?: boolean }
 
 export default function MiniSettings() {
   const [settings, setSettings] = useState<SettingsData>({})
@@ -185,6 +187,119 @@ export default function MiniSettings() {
     saveSetting(key, value)
   }, [saveSetting])
 
+  const StatusIcon = ({ k }: { k: string }) => {
+    if (saving.has(k)) return <Save size={12} className="text-yellow-500 animate-pulse" />
+    if (errors.has(k)) return <AlertCircle size={12} className="text-red-500" />
+    if (settings[k]) return <Check size={12} className="text-green-600" />
+    return <span className="w-3 h-3" />
+  }
+
+  const Section = ({ title, children }: { title: string; children: ReactNode }) => (
+    <div className="mb-4 rounded-xl border border-[#2a2240] bg-[#1a1528] overflow-hidden">
+      <div className="px-3 py-2 border-b border-[#2a2240] bg-[#171421]/40">
+        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-[#7a7090]">{title}</h2>
+      </div>
+      <div className="divide-y divide-[#2a2240]">{children}</div>
+    </div>
+  )
+
+  const SettingRow = ({ label, hint, statusKey, children }: { label: string; hint: string; statusKey: string; children: ReactNode }) => (
+    <div className="grid grid-cols-[1fr_140px_20px] sm:grid-cols-[1fr_168px_20px] items-center gap-2 px-3 py-3 hover:bg-[#171421]/30 transition-colors">
+      <div className="min-w-0">
+        <div className="text-xs font-medium text-[#D0CFCC] truncate">{label}</div>
+        <div className="text-[10px] text-[#7a7090] truncate">{hint}</div>
+      </div>
+      <div className="flex justify-end">{children}</div>
+      <div className="flex justify-center"><StatusIcon k={statusKey} /></div>
+    </div>
+  )
+
+  const ComboList = ({ label, value, options, onChange, disabled }: { label: string; value: string; options: ComboOption[]; onChange: (v: string) => void; disabled?: boolean }) => {
+    const [open, setOpen] = useState(false)
+    const selected = options.find(o => o.value === value)
+
+    useEffect(() => {
+      if (open) document.body.style.overflow = 'hidden'
+      return () => { document.body.style.overflow = '' }
+    }, [open])
+
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => !disabled && setOpen(true)}
+          disabled={disabled}
+          className={`flex items-center justify-between w-full px-2.5 py-1.5 text-sm border rounded-lg transition-colors
+            ${selected ? 'text-[#D0CFCC] bg-[#171421] border-[#2a2240]' : 'text-[#4a4060] bg-[#171421]/50 border-[#2a2240]'}
+            ${disabled ? 'opacity-50 cursor-not-allowed' : 'hover:border-[#7a7090]'}`}
+        >
+          <span className="truncate">{selected?.label ?? 'Select…'}</span>
+          <ChevronDown size={16} className="text-[#7a7090] shrink-0 ml-1.5" />
+        </button>
+
+        {open && (
+          <div
+            className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/70"
+            onClick={() => setOpen(false)}
+          >
+            <div
+              className="w-full sm:w-[360px] max-w-full bg-[#1a1528] rounded-t-2xl sm:rounded-2xl border border-[#2a2240] shadow-2xl overflow-hidden"
+              onClick={e => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between px-4 py-3 border-b border-[#2a2240] bg-[#171421]">
+                <span className="text-sm font-semibold text-[#D0CFCC]">{label}</span>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="p-1 rounded-full text-[#7a7090] hover:bg-[#2a2240] hover:text-[#D0CFCC] transition-colors"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+              <div className="max-h-[55vh] overflow-y-auto">
+                {options.map((opt) => {
+                  const active = value === opt.value
+                  return (
+                    <button
+                      key={opt.value}
+                      type="button"
+                      onClick={() => { onChange(opt.value); setOpen(false) }}
+                      className={`w-full flex items-center justify-between px-4 py-3 text-left text-sm border-b border-[#2a2240]/50 last:border-0 transition-colors
+                        ${active ? 'bg-[#2a2240] text-[#D0CFCC]' : 'text-[#D0CFCC] hover:bg-[#2a2240]/60'}`}
+                    >
+                      <span className="flex items-center gap-2">
+                        {opt.recommended && <Star size={12} className="text-yellow-500 shrink-0" />}
+                        {opt.label}
+                      </span>
+                      {active && <Check size={18} className="text-green-600 shrink-0" />}
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </>
+    )
+  }
+
+  const NumberField = ({ value, suffix, disabled, step, min, max, error, onChange }: { value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string; error?: boolean; onChange: (v: string) => void }) => (
+    <div className="flex items-center gap-1.5 w-full">
+      <input
+        type="number"
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        disabled={disabled}
+        step={step ?? 'any'}
+        min={min}
+        max={max}
+        className={`flex-1 min-w-0 px-2 py-1.5 text-sm text-right bg-[#171421] border rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] disabled:opacity-50 transition-colors
+          ${error ? 'border-red-500' : 'border-[#2a2240]'}`}
+      />
+      {suffix && <span className="text-[10px] text-[#7a7090] w-4 text-right shrink-0">{suffix}</span>}
+    </div>
+  )
+
   if (!loaded) {
     return (
       <div className="flex-1 flex items-center justify-center text-gray-500">
@@ -194,129 +309,72 @@ export default function MiniSettings() {
     )
   }
 
-  const StatusIcon = ({ k }: { k: string }) => {
-    if (saving.has(k)) return <Save size={12} className="text-yellow-500 animate-pulse" />
-    if (errors.has(k)) return <AlertCircle size={12} className="text-red-500" />
-    if (settings[k]) return <Check size={12} className="text-green-600" />
-    return null
-  }
-
   return (
     <div className="flex-1 overflow-y-auto px-4 sm:px-6 py-4 text-[#D0CFCC]">
       {/* Header */}
-      <div className="flex items-center justify-between mb-4 pb-2 border-b border-[#2a2240]">
+      <div className="flex items-center justify-between mb-5">
         <div>
-          <h1 className="text-base sm:text-lg font-bold">⚙️ Mockba Settings</h1>
-          {!isTelegram && <p className="text-xs text-[#4a4060] mt-0.5">Read-only — open in Telegram to edit</p>}
+          <h1 className="text-base sm:text-lg font-bold text-[#D0CFCC]">⚙️ Settings</h1>
+          <p className="text-xs text-[#7a7090] mt-0.5">
+            {isTelegram ? 'Tap a value to change it' : 'Read-only outside Telegram'}
+          </p>
         </div>
-        {isTelegram && <span className="text-[10px] text-[#4a4060] bg-[#1a1528] px-2 py-1 rounded">⚡ auto-save</span>}
+        <span className={`text-[10px] px-2.5 py-1 rounded-full border ${isTelegram ? 'text-[#D0CFCC] border-[#D0CFCC]/20 bg-[#D0CFCC]/10' : 'text-[#4a4060] border-[#2a2240] bg-[#1a1528]'}`}>
+          {isTelegram ? '⚡ auto-save' : 'read-only'}
+        </span>
       </div>
 
-      {/* ── Grid Scalper + Risk presets (button grid, like Telegram bot) ── */}
-      <h2 className="text-xs font-semibold text-[#7a7090] uppercase tracking-wide mb-3">📊 Grid Scalper & Risk</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-6">
+      {/* ── Grid Scalper & Risk ── */}
+      <Section title="Grid Scalper & Risk">
         {PRESETS.map(p => {
           const val = settings[p.key] ?? ''
           const rec = p.rec(capital)
           return (
-            <div key={p.key} className="bg-[#1a1528] border border-[#2a2240] rounded-lg p-3">
-              <div className="flex items-center justify-between mb-2">
-                <div>
-                  <span className="text-xs font-medium text-[#D0CFCC]">{p.label}</span>
-                  <span className="text-[10px] text-[#4a4060] ml-1.5">{p.hint}</span>
-                </div>
-                <StatusIcon k={p.key} />
-              </div>
-              <div className="flex flex-wrap gap-1.5">
-                {p.options.map(opt => {
-                  const active = val === opt.value
-                  const recommended = opt.value === rec
-                  return (
-                    <button
-                      key={opt.value}
-                      onClick={() => selectAndSave(p.key, opt.value)}
-                      disabled={!isTelegram}
-                      className={`text-[11px] sm:text-xs px-2 py-1 rounded border transition-colors
-                        ${active
-                          ? 'bg-[#2a2240] border-[#D0CFCC] text-[#D0CFCC]'
-                          : 'bg-[#171421] border-[#2a2240] text-[#7a7090] hover:border-[#4a4060]'
-                        }
-                        disabled:opacity-50 disabled:cursor-not-allowed`}
-                    >
-                      {recommended && <Star size={10} className="inline mr-0.5 text-yellow-500" />}
-                      {opt.label}
-                    </button>
-                  )
-                })}
-              </div>
-              {val && (
-                <div className="text-[10px] text-[#4a4060] mt-1.5">
-                  Current: {val}{p.suffix ?? ''}
-                  {rec === val && <span className="text-yellow-500 ml-1">⭐ recommended</span>}
-                </div>
-              )}
-            </div>
-          )
-        })}
-      </div>
-
-      {/* ── Free input fields ── */}
-      <h2 className="text-xs font-semibold text-[#7a7090] uppercase tracking-wide mb-3">💰 Capital & Targets</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
-        {FREE_INPUTS.map(f => {
-          const val = settings[f.key] ?? ''
-          return (
-            <div key={f.key} className="bg-[#1a1528] border border-[#2a2240] rounded-lg p-3">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-medium text-[#D0CFCC]">{f.label}</span>
-                <StatusIcon k={f.key} />
-              </div>
-              <p className="text-[10px] text-[#4a4060] mb-1.5">{f.hint}</p>
-              <div className="flex items-center">
-                <input
-                  type="number"
-                  value={val}
-                  onChange={e => debouncedSave(f.key, e.target.value)}
-                  disabled={!isTelegram}
-                  step={f.step ?? 'any'}
-                  min={f.min}
-                  max={(f as any).max}
-                  className={`w-full px-2.5 py-1.5 text-sm bg-[#171421] border rounded text-right text-[#D0CFCC]
-                              focus:border-[#7a7090] outline-none disabled:opacity-50
-                              ${errors.has(f.key) ? 'border-red-500' : 'border-[#2a2240]'}`}
-                />
-                {f.suffix && <span className="text-xs text-[#4a4060] ml-1.5 w-5">{f.suffix}</span>}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      {/* ── Mode selectors ── */}
-      <h2 className="text-xs font-semibold text-[#7a7090] uppercase tracking-wide mb-3">🤖 Auto Trade Modes</h2>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-6">
-        {SELECTS.map(s => {
-          const val = settings[s.key] ?? ''
-          return (
-            <div key={s.key} className="bg-[#1a1528] border border-[#2a2240] rounded-lg p-3">
-              <div className="flex items-center justify-between mb-1.5">
-                <span className="text-xs font-medium text-[#D0CFCC]">{s.label}</span>
-                <StatusIcon k={s.key} />
-              </div>
-              <p className="text-[10px] text-[#4a4060] mb-1.5">{s.hint}</p>
-              <select
+            <SettingRow key={p.key} label={p.label} hint={p.hint} statusKey={p.key}>
+              <ComboList
+                label={p.label}
                 value={val}
-                onChange={e => selectAndSave(s.key, e.target.value)}
+                options={p.options.map(o => ({ ...o, recommended: o.value === rec }))}
+                onChange={v => selectAndSave(p.key, v)}
                 disabled={!isTelegram}
-                className="w-full px-2.5 py-1.5 text-sm bg-[#171421] border border-[#2a2240] rounded text-[#D0CFCC]
-                           focus:border-[#7a7090] outline-none disabled:opacity-50"
-              >
-                {s.options.map(o => <option key={o} value={o}>{o}</option>)}
-              </select>
-            </div>
+              />
+            </SettingRow>
           )
         })}
-      </div>
+      </Section>
+
+      {/* ── Capital & Targets ── */}
+      <Section title="Capital & Targets">
+        {FREE_INPUTS.map(f => (
+          <SettingRow key={f.key} label={f.label} hint={f.hint} statusKey={f.key}>
+            <NumberField
+              value={settings[f.key] ?? ''}
+              suffix={f.suffix}
+              step={f.step}
+              min={f.min}
+              max={f.max}
+              disabled={!isTelegram}
+              error={errors.has(f.key)}
+              onChange={v => debouncedSave(f.key, v)}
+            />
+          </SettingRow>
+        ))}
+      </Section>
+
+      {/* ── Auto Trade Modes ── */}
+      <Section title="Auto Trade Modes">
+        {SELECTS.map(s => (
+          <SettingRow key={s.key} label={s.label} hint={s.hint} statusKey={s.key}>
+            <ComboList
+              label={s.label}
+              value={settings[s.key] ?? ''}
+              options={s.options.map(o => ({ label: o, value: o }))}
+              onChange={v => selectAndSave(s.key, v)}
+              disabled={!isTelegram}
+            />
+          </SettingRow>
+        ))}
+      </Section>
 
       <div className="text-center text-[10px] text-[#4a4060] pb-6">
         {isTelegram ? 'Changes save automatically on selection or after typing' : 'Open via Telegram bot to edit'}

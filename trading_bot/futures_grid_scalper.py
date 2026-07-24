@@ -168,11 +168,11 @@ def futures_grid_scalp_cycle(asset: str = "PERP_NEAR_USDC", regime: str = "RANGE
     if now - _last_buy_at < GRID_COOLDOWN_SEC:
         return None
 
-    # ── Entry condition: price dip AND OBI confirmation (AND logic) ───────
+    # ── Entry condition: price dip OR favorable OBI (OR logic) ─────
     is_dip = _is_price_dip(live_price) if live_price > 0 else False
     obi_ok = obi < GRID_OBI_BUY_THRESHOLD
 
-    if not (is_dip and obi_ok):
+    if not (is_dip or obi_ok):
         # Log why we're not entering (only when close to a signal)
         if is_dip and not obi_ok:
             logger.debug(f"📊 DEX Grid: price dip detected but OBI {obi:.3f} ≥ {GRID_OBI_BUY_THRESHOLD} — waiting")

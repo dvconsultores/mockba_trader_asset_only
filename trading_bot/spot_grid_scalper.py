@@ -302,12 +302,13 @@ def grid_scalp_cycle(asset: str = "NEAR", regime: str = "RANGE", obi: float = 1.
                     f"   Peak: ${_peak_price:.4f} | OBI: {obi:.3f}")
         return "buy"
 
-    # ── Entry: Price dip AND OBI bearish confirmation ────────────────────
-    # Both must be true: price dipped below peak AND order book shows bearish tilt
-    if (_is_price_dip(live_price) and obi < GRID_OBI_BUY_THRESHOLD
+    # ── Entry: Price dip OR OBI confirmation (OR logic) ────────────────
+    # Either is sufficient in RANGE: dip snaps back, or thin OBI signals reversal
+    if (_is_price_dip(live_price) or obi < GRID_OBI_BUY_THRESHOLD
             and (now - _last_buy_at) > GRID_COOLDOWN_SEC):
         dip_pct = (_peak_price - live_price) / _peak_price * 100
-        logger.info(f"📉 Grid: dip {dip_pct:.2f}% + OBI={obi:.3f} < {GRID_OBI_BUY_THRESHOLD} → BUY")
-        return _execute_buy(f"dip {dip_pct:.1f}% OBI {obi:.3f}")
+        reason = f"dip {dip_pct:.1f}%" if _is_price_dip(live_price) else f"OBI {obi:.3f}"
+        logger.info(f"📉 Grid: {reason} → BUY")
+        return _execute_buy(reason)
 
     return None
