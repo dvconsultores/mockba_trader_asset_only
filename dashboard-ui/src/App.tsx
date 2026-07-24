@@ -67,14 +67,18 @@ export default function App() {
       const idx = mainTabIds.indexOf(tab)
       if (idx > 0) {
         setTab(mainTabIds[idx - 1])
-      } else {
-        // Live tab (home): let Telegram back button close the Mini App
-        TG?.close?.()
       }
+      // Live tab (home): no handler → Telegram's default back behavior (close with confirmation)
     }
 
-    backBtn.show()
-    backBtn.onClick(onClick)
+    // On Live tab, remove our handler so Telegram's default close-with-confirmation works
+    if (tab === 'live' && !moreOpen) {
+      backBtn.offClick(onClick)
+      backBtn.show()
+    } else {
+      backBtn.onClick(onClick)
+      backBtn.show()
+    }
     return () => {
       backBtn.offClick(onClick)
       backBtn.hide()

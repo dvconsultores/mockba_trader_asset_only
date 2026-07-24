@@ -289,7 +289,7 @@ def grid_scalp_cycle(asset: str = "NEAR", regime: str = "RANGE", obi: float = 1.
 
         logger.info(f"📉 Grid BUY ({trigger_reason}): price=${entry:.4f}, qty={qty:.4f}, notional=${qty*entry:.2f}")
         buy_result = _limit_buy_with_fallback(binance_symbol, qty, limit_price, timeout_seconds=30,
-                                               notify_chat_id=chat_id)
+                                               notify_chat_id=chat_id, source="Grid")
         if buy_result is None:
             logger.error(f"Grid {trigger_reason}: LIMIT BUY failed")
             return None

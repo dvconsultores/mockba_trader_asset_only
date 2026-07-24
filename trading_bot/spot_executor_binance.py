@@ -125,16 +125,19 @@ def _limit_buy_with_fallback(
     limit_price: float,
     timeout_seconds: int = 30,
     notify_chat_id: int = 0,
+    source: str = "",
 ) -> dict | None:
     """
     Place a LIMIT BUY order and wait for fill. If unfilled after timeout_seconds,
     cancel and fall back to MARKET BUY.
 
     Sends Telegram notifications at each stage when notify_chat_id is provided.
+    source: label like "Grid" or "ML Gate" to identify the strategy in logs.
 
     Returns the fill result dict (same format as Binance order response), or None on failure.
     """
     notional = qty * limit_price
+    prefix = f"[{source}] " if source else ""
 
     # --- STEP A: Place LIMIT BUY ---
     buy_params = {
@@ -168,7 +171,7 @@ def _limit_buy_with_fallback(
 
         if notify_chat_id:
             send_bot_message(notify_chat_id,
-                f"📝 LIMIT BUY placed: {qty} {binance_symbol} @ ${limit_price}\n"
+                f"{prefix}📝 LIMIT BUY placed: {qty} {binance_symbol} @ ${limit_price}\n"
                 f"   Notional: ${notional:.2f}\n"
                 f"   Order ID: {order_id}")
 
@@ -479,7 +482,7 @@ def place_spot_order(signal: dict):
     price_precision = max(0, int(round(-math.log10(quote_tick)))) if quote_tick > 0 else 4
     limit_price = round(entry, price_precision)
 
-    buy_result = _limit_buy_with_fallback(binance_symbol, qty, limit_price, timeout_seconds=30, notify_chat_id=chat_id)
+    buy_result = _limit_buy_with_fallback(binance_symbol, qty, limit_price, timeout_seconds=30, notify_chat_id=chat_id, source="ML Gate")
     if buy_result is None:
         logger.error("❌ LIMIT BUY and MARKET fallback both failed")
         return None
