@@ -6,6 +6,7 @@ import Signals from './Signals'
 import MLMonitor from './MLMonitor'
 import StatusBar from './StatusBar'
 import MiniSettings from './MiniSettings'
+import { TG, isTelegram } from './TelegramProvider'
 
 type Tab = 'live' | 'signals' | 'ml' | 'status' | 'settings'
 
@@ -17,8 +18,6 @@ interface BotStatus {
   model_loaded: boolean
   current_regime: string | null
 }
-
-const TG = (window as any).TelegramWebApp ?? (window as any).Telegram?.WebApp
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('live')
@@ -48,6 +47,67 @@ export default function App() {
     if (moreOpen) document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [moreOpen])
+
+  // Telegram BackButton: navigate back through tabs instead of closing Mini App
+  useEffect(() => {
+    if (!isTelegram || !TG?.BackButton) return
+
+    const backBtn = TG.BackButton
+    const mainTabIds: Tab[] = ['live', 'signals', 'ml']
+
+    const onClick = () => {
+      if (moreOpen) {
+        setMoreOpen(false)
+        return
+      }
+      if (tab === 'status' || tab === 'settings') {
+        setTab('live')
+        return
+      }
+      const idx = mainTabIds.indexOf(tab)
+      if (idx > 0) {
+        setTab(mainTabIds[idx - 1])
+      } else {
+        // Already at first tab; let Telegram handle close
+      }
+    }
+
+    backBtn.show()
+    backBtn.onClick(onClick)
+    return () => {
+      backBtn.offClick(onClick)
+      backBtn.hide()
+    }
+  }, [tab, moreOpen])
+
+  // Pull-to-refresh: reload the app when pulling down at the top of the page
+  useEffect(() => {
+    if (!isTelegram) return
+
+    let startY = 0
+    let refreshing = false
+
+    const onTouchStart = (e: TouchEvent) => {
+      startY = e.touches[0]?.clientY ?? 0
+    }
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (refreshing) return
+      const y = e.touches[0]?.clientY ?? 0
+      const scrollTop = document.documentElement.scrollTop || document.body.scrollTop
+      if (scrollTop <= 0 && y - startY > 120) {
+        refreshing = true
+        window.location.reload()
+      }
+    }
+
+    document.addEventListener('touchstart', onTouchStart, { passive: true })
+    document.addEventListener('touchmove', onTouchMove, { passive: true })
+    return () => {
+      document.removeEventListener('touchstart', onTouchStart)
+      document.removeEventListener('touchmove', onTouchMove)
+    }
+  }, [])
 
   const mainTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'live', label: 'Live', icon: TerminalSquare },
