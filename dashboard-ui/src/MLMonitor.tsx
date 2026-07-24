@@ -76,8 +76,8 @@ export default function MLMonitor() {
         <h3 className="text-[#4a4060] mb-2">Score Distribution (last {totalScored})</h3>
         <div className="space-y-1">
           {buckets.map(([bucket, count]) => (
-            <div key={bucket} className="flex items-center gap-2">
-              <span className="w-16 text-right text-[#4a4060]">{bucket}</span>
+            <div key={bucket} className="flex items-center gap-2 -mx-4 sm:-mx-6 px-4 sm:px-6">
+              <span className="w-12 text-right text-[#4a4060] shrink-0">{bucket}</span>
               <div className="flex-1 bg-[#1a1528] h-4 border border-[#2a2240] relative">
                 <div
                   className="absolute inset-y-0 left-0 bg-[#D0CFCC]/15 border-r border-[#D0CFCC]/20"

@@ -68,7 +68,8 @@ export default function App() {
       if (idx > 0) {
         setTab(mainTabIds[idx - 1])
       } else {
-        // Already at first tab; let Telegram handle close
+        // Live tab (home): let Telegram back button close the Mini App
+        TG?.close?.()
       }
     }
 
