@@ -1942,11 +1942,43 @@ class ReversalScalper:
 
 # === BACKWARD-COMPATIBLE WRAPPER ===
 def process_signal(asset_override: str = None, exchange_override: str = None) -> str:
-    """Drop-in replacement - always returns full analysis for manual review."""
+    """Process signal: grid-only for DEX, full analysis (ML gate) for CEX."""
     try:
         asset = asset_override or get_setting("current_asset")
         interval = get_setting("interval") or "5m"
         exchange = exchange_override or get_setting("exchange") or "dex"
+
+        # ── DEX: Grid-only (RANGE regime, price dip + OBI, no ML/LLM) ──
+        if exchange == "dex":
+            scalper = ReversalScalper()
+            scan = scalper.quick_scan(asset, exchange_override="dex")
+            regime = scan.get('regime', 'UNKNOWN')
+            obi = scan.get('obi', 1.0)
+            live_price = scan.get('live_price', 0.0)
+
+            output = (
+                f"📊 DEX Grid Scan — {asset}\n"
+                f"• Regime: {regime}\n"
+                f"• OBI: {obi:.3f}\n"
+                f"• Price: ${live_price:.4f}\n"
+            )
+
+            if regime == "RANGE":
+                try:
+                    from trading_bot.futures_grid_scalper import futures_grid_scalp_cycle
+                    action = futures_grid_scalp_cycle(asset=asset, regime=regime, obi=obi, live_price=live_price)
+                    if action:
+                        output += f"\n✅ DEX Grid scalper: {action.upper()} executed"
+                    else:
+                        output += "\n⏳ No grid entry signal (waiting for price dip + OBI confirmation)"
+                except ImportError as e:
+                    output += f"\n⚠️ Grid scalper unavailable: {e}"
+            else:
+                output += f"\n⏳ Regime is {regime} — DEX grid only trades in RANGE"
+
+            return output
+
+        # ── CEX: Full analysis with ML gate ───────────────────────────
         scalper = ReversalScalper()
         result = scalper.analyze_signal(asset, interval, exchange_override=exchange)
         output = result['resume_of_analysis']
@@ -2030,36 +2062,26 @@ def autotrade():
 
             scalper = ReversalScalper()
 
-            # DEX cycle
+            # ── DEX cycle: Grid scalper only (RANGE regime, price dip + OBI, no ML/LLM) ──
             if dex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("dex", 30):
                 if has_dex_position:
-                    logger.info("📋 DEX has open position(s) — skipping DEX pattern search")
+                    logger.info("📋 DEX has open position(s) — skipping DEX grid scan")
                 else:
-                    dex_result = scalper.analyze_signal(asset, interval, exchange_override="dex")
-                    if dex_result.get("approved"):
-                        ml_score = dex_result.get('ml_score')
-                        if dex_mode == "Signal":
-                            if ml_score is not None and ml_score < _get_ml_threshold():
-                                logger.info(f"📡 DEX signal skipped — ML score {ml_score:.3f} < threshold {_get_ml_threshold()}")
-                            elif _should_send_signal_alert("dex", asset, dex_result['side'], dex_result.get('signal_reason', 'Unknown')):
-                                send_bot_message(int(os.getenv("TELEGRAM_CHAT_ID")), f"📡 DEX SIGNAL ALERT\n{dex_result['resume_of_analysis']}")
-                                logger.info(f"📡 DEX signal alert sent for {asset}")
-                        else:
-                            # === COOLDOWN CHECK: prevent repeated entries on same pattern ===
-                            if not _should_allow_execution("dex", asset, dex_result['side']):
-                                logger.info(f"⏳ DEX execution skipped — cooldown active for {asset} {dex_result['side']}")
-                            else:
-                                order_payload = {
-                                    "symbol": dex_result['symbol'],
-                                    "side": dex_result['side'],
-                                    "entry": dex_result['entry'],
-                                    "take_profit": dex_result['take_profit'],
-                                    "stop_loss": dex_result['stop_loss'],
-                                    "leverage": int(get_setting("leverage") or 5)
-                                }
-                                place_futures_order(order_payload)
-                                _record_execution("dex", asset, dex_result['side'])
-                                logger.info(f"🚀 Orderly futures order placed: {order_payload}")
+                    scan = scalper.quick_scan(asset, exchange_override="dex")
+                    regime = scan.get('regime', 'UNKNOWN')
+                    obi = scan.get('obi', 1.0)
+                    live_price = scan.get('live_price', 0.0)
+                    logger.info(f"🔍 DEX quick scan: regime={regime}, OBI={obi:.3f}, price=${live_price:.4f}")
+
+                    if regime == "RANGE":
+                        try:
+                            from trading_bot.futures_grid_scalper import futures_grid_scalp_cycle
+                            action = futures_grid_scalp_cycle(asset=asset, regime=regime, obi=obi, live_price=live_price)
+                            if action:
+                                logger.info(f"📊 DEX Grid scalper action: {action}")
+                        except ImportError as e:
+                            logger.warning(f"DEX Grid scalper not available: {e}")
+                    # DEX: no reversal scalper fallback — grid only in RANGE, nothing otherwise
 
             # CEX cycle
             if cex_mode in ("Signal", "Automatic") and _should_run_exchange_cycle("cex", 60):
