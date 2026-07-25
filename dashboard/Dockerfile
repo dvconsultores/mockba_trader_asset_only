@@ -5,9 +5,8 @@ WORKDIR /app
 # Install only dashboard deps (fast, no bot deps)
 RUN pip install --no-cache-dir fastapi uvicorn sse-starlette
 
-# Copy the dashboard source (build context must be project root)
-COPY dashboard/main.py .
-COPY db/ /app/db/
+# Copy the dashboard source
+COPY main.py .
 
 EXPOSE 8080
 

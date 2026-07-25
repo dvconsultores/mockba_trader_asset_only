@@ -36,12 +36,49 @@ LOG_PATH = os.getenv("LOG_PATH", "/app/apolo.log")
 MODEL_PATH = os.getenv("MODEL_PATH", "/app/data/signal_model.json")
 START_TIME = time.time()
 
-# Import db_ops helpers for shared asset logic
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from db.db_ops import (
-    get_asset_list, add_asset as db_add_asset, remove_asset as db_remove_asset,
-    get_setting as db_get_setting, upsert_setting as db_upsert_setting,
-)
+# ── Inline settings helpers (avoid cross-module import from db/) ──
+
+def _get_setting(key: str) -> str | None:
+    """Read a single setting value."""
+    db = _get_db()
+    row = db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    db.close()
+    return row["value"] if row else None
+
+
+def _upsert_setting(key: str, value: str):
+    """Insert or update a setting."""
+    db = _get_db_rw()
+    db.execute(
+        "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    db.commit()
+    db.close()
+
+
+def _get_asset_list() -> list:
+    """Returns the asset setting as a list of strings."""
+    val = _get_setting("asset")
+    if not val:
+        return []
+    return [x.strip() for x in val.split(",") if x.strip()]
+
+
+def _add_asset(asset: str):
+    """Adds an asset to the list if not present."""
+    assets = _get_asset_list()
+    if asset not in assets:
+        assets.append(asset)
+        _upsert_setting("asset", ",".join(assets))
+
+
+def _remove_asset(asset: str):
+    """Removes an asset from the list."""
+    assets = _get_asset_list()
+    if asset in assets:
+        assets.remove(asset)
+        _upsert_setting("asset", ",".join(assets))
 
 
 def _get_db() -> sqlite3.Connection:
@@ -493,8 +530,8 @@ async def api_miniapp_update(request: Request):
 async def api_assets_get():
     """Return asset list and current active asset."""
     try:
-        assets = get_asset_list()
-        current = db_get_setting("current_asset") or ""
+        assets = _get_asset_list()
+        current = _get_setting("current_asset") or ""
         return {"ok": True, "assets": assets, "current_asset": current}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -527,8 +564,8 @@ async def api_assets_add(request: Request):
         raise HTTPException(status_code=400, detail="Missing asset name")
 
     try:
-        db_add_asset(asset)
-        assets = get_asset_list()
+        _add_asset(asset)
+        assets = _get_asset_list()
         return {"ok": True, "assets": assets, "added": asset}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -560,14 +597,14 @@ async def api_assets_remove(asset_name: str, request: Request):
         raise HTTPException(status_code=400, detail="Missing asset name")
 
     try:
-        db_remove_asset(asset_name)
+        _remove_asset(asset_name)
         # If the removed asset was the current one, clear current_asset
-        current = db_get_setting("current_asset") or ""
+        current = _get_setting("current_asset") or ""
         if current == asset_name:
-            remaining = get_asset_list()
+            remaining = _get_asset_list()
             new_current = remaining[0] if remaining else ""
-            db_upsert_setting("current_asset", new_current)
-        assets = get_asset_list()
+            _upsert_setting("current_asset", new_current)
+        assets = _get_asset_list()
         return {"ok": True, "assets": assets, "removed": asset_name}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -600,12 +637,12 @@ async def api_assets_select(request: Request):
         raise HTTPException(status_code=400, detail="Missing asset name")
 
     # Validate asset exists in the list
-    assets = get_asset_list()
+    assets = _get_asset_list()
     if asset not in assets:
         raise HTTPException(status_code=400, detail=f"Asset '{asset}' not in list. Add it first.")
 
     try:
-        db_upsert_setting("current_asset", asset)
+        _upsert_setting("current_asset", asset)
         return {"ok": True, "current_asset": asset}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -660,8 +697,8 @@ async def api_bot_control(request: Request):
         db.close()
 
         # Read back current state for both exchanges
-        current_dex = db_get_setting("auto_trade_dex") or "False"
-        current_cex = db_get_setting("auto_trade_cex") or "False"
+        current_dex = _get_setting("auto_trade_dex") or "False"
+        current_cex = _get_setting("auto_trade_cex") or "False"
 
         return {
             "ok": True,
