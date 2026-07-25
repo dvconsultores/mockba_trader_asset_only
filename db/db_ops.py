@@ -103,6 +103,9 @@ def initialize_database_tables():
             ('grid_cooldown_sec', '300'),
             ('grid_price_dip_pct', '0.4'),  # % below recent peak to trigger price-dip buy
             ('grid_max_positions', '1'),    # max concurrent open grid positions
+            ('grid_sl_pct', '0.8'),         # DEX grid SL percentage
+            ('grid_position_capital', '15'),# USDC/USDT per grid position
+            ('grid_direction', 'long'),     # "long", "short", or "both"
         ]
         for key, value in default_settings:
             cur.execute("""

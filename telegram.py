@@ -156,7 +156,9 @@ def command_list(m):
 
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
-    markup.row(InlineKeyboardButton(translate("📋 List All Settings", cid), callback_data="ListSettings"))
+    markup.row(InlineKeyboardButton(translate("� Manage Assets", cid), callback_data="ManageAssets"))
+    markup.row(InlineKeyboardButton(translate("▶️ Start / Stop Bot", cid), callback_data="StartStop"))
+    markup.row(InlineKeyboardButton(translate("�📋 List All Settings", cid), callback_data="ListSettings"))
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
 
 
@@ -178,6 +180,8 @@ def callback_handler(call):
     immediate_remove = False
     if call.data.startswith("exec_sig:") or call.data.startswith("exec_sig_dex:") or call.data.startswith("exec_sig_cex:"):
         immediate_remove = True
+    if call.data.startswith("asset_select:") or call.data.startswith("asset_remove:") or call.data.startswith("bot_toggle:"):
+        immediate_remove = True
     
     if immediate_remove:
         try:
@@ -195,12 +199,28 @@ def callback_handler(call):
     elif call.data.startswith("exec_sig:"):
         asset = call.data.split(":", 1)[1]
         execute_signal(call.message, asset=asset)
+    elif call.data == "asset_add_prompt":
+        handle_asset_add_prompt(call.message)
+    elif call.data.startswith("asset_select:"):
+        asset = call.data.split(":", 1)[1]
+        handle_asset_select(cid, asset)
+        manage_assets(call.message)
+    elif call.data.startswith("asset_remove:"):
+        asset = call.data.split(":", 1)[1]
+        handle_asset_remove(cid, asset)
+        manage_assets(call.message)
+    elif call.data.startswith("bot_toggle:"):
+        _, exchange, mode = call.data.split(":")
+        handle_bot_toggle(cid, exchange, mode)
+        start_stop_menu(call.message)
     else:
         options = {
             'List': command_list,
             'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
+            'ManageAssets': manage_assets,
+            'StartStop': start_stop_menu,
         }
         func = options.get(call.data)
         if func:
@@ -351,7 +371,113 @@ def execute_signal(m, asset=None, exchange=None):
         bot.send_message(cid, translate(f"Signal processed but error displaying result: {str(e)}", cid))
          
 
-def ListSettings(m):
+def manage_assets(m):
+    """Show current asset list with options to add, remove or select."""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    from db.db_ops import get_asset_list as _gal, get_setting as _gs
+    assets = _gal()
+    current = _gs("current_asset") or ""
+
+    markup = InlineKeyboardMarkup()
+    markup.row(InlineKeyboardButton(translate("➕ Add Asset", cid), callback_data="asset_add_prompt"))
+
+    if assets:
+        for a in assets:
+            label = f"{'✅ ' if a == current else ''}{a}"
+            markup.row(InlineKeyboardButton(label, callback_data=f"asset_select:{a}"))
+            markup.row(
+                InlineKeyboardButton(translate("❌ Remove", cid), callback_data=f"asset_remove:{a}"),
+            )
+
+    markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="List"))
+    bot.send_message(cid, translate(f"📦 Assets (active: {current or 'none'})", cid), reply_markup=markup)
+
+
+def start_stop_menu(m):
+    """Show current bot mode and start/stop toggles."""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    dex_mode = get_setting("auto_trade_dex") or "False"
+    cex_mode = get_setting("auto_trade_cex") or "False"
+
+    dex_label = "🟢 DEX: ON" if dex_mode != "False" else "🔴 DEX: OFF"
+    cex_label = "🟢 CEX: ON" if cex_mode != "False" else "🔴 CEX: OFF"
+
+    markup = InlineKeyboardMarkup()
+    markup.row(InlineKeyboardButton(
+        f"{'⏹ Stop' if dex_mode != 'False' else '▶️ Start'} DEX",
+        callback_data=f"bot_toggle:dex:{'False' if dex_mode != 'False' else 'Automatic'}"
+    ))
+    markup.row(InlineKeyboardButton(
+        f"{'⏹ Stop' if cex_mode != 'False' else '▶️ Start'} CEX",
+        callback_data=f"bot_toggle:cex:{'False' if cex_mode != 'False' else 'Automatic'}"
+    ))
+    markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="List"))
+
+    msg = translate(f"▶️ Bot Control\n\n{dex_label}\n{cex_label}", cid)
+    bot.send_message(cid, msg, reply_markup=markup)
+
+
+def handle_asset_add_prompt(m):
+    """Prompt user to send the asset name."""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    msg = bot.send_message(cid, translate("📝 Send the asset name to add (e.g., PERP_NEAR_USDC):", cid),
+                           reply_markup=telebot.types.ForceReply(selective=True))
+    bot.register_next_step_handler(msg, handle_asset_add_reply)
+
+
+def handle_asset_add_reply(m):
+    """Process the asset name from user reply."""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    asset = (m.text or "").strip()
+    if not asset:
+        bot.send_message(cid, translate("❌ Invalid asset name.", cid))
+        return
+
+    from db.db_ops import add_asset as _aa, get_asset_list as _gal
+    _aa(asset)
+    bot.send_message(cid, translate(f"✅ Asset '{asset}' added. Total: {len(_gal())}", cid))
+    manage_assets(m)
+
+
+def handle_asset_select(cid: int, asset: str):
+    """Set the current active asset."""
+    from db.db_ops import upsert_setting
+    upsert_setting("current_asset", asset)
+    bot.send_message(cid, translate(f"✅ Active asset set to: {asset}", cid))
+
+
+def handle_asset_remove(cid: int, asset: str):
+    """Remove an asset from the list."""
+    from db.db_ops import remove_asset as _ra, get_asset_list as _gal, get_setting as _gs, upsert_setting
+    _ra(asset)
+    current = _gs("current_asset") or ""
+    if current == asset:
+        remaining = _gal()
+        new_current = remaining[0] if remaining else ""
+        upsert_setting("current_asset", new_current)
+    bot.send_message(cid, translate(f"✅ Asset '{asset}' removed.", cid))
+
+
+def handle_bot_toggle(cid: int, exchange: str, mode: str):
+    """Toggle auto_trade for an exchange."""
+    key = "auto_trade_dex" if exchange == "dex" else "auto_trade_cex"
+    from db.db_ops import upsert_setting
+    upsert_setting(key, mode)
+    status = "ON" if mode != "False" else "OFF"
+    ex_label = "DEX" if exchange == "dex" else "CEX"
+    bot.send_message(cid, translate(f"✅ {ex_label} is now {status} (mode: {mode})", cid))
     if m.chat.type != 'private':
         return
     cid = m.chat.id

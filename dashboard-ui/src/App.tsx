@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
-import { TerminalSquare, BarChart3, Bot, Radio, Settings2, MoreHorizontal } from 'lucide-react'
+import { TerminalSquare, BarChart3, Bot, Radio, Settings2, MoreHorizontal, Package } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import Terminal from './Terminal'
 import Signals from './Signals'
 import MLMonitor from './MLMonitor'
 import StatusBar from './StatusBar'
 import MiniSettings from './MiniSettings'
+import AssetManager from './AssetManager'
 import { TG, isTelegram } from './TelegramProvider'
 
-type Tab = 'live' | 'signals' | 'ml' | 'status' | 'settings'
+type Tab = 'live' | 'signals' | 'ml' | 'status' | 'settings' | 'assets'
 
 interface BotStatus {
   uptime_seconds: number
@@ -101,6 +102,7 @@ export default function App() {
     { id: 'live', label: 'Live', icon: TerminalSquare },
     { id: 'signals', label: 'Signals', icon: BarChart3 },
     { id: 'ml', label: 'ML', icon: Bot },
+    { id: 'assets', label: 'Assets', icon: Package },
   ]
 
   const moreTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
@@ -144,6 +146,7 @@ export default function App() {
         {tab === 'live' && <Terminal />}
         {tab === 'signals' && <Signals />}
         {tab === 'ml' && <MLMonitor />}
+        {tab === 'assets' && <AssetManager />}
         {tab === 'status' && <StatusBar status={status} />}
         {tab === 'settings' && <MiniSettings />}
       </div>

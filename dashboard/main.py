@@ -35,6 +35,13 @@ LOG_PATH = os.getenv("LOG_PATH", "/app/apolo.log")
 MODEL_PATH = os.getenv("MODEL_PATH", "/app/data/signal_model.json")
 START_TIME = time.time()
 
+# Import db_ops helpers for shared asset logic
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from db.db_ops import (
+    get_asset_list, add_asset as db_add_asset, remove_asset as db_remove_asset,
+    get_setting as db_get_setting, upsert_setting as db_upsert_setting,
+)
+
 
 def _get_db() -> sqlite3.Connection:
     """Open a read-only connection (safe for concurrent access)."""
@@ -476,6 +483,192 @@ async def api_miniapp_update(request: Request):
         db.commit()
         db.close()
         return {"ok": True, "key": key, "value": value}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Asset Management API ─────────────────────────────────────────
+@app.get("/api/assets")
+async def api_assets_get():
+    """Return asset list and current active asset."""
+    try:
+        assets = get_asset_list()
+        current = db_get_setting("current_asset") or ""
+        return {"ok": True, "assets": assets, "current_asset": current}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/assets")
+async def api_assets_add(request: Request):
+    """Add an asset to the list. Requires auth."""
+    init_data = request.headers.get("X-Telegram-InitData", "")
+    telegram_ok = False
+    if init_data:
+        telegram_ok = _validate_telegram_init_data(init_data)
+        if telegram_ok:
+            try:
+                parsed = parse_qs(init_data)
+                user_json = parsed.get("user", [None])[0]
+                if user_json:
+                    user = json.loads(unquote(user_json))
+                    if user.get("id") != AUTHORIZED_CHAT_ID:
+                        telegram_ok = False
+            except (json.JSONDecodeError, Exception):
+                telegram_ok = False
+
+    if not telegram_ok and not await _validate_admin_session(request):
+        raise HTTPException(status_code=403, detail="Invalid auth")
+
+    body = await request.json()
+    asset = (body.get("asset") or "").strip()
+    if not asset:
+        raise HTTPException(status_code=400, detail="Missing asset name")
+
+    try:
+        db_add_asset(asset)
+        assets = get_asset_list()
+        return {"ok": True, "assets": assets, "added": asset}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/assets/{asset_name}")
+async def api_assets_remove(asset_name: str, request: Request):
+    """Remove an asset from the list. Requires auth."""
+    init_data = request.headers.get("X-Telegram-InitData", "")
+    telegram_ok = False
+    if init_data:
+        telegram_ok = _validate_telegram_init_data(init_data)
+        if telegram_ok:
+            try:
+                parsed = parse_qs(init_data)
+                user_json = parsed.get("user", [None])[0]
+                if user_json:
+                    user = json.loads(unquote(user_json))
+                    if user.get("id") != AUTHORIZED_CHAT_ID:
+                        telegram_ok = False
+            except (json.JSONDecodeError, Exception):
+                telegram_ok = False
+
+    if not telegram_ok and not await _validate_admin_session(request):
+        raise HTTPException(status_code=403, detail="Invalid auth")
+
+    asset_name = asset_name.strip()
+    if not asset_name:
+        raise HTTPException(status_code=400, detail="Missing asset name")
+
+    try:
+        db_remove_asset(asset_name)
+        # If the removed asset was the current one, clear current_asset
+        current = db_get_setting("current_asset") or ""
+        if current == asset_name:
+            remaining = get_asset_list()
+            new_current = remaining[0] if remaining else ""
+            db_upsert_setting("current_asset", new_current)
+        assets = get_asset_list()
+        return {"ok": True, "assets": assets, "removed": asset_name}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/assets/select")
+async def api_assets_select(request: Request):
+    """Set the active (current) asset. Requires auth."""
+    init_data = request.headers.get("X-Telegram-InitData", "")
+    telegram_ok = False
+    if init_data:
+        telegram_ok = _validate_telegram_init_data(init_data)
+        if telegram_ok:
+            try:
+                parsed = parse_qs(init_data)
+                user_json = parsed.get("user", [None])[0]
+                if user_json:
+                    user = json.loads(unquote(user_json))
+                    if user.get("id") != AUTHORIZED_CHAT_ID:
+                        telegram_ok = False
+            except (json.JSONDecodeError, Exception):
+                telegram_ok = False
+
+    if not telegram_ok and not await _validate_admin_session(request):
+        raise HTTPException(status_code=403, detail="Invalid auth")
+
+    body = await request.json()
+    asset = (body.get("asset") or "").strip()
+    if not asset:
+        raise HTTPException(status_code=400, detail="Missing asset name")
+
+    # Validate asset exists in the list
+    assets = get_asset_list()
+    if asset not in assets:
+        raise HTTPException(status_code=400, detail=f"Asset '{asset}' not in list. Add it first.")
+
+    try:
+        db_upsert_setting("current_asset", asset)
+        return {"ok": True, "current_asset": asset}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Bot Control API (start/stop) ──────────────────────────────────
+VALID_MODES = {"False", "Signal", "Automatic"}
+
+
+@app.post("/api/bot/control")
+async def api_bot_control(request: Request):
+    """Start or stop the bot for a given exchange. Requires auth.
+
+    Body: { "exchange": "dex"|"cex", "mode": "False"|"Signal"|"Automatic" }
+    """
+    init_data = request.headers.get("X-Telegram-InitData", "")
+    telegram_ok = False
+    if init_data:
+        telegram_ok = _validate_telegram_init_data(init_data)
+        if telegram_ok:
+            try:
+                parsed = parse_qs(init_data)
+                user_json = parsed.get("user", [None])[0]
+                if user_json:
+                    user = json.loads(unquote(user_json))
+                    if user.get("id") != AUTHORIZED_CHAT_ID:
+                        telegram_ok = False
+            except (json.JSONDecodeError, Exception):
+                telegram_ok = False
+
+    if not telegram_ok and not await _validate_admin_session(request):
+        raise HTTPException(status_code=403, detail="Invalid auth")
+
+    body = await request.json()
+    exchange = (body.get("exchange") or "").strip().lower()
+    mode = (body.get("mode") or "").strip()
+
+    if exchange not in ("dex", "cex"):
+        raise HTTPException(status_code=400, detail="Exchange must be 'dex' or 'cex'")
+    if mode not in VALID_MODES:
+        raise HTTPException(status_code=400, detail=f"Mode must be one of: {', '.join(sorted(VALID_MODES))}")
+
+    key = "auto_trade_dex" if exchange == "dex" else "auto_trade_cex"
+
+    try:
+        db = _get_db_rw()
+        db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, mode),
+        )
+        db.commit()
+        db.close()
+
+        # Read back current state for both exchanges
+        current_dex = db_get_setting("auto_trade_dex") or "False"
+        current_cex = db_get_setting("auto_trade_cex") or "False"
+
+        return {
+            "ok": True,
+            "exchange": exchange,
+            "mode": mode,
+            "dex_mode": current_dex,
+            "cex_mode": current_cex,
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

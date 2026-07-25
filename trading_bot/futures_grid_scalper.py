@@ -60,6 +60,7 @@ GRID_PRICE_DIP_PCT      = _grid_setting("grid_price_dip_pct", "0.4")
 GRID_MAX_POSITIONS      = int(_grid_setting("grid_max_positions", "1"))
 GRID_SL_PCT             = _grid_setting("grid_sl_pct", "0.8")  # DEX-specific: SL percentage
 GRID_POSITION_CAPITAL   = float(_grid_setting("grid_position_capital", "15"))  # USDC per grid position
+GRID_DIRECTION           = _grid_setting("grid_direction", "long")  # "long", "short", or "both"
 
 # ── Leverage & capital ────────────────────────────────────────────────────────
 def _dex_leverage() -> int:
@@ -92,13 +93,15 @@ def _dex_capital() -> float:
 # ── Price-dip tracking (rolling memory) ──────────────────────────────────────
 _price_history: deque = deque(maxlen=40)
 _peak_price: float = 0.0
+_trough_price: float = float('inf')
 
 
 def _update_price_memory(price: float) -> None:
-    global _peak_price
+    global _peak_price, _trough_price
     if price > 0:
         _price_history.append(price)
         _peak_price = max(_price_history)
+        _trough_price = min(_price_history)
 
 
 def _is_price_dip(price: float) -> bool:
@@ -107,9 +110,25 @@ def _is_price_dip(price: float) -> bool:
     return (_peak_price - price) / _peak_price * 100 >= GRID_PRICE_DIP_PCT
 
 
+def _is_price_pump(price: float) -> bool:
+    """True if price has pumped GRID_PRICE_DIP_PCT % above the rolling trough."""
+    if _trough_price == float('inf') or len(_price_history) < 10:
+        return False
+    return (price - _trough_price) / _trough_price * 100 >= GRID_PRICE_DIP_PCT
+
+
 # ── State ────────────────────────────────────────────────────────────────────
 _last_buy_at: float = 0.0
+_last_sell_at: float = 0.0
 _open_position_count: int = 0  # Track via Orderly API (get_user_statistics)
+
+
+def _grid_direction_ok(direction: str) -> bool:
+    """Check if the given direction is enabled by GRID_DIRECTION config."""
+    gd = GRID_DIRECTION.strip().lower()
+    if gd == "both":
+        return True
+    return gd == direction
 
 
 def _compute_obi(orderbook: dict, depth: int = 10) -> tuple[float, dict]:
@@ -153,7 +172,7 @@ def futures_grid_scalp_cycle(asset: str = "PERP_NEAR_USDC", regime: str = "RANGE
 
     Returns: "buy", "sell", or None if no action taken.
     """
-    global _last_buy_at
+    global _last_buy_at, _last_sell_at
 
     if regime != "RANGE":
         return None
@@ -180,27 +199,11 @@ def futures_grid_scalp_cycle(asset: str = "PERP_NEAR_USDC", regime: str = "RANGE
         )
         return None
 
-    # ── Update price memory for dip detection ─────────────────────────────
+    # ── Update price memory for dip/pump detection ────────────────────────
     if live_price > 0:
         _update_price_memory(live_price)
 
-    # ── Cooldown check ────────────────────────────────────────────────────
-    if now - _last_buy_at < GRID_COOLDOWN_SEC:
-        return None
-
-    # ── Entry condition: price dip OR favorable OBI (OR logic) ─────
-    is_dip = _is_price_dip(live_price) if live_price > 0 else False
-    obi_ok = obi < GRID_OBI_BUY_THRESHOLD
-
-    if not (is_dip or obi_ok):
-        # Log why we're not entering (only when close to a signal)
-        if is_dip and not obi_ok:
-            logger.debug(f"📊 DEX Grid: price dip detected but OBI {obi:.3f} ≥ {GRID_OBI_BUY_THRESHOLD} — waiting")
-        elif obi_ok and not is_dip:
-            logger.debug(f"📊 DEX Grid: OBI {obi:.3f} ok but no price dip (peak=${_peak_price:.4f}, current=${live_price:.4f})")
-        return None
-
-    # ── Execute LONG with bracket order (SL + TP) ─────────────────────────
+    # ── Common pre-conditions ─────────────────────────────────────────────
     if capital < 10:
         logger.info(f"📉 DEX Grid: insufficient capital (${capital:.0f})")
         return None
@@ -209,43 +212,115 @@ def futures_grid_scalp_cycle(asset: str = "PERP_NEAR_USDC", regime: str = "RANGE
         logger.warning("DEX Grid: no live price available")
         return None
 
-    # Calculate position size with leverage
+    # ── Calculate position size ───────────────────────────────────────────
     notional = capital * leverage
     qty = notional / live_price
 
-    tp_price = live_price * (1 + GRID_TP_PCT / 100)
-    sl_price = live_price * (1 - GRID_SL_PCT / 100)
+    # ── LONG entry: price dip OR OBI < buy threshold ──────────────────────
+    if _grid_direction_ok("long"):
+        long_cooldown_ok = (now - _last_buy_at) >= GRID_COOLDOWN_SEC
+        is_dip = _is_price_dip(live_price)
+        obi_buy_ok = obi < GRID_OBI_BUY_THRESHOLD
 
-    order_payload = {
-        "symbol": asset,
-        "side": "BUY",  # Grid scalper is long-only on DEX
-        "entry": live_price,
-        "take_profit": tp_price,
-        "stop_loss": sl_price,
-        "leverage": leverage,
-    }
+        if long_cooldown_ok and (is_dip or obi_buy_ok):
+            tp_price = live_price * (1 + GRID_TP_PCT / 100)
+            sl_price = live_price * (1 - GRID_SL_PCT / 100)
 
-    logger.info(
-        f"📉 DEX Grid BUY: price=${live_price:.4f}, dip={(_peak_price-live_price)/_peak_price*100:.2f}%, "
-        f"OBI={obi:.3f}, capital=${capital:.0f}, lev={leverage}x, "
-        f"TP=+{GRID_TP_PCT}%, SL=-{GRID_SL_PCT}%"
-    )
+            order_payload = {
+                "symbol": asset,
+                "side": "BUY",
+                "entry": live_price,
+                "take_profit": tp_price,
+                "stop_loss": sl_price,
+                "leverage": leverage,
+            }
 
-    try:
-        place_futures_order(order_payload)
-    except Exception as e:
-        logger.error(f"❌ DEX Grid order failed: {e}")
-        return None
+            dip_pct = (_peak_price - live_price) / _peak_price * 100 if _peak_price > 0 else 0
+            trigger = f"dip {dip_pct:.1f}%" if is_dip else f"OBI {obi:.3f}"
+            logger.info(
+                f"📉 DEX Grid LONG: price=${live_price:.4f}, dip={dip_pct:.2f}%, "
+                f"OBI={obi:.3f}, capital=${capital:.0f}, lev={leverage}x, "
+                f"TP=+{GRID_TP_PCT}%, SL=-{GRID_SL_PCT}%"
+            )
 
-    _last_buy_at = now
+            try:
+                place_futures_order(order_payload)
+            except Exception as e:
+                logger.error(f"❌ DEX Grid LONG order failed: {e}")
+                return None
 
-    if chat_id:
-        send_bot_message(chat_id,
-            f"📉 DEX Grid Scalp BUY\n"
-            f"   {asset}: qty≈{qty:.4f} @ ${live_price:.4f}\n"
-            f"   TP: ${tp_price:.4f} (+{GRID_TP_PCT}%) | SL: ${sl_price:.4f} (-{GRID_SL_PCT}%)\n"
-            f"   Leverage: {leverage}x | Notional: ${notional:.0f}\n"
-            f"   Trigger: price dip {(_peak_price-live_price)/_peak_price*100:.2f}% + OBI {obi:.3f}"
-        )
+            _last_buy_at = now
 
-    return "buy"
+            if chat_id:
+                send_bot_message(chat_id,
+                    f"📉 DEX Grid Scalp LONG\n"
+                    f"   {asset}: qty≈{qty:.4f} @ ${live_price:.4f}\n"
+                    f"   TP: ${tp_price:.4f} (+{GRID_TP_PCT}%) | SL: ${sl_price:.4f} (-{GRID_SL_PCT}%)\n"
+                    f"   Leverage: {leverage}x | Notional: ${notional:.0f}\n"
+                    f"   Trigger: {trigger}"
+                )
+            return "buy"
+
+    # ── SHORT entry: price pump OR OBI > sell threshold ───────────────────
+    if _grid_direction_ok("short"):
+        short_cooldown_ok = (now - _last_sell_at) >= GRID_COOLDOWN_SEC
+        is_pump = _is_price_pump(live_price)
+        obi_sell_ok = obi > GRID_OBI_SELL_THRESHOLD
+
+        if short_cooldown_ok and (is_pump or obi_sell_ok):
+            tp_price = live_price * (1 - GRID_TP_PCT / 100)  # TP below entry
+            sl_price = live_price * (1 + GRID_SL_PCT / 100)  # SL above entry
+
+            order_payload = {
+                "symbol": asset,
+                "side": "SELL",
+                "entry": live_price,
+                "take_profit": tp_price,
+                "stop_loss": sl_price,
+                "leverage": leverage,
+            }
+
+            pump_pct = (live_price - _trough_price) / _trough_price * 100 if _trough_price != float('inf') else 0
+            trigger = f"pump {pump_pct:.1f}%" if is_pump else f"OBI {obi:.3f}"
+            logger.info(
+                f"📈 DEX Grid SHORT: price=${live_price:.4f}, pump={pump_pct:.2f}%, "
+                f"OBI={obi:.3f}, capital=${capital:.0f}, lev={leverage}x, "
+                f"TP=-{GRID_TP_PCT}%, SL=+{GRID_SL_PCT}%"
+            )
+
+            try:
+                place_futures_order(order_payload)
+            except Exception as e:
+                logger.error(f"❌ DEX Grid SHORT order failed: {e}")
+                return None
+
+            _last_sell_at = now
+
+            if chat_id:
+                send_bot_message(chat_id,
+                    f"📈 DEX Grid Scalp SHORT\n"
+                    f"   {asset}: qty≈{qty:.4f} @ ${live_price:.4f}\n"
+                    f"   TP: ${tp_price:.4f} (-{GRID_TP_PCT}%) | SL: ${sl_price:.4f} (+{GRID_SL_PCT}%)\n"
+                    f"   Leverage: {leverage}x | Notional: ${notional:.0f}\n"
+                    f"   Trigger: {trigger}"
+                )
+            return "sell"
+
+    # ── Log why we're not entering (only when close to a signal) ──────────
+    if _grid_direction_ok("long"):
+        is_dip = _is_price_dip(live_price) if live_price > 0 else False
+        obi_ok = obi < GRID_OBI_BUY_THRESHOLD
+        if is_dip and not obi_ok:
+            logger.debug(f"📊 DEX Grid: price dip detected but OBI {obi:.3f} ≥ {GRID_OBI_BUY_THRESHOLD} — waiting")
+        elif obi_ok and not is_dip:
+            logger.debug(f"📊 DEX Grid: OBI {obi:.3f} ok but no price dip (peak=${_peak_price:.4f}, current=${live_price:.4f})")
+
+    if _grid_direction_ok("short"):
+        is_pump = _is_price_pump(live_price) if live_price > 0 else False
+        obi_sell = obi > GRID_OBI_SELL_THRESHOLD
+        if is_pump and not obi_sell:
+            logger.debug(f"📊 DEX Grid: price pump detected but OBI {obi:.3f} ≤ {GRID_OBI_SELL_THRESHOLD} — waiting")
+        elif obi_sell and not is_pump:
+            logger.debug(f"📊 DEX Grid: OBI {obi:.3f} ok but no price pump (trough=${_trough_price:.4f}, current=${live_price:.4f})")
+
+    return None
