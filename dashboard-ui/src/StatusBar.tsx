@@ -132,7 +132,7 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
         </div>
 
         {/* DEX Mode */}
-        <div className={`border p-3 ${isRunning(status.dex_mode) ? 'border-[#D0CFCC]/20 bg-[#D0CFCC]/3' : 'border-[#2a2240] bg-[#1a1528]'}`}>
+        <div className={`flex flex-col border p-3 ${isRunning(status.dex_mode) ? 'border-[#D0CFCC]/20 bg-[#D0CFCC]/3' : 'border-[#2a2240] bg-[#1a1528]'}`}>
           <div className="text-[#4a4060] text-[10px]">DEX MODE (Orderly Futures)</div>
           <div className={`text-lg font-bold ${isRunning(status.dex_mode) ? 'text-[#D0CFCC]' : 'text-[#4a4060]'}`}>
             {modeLabel(status.dex_mode)}
@@ -141,7 +141,7 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
             <button
               onClick={() => toggleExchange('dex')}
               disabled={isTransitioning('dex')}
-              className={`mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${
+              className={`mt-auto w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${
                 isRunning(status.dex_mode)
                   ? 'bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20'
                   : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20'
@@ -158,7 +158,7 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
         </div>
 
         {/* CEX Mode */}
-        <div className={`border p-3 ${isRunning(status.cex_mode) ? 'border-[#D0CFCC]/20 bg-[#D0CFCC]/3' : 'border-[#2a2240] bg-[#1a1528]'}`}>
+        <div className={`flex flex-col border p-3 ${isRunning(status.cex_mode) ? 'border-[#D0CFCC]/20 bg-[#D0CFCC]/3' : 'border-[#2a2240] bg-[#1a1528]'}`}>
           <div className="text-[#4a4060] text-[10px]">CEX MODE (Binance Spot)</div>
           <div className={`text-lg font-bold ${isRunning(status.cex_mode) ? 'text-[#D0CFCC]' : 'text-[#4a4060]'}`}>
             {modeLabel(status.cex_mode)}
@@ -167,7 +167,7 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
             <button
               onClick={() => toggleExchange('cex')}
               disabled={isTransitioning('cex')}
-              className={`mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${
+              className={`mt-auto w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${
                 isRunning(status.cex_mode)
                   ? 'bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20'
                   : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20'

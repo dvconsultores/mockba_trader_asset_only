@@ -127,15 +127,6 @@ export default function App() {
               {status.model_loaded && (
                 <span className="text-cyan-500">ML:on</span>
               )}
-              {status.current_regime && (
-                <span className={
-                  status.current_regime === 'RANGE' ? 'text-yellow-400' :
-                  status.current_regime === 'TREND_UP' ? 'text-green-400' :
-                  'text-red-400'
-                }>
-                  {status.current_regime === 'RANGE' ? '⚡Grid' : status.current_regime}
-                </span>
-              )}
             </>
           )}
         </div>
