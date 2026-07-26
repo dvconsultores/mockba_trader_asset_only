@@ -71,25 +71,24 @@ def record_closed_trade(
 
 # ── Kill switches ─────────────────────────────────────────────────────────────
 
-def is_entry_blocked(venue: str) -> tuple[bool, str]:
-    """Check if new entries should be blocked. Returns (blocked, reason)."""
+def is_entry_blocked(venue: str, equity: float = 0.0) -> tuple[bool, str]:
+    """Check if new entries should be blocked. Returns (blocked, reason).
+    
+    If equity > 0, also checks daily_loss_limit_pct against equity.
+    """
     # Check global trading enabled
     if not get_setting_bool("trading_enabled", True):
         return True, "trading_enabled is off"
 
-    # Check venue-specific auto-trade
-    auto_key = f"auto_trade_{venue}"
-    auto_mode = get_setting_float(auto_key, 0) if venue in ("binance",) else None
-    if auto_mode is not None:
-        # For now, just check trading_enabled — auto_trade_* is set by Telegram
-        pass
-
-    # Daily loss limit
-    limit = get_setting_float("daily_loss_limit", 10.0)
+    # Daily loss limit — absolute (override) takes priority, then percentage
+    limit_abs = get_setting_float("daily_loss_limit", 0.0)
+    limit_pct = get_setting_float("daily_loss_limit_pct", 5.0)
+    limit = limit_abs if limit_abs > 0 else (equity * limit_pct / 100 if equity > 0 else 0)
+    
     if limit > 0:
         pnl = get_daily_pnl(venue)
         if pnl <= -limit:
-            return True, f"daily_loss_limit breached: {pnl:.2f} <= -{limit}"
+            return True, f"daily_loss_limit breached: {pnl:.2f} <= -{limit:.2f}"
 
     # Consecutive losses
     max_consec = get_setting_int("max_consecutive_losses", 4)

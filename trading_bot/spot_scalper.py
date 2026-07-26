@@ -167,7 +167,8 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float,
         return None
 
     # Kill switch
-    blocked, reason = is_entry_blocked(venue)
+    equity = exchange.get_equity()
+    blocked, reason = is_entry_blocked(venue, equity)
     if blocked:
         _log_signal(asset, venue, regime, obi, 0, "skipped", reason)
         return None
@@ -208,8 +209,7 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float,
             _log_signal(asset, venue, regime, obi, extreme_pct, "skipped", "spacing")
             return None
 
-        # Size
-        equity = exchange.get_equity()
+        # Size — equity already fetched above for kill switch
         info = exchange.get_symbol_info(asset)
         if info is None:
             return None

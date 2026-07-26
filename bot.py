@@ -132,7 +132,8 @@ def run():
                 # ── Binance (spot) ──────────────────────────────────
                 if cex_active:
                     try:
-                        blocked, reason = is_entry_blocked("binance")
+                        equity_b = binance.get_equity()
+                        blocked, reason = is_entry_blocked("binance", equity_b)
                         regime = detect_regime(asset, "binance")
 
                         # Manage exits FIRST
@@ -150,7 +151,8 @@ def run():
                 # ── Orderly (futures) ───────────────────────────────
                 if dex_active:
                     try:
-                        blocked, reason = is_entry_blocked("orderly")
+                        equity_o = orderly.get_equity()
+                        blocked, reason = is_entry_blocked("orderly", equity_o)
                         regime = detect_regime(asset, "orderly")
 
                         # Manage exits FIRST

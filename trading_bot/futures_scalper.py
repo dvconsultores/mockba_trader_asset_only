@@ -177,7 +177,8 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float,
         return None
 
     # Kill switch
-    blocked, reason = is_entry_blocked(venue)
+    equity = exchange.get_equity()
+    blocked, reason = is_entry_blocked(venue, equity)
     if blocked:
         _log_signal(asset, venue, regime, obi, 0, "skipped", reason)
         return None
@@ -222,7 +223,6 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float,
         info = exchange.get_symbol_info(asset)
         if info is None:
             return None
-        equity = exchange.get_equity()
         slot = compute_slot_size(venue, equity, info.min_notional)
         qty = slot / live_price
         qty = qty - (qty % info.base_tick) if info.base_tick > 0 else qty
@@ -252,7 +252,6 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float,
         info = exchange.get_symbol_info(asset)
         if info is None:
             return None
-        equity = exchange.get_equity()
         slot = compute_slot_size(venue, equity, info.min_notional)
         qty = slot / live_price
         qty = qty - (qty % info.base_tick) if info.base_tick > 0 else qty

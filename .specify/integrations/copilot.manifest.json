@@ -1,0 +1,28 @@
+{
+  "integration": "copilot",
+  "version": "0.12.8.dev0",
+  "installed_at": "2026-07-26T16:41:33.463461+00:00",
+  "files": {
+    ".github/agents/speckit.analyze.agent.md": "e3e9d894207c514010209c5a79ca1d322b410aab11cf28a0ae71f0d6e41f9473",
+    ".github/agents/speckit.clarify.agent.md": "e4c9ed9c8241f9e1dda7db199464cf336973d580bdddf1d694904a95f8098ec8",
+    ".github/agents/speckit.constitution.agent.md": "6e96c037d6d4e9d37d4f2acbcad33c7764f0c4b633012c36a93a3f51c471f872",
+    ".github/agents/speckit.implement.agent.md": "429394c80da1c85b024e10be1af6a33c3ed9ec859d74964f94581e5854660f30",
+    ".github/agents/speckit.converge.agent.md": "ad31cbd99794b236c5261154138c24892fae17c4c5a05e1eb7ee1d4b182fd41c",
+    ".github/agents/speckit.plan.agent.md": "44449d3805f76ddb28d343b4059507b67fb0c835b5234f5f10bc240207ae5f57",
+    ".github/agents/speckit.checklist.agent.md": "bf0916797ad1d1f1447a5141bfd0a2d63d0c6e8323f61b138724fef453f94e91",
+    ".github/agents/speckit.specify.agent.md": "03cdf4573683e2566292f89def665972d546c72478dca7bd3e02ad6800fce1f6",
+    ".github/agents/speckit.tasks.agent.md": "9f1a498424cc89775400320ee70df24d1bc834bf4eaad03b3eeb34558eec3a12",
+    ".github/agents/speckit.taskstoissues.agent.md": "c158a50ace33057e8b9e10c8e81871a06a5440735214cddb7933e4842d71417f",
+    ".github/prompts/speckit.analyze.prompt.md": "bb93dbbafa96d07b7cd07fc7061d8adb0c6b26cb772a52d0dce263b1ca2b9b77",
+    ".github/prompts/speckit.clarify.prompt.md": "ce79b3437ca918d46ac858eb4b8b44d3b0a02c563660c60d94c922a7b5d8d4f4",
+    ".github/prompts/speckit.constitution.prompt.md": "38f937279de14387601422ddfda48365debdbaf47b2d513527b8f6d8a27d499d",
+    ".github/prompts/speckit.implement.prompt.md": "5053a17fb9238338c63b898ee9c80b2cb4ad1a90c6071fe3748de76864ac6a80",
+    ".github/prompts/speckit.converge.prompt.md": "8e37fe6d8b6ce130fcc011b995edd3e412d825c0f46abd1a7706451f2049d571",
+    ".github/prompts/speckit.plan.prompt.md": "2098dae6bd9277335f31cb150b78bfb1de539c0491798e5cfe382c89ab0bcd0e",
+    ".github/prompts/speckit.checklist.prompt.md": "c3aea7526c5cbfd8665acc9508ad5a9a3f71e91a63c36be7bed13a834c3a683c",
+    ".github/prompts/speckit.specify.prompt.md": "7b2cc4dc6462da1c96df46bac4f60e53baba3097f4b24ac3f9b684194458aa98",
+    ".github/prompts/speckit.tasks.prompt.md": "88fc57c289f99d5e9d35c255f3e2683f73ecb0a5155dcb4d886f82f52b11841f",
+    ".github/prompts/speckit.taskstoissues.prompt.md": "2f9636d4f312a1470f000747cb62677fec0655d8b4e2357fa4fbf238965fa66d",
+    ".vscode/settings.json": "c6782d67fc76b9128803b03247ddd015d542a574ee80a4fe0aca2429aa7bfe08"
+  }
+}
