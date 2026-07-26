@@ -19,8 +19,7 @@ COPY . .
 
 # Create non-root user and assign ownership
 RUN useradd --create-home --shell /bin/bash appuser && \
-    chown -R appuser:appuser /app && \
-    chmod +x /app/scripts/init_data.sh
+    chown -R appuser:appuser /app
 
-# Run the Telegram bot (which spawns trade/monitor threads)
-CMD ["/bin/bash", "-lc", "./scripts/init_data.sh && python forever.py"]
+# Run the process supervisor (launches telegram.py + bot.py)
+CMD ["python", "forever.py"]

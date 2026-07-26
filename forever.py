@@ -6,7 +6,8 @@ from datetime import datetime
 
 # List of scripts to run (relative to project root)
 scripts = [
-    "telegram.py"
+    "telegram.py",
+    "bot.py",
 ]
 
 def log(msg):

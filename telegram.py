@@ -537,8 +537,4 @@ def handle_bot_toggle(cid: int, exchange: str, mode: str):
 
 # Start polling
 if __name__ == "__main__":
-    # Start autotrade in a separate thread to avoid blocking the bot
-    import bot as _bot
-    t = threading.Thread(target=_bot.run, daemon=True)
-    t.start()
     bot.polling()
