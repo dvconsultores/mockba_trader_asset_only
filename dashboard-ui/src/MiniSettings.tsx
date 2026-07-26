@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { Settings2, Save, Check, AlertCircle, Star, ChevronDown, X } from 'lucide-react'
+import { validateAll, type Verdict } from './validation'
 
 interface SettingsData { [key: string]: string }
 
@@ -20,104 +21,130 @@ interface PresetDef {
 
 const PRESETS: PresetDef[] = [
   {
-    key: 'grid_obi_buy', label: 'OBI Buy', hint: 'Enter LONG when OBI below',
+    key: 'dip_min_pct', label: 'Dip Threshold', hint: 'Buy when price drops % below peak', suffix: '%',
     options: [
-      { label: '0.92 — Aggressive', value: '0.92' },
-      { label: '0.94 — Balanced', value: '0.94' },
-      { label: '0.96 — Moderate', value: '0.96' },
-      { label: '0.98 — Conservative', value: '0.98' },
+      { label: '0.10% — Very sensitive', value: '0.10' },
+      { label: '0.15% — Active (default)', value: '0.15' },
+      { label: '0.25% — Moderate', value: '0.25' },
+      { label: '0.40% — Conservative', value: '0.40' },
     ],
-    rec: (c) => c > 500 ? '0.94' : c > 200 ? '0.95' : '0.96',
+    rec: (c) => c > 500 ? '0.25' : c > 200 ? '0.20' : '0.15',
   },
   {
-    key: 'grid_obi_sell', label: 'OBI Sell', hint: 'Signal when OBI above',
+    key: 'pump_min_pct', label: 'Pump Threshold', hint: 'Sell/short when price pumps % above trough', suffix: '%',
     options: [
-      { label: '1.10 — Slight pump', value: '1.10' },
-      { label: '1.18 — Moderate', value: '1.18' },
-      { label: '1.22 — Strong', value: '1.22' },
-      { label: '1.30 — Euphoria', value: '1.30' },
+      { label: '0.10% — Very sensitive', value: '0.10' },
+      { label: '0.15% — Active (default)', value: '0.15' },
+      { label: '0.25% — Moderate', value: '0.25' },
+      { label: '0.40% — Conservative', value: '0.40' },
     ],
-    rec: (c) => c > 500 ? '1.30' : c > 200 ? '1.22' : '1.18',
+    rec: (c) => c > 500 ? '0.25' : '0.15',
   },
   {
-    key: 'grid_tp_pct', label: 'Grid TP', hint: '% above fill price', suffix: '%',
+    key: 'tp_min_pct', label: 'Take Profit', hint: '% above fill price', suffix: '%',
     options: [
-      { label: '0.2% — Micro', value: '0.2' },
       { label: '0.3% — Scalp', value: '0.3' },
-      { label: '0.5% — Balanced', value: '0.5' },
-      { label: '0.75% — Swing', value: '0.75' },
-    ],
-    rec: (c) => c > 500 ? '0.5' : c > 100 ? '0.3' : '0.2',
-  },
-  {
-    key: 'grid_sl_pct', label: 'Grid SL (DEX)', hint: '% stop-loss for futures', suffix: '%',
-    options: [
       { label: '0.5% — Tight', value: '0.5' },
-      { label: '0.8% — Default', value: '0.8' },
-      { label: '1.2% — Moderate', value: '1.2' },
-      { label: '2.0% — Wide', value: '2.0' },
+      { label: '0.8% — Balanced (default)', value: '0.8' },
+      { label: '1.2% — Swing', value: '1.2' },
     ],
-    rec: (_c) => '0.8',
+    rec: (c) => c > 1000 ? '0.8' : c > 200 ? '0.5' : '0.3',
   },
   {
-    key: 'grid_cooldown_sec', label: 'Cooldown', hint: 'Seconds between entries', suffix: 's',
+    key: 'sl_min_pct', label: 'Stop Loss', hint: '% stop-loss from entry', suffix: '%',
     options: [
-      { label: '60s — Aggressive', value: '60' },
-      { label: '90s — Fast', value: '90' },
+      { label: '0.3% — Tight', value: '0.3' },
+      { label: '0.5% — Balanced (default)', value: '0.5' },
+      { label: '0.8% — Moderate', value: '0.8' },
+      { label: '1.2% — Wide', value: '1.2' },
+    ],
+    rec: (_c) => '0.5',
+  },
+  {
+    key: 'cooldown_sec', label: 'Cooldown', hint: 'Seconds between entries', suffix: 's',
+    options: [
+      { label: '30s — Rapid', value: '30' },
+      { label: '60s — Active (default)', value: '60' },
       { label: '120s — Moderate', value: '120' },
       { label: '300s — Patient', value: '300' },
     ],
-    rec: (c) => c > 500 ? '120' : c > 200 ? '90' : '60',
+    rec: (c) => c > 500 ? '120' : '60',
   },
   {
-    key: 'grid_price_dip_pct', label: 'Price Dip', hint: 'Buy when price drops % below peak', suffix: '%',
+    key: 'max_slots', label: 'Max Slots', hint: 'Concurrent open positions',
     options: [
-      { label: '0.2% — Aggressive', value: '0.2' },
-      { label: '0.3% — Active', value: '0.3' },
-      { label: '0.4% — Moderate', value: '0.4' },
-      { label: '0.6% — Conservative', value: '0.6' },
+      { label: '1 — Single', value: '1' },
+      { label: '3 — Grid (default)', value: '3' },
+      { label: '5 — Dense grid', value: '5' },
+      { label: '9 — Multi-asset', value: '9' },
     ],
-    rec: (c) => c > 500 ? '0.5' : c > 200 ? '0.4' : '0.3',
+    rec: (c) => c > 1000 ? '9' : c > 200 ? '5' : '3',
   },
   {
-    key: 'grid_max_positions', label: 'Max Positions', hint: 'Concurrent grid entries',
+    key: 'min_entry_spacing_pct', label: 'Entry Spacing', hint: 'Min % between grid levels', suffix: '%',
     options: [
-      { label: '1 — Single (safe)', value: '1' },
-      { label: '2 — Double stack', value: '2' },
-      { label: '3 — Triple stack', value: '3' },
-      { label: '5 — Aggressive', value: '5' },
+      { label: '0.15% — Tight', value: '0.15' },
+      { label: '0.30% — Default', value: '0.30' },
+      { label: '0.50% — Moderate', value: '0.50' },
+      { label: '1.00% — Wide', value: '1.00' },
     ],
-    rec: (c) => c > 500 ? '2' : c > 200 ? '2' : '1',
-  },
-  {
-    key: 'risk_level', label: 'Risk Level', hint: '% balance risked per DEX trade', suffix: '%',
-    options: [
-      { label: '1% — Safe', value: '1.0' },
-      { label: '2.5% — Balanced', value: '2.5' },
-      { label: '5% — Aggressive', value: '5.0' },
-      { label: '6.5% — Max', value: '6.5' },
-    ],
-    rec: (_c) => '2.5',
-  },
-  {
-    key: 'capital_usage', label: 'Capital Usage', hint: '% buying power deployed', suffix: '%',
-    options: [
-      { label: '25% — Conservative', value: '25' },
-      { label: '50% — Balanced', value: '50' },
-      { label: '75% — Aggressive', value: '75' },
-      { label: '100% — Max', value: '100' },
-    ],
-    rec: (_c) => '50',
+    rec: (_c) => '0.30',
   },
   {
     key: 'leverage', label: 'Leverage', hint: 'DEX futures multiplier', suffix: 'x',
     options: [
       { label: '2x — Safe', value: '2' },
-      { label: '3x — Balanced', value: '3' },
+      { label: '3x — Balanced (default)', value: '3' },
       { label: '5x — Aggressive', value: '5' },
-      { label: '10x — Max', value: '10' },
     ],
-    rec: (c) => c > 500 ? '3' : '5',
+    rec: (c) => c > 500 ? '3' : '2',
+  },
+  {
+    key: 'daily_loss_limit_pct', label: 'Daily Loss Limit', hint: 'Stop trading if daily PnL below % of equity', suffix: '%',
+    options: [
+      { label: '2% — Tight leash', value: '2' },
+      { label: '5% — Default', value: '5' },
+      { label: '10% — Loose', value: '10' },
+      { label: '0% — Off', value: '0' },
+    ],
+    rec: (_c) => '5',
+  },
+  {
+    key: 'max_consecutive_losses', label: 'Max Consec. Losses', hint: 'Stop after N losses in a row',
+    options: [
+      { label: '2 — Quick stop', value: '2' },
+      { label: '4 — Default', value: '4' },
+      { label: '6 — Tolerant', value: '6' },
+      { label: '0 — Off', value: '0' },
+    ],
+    rec: (_c) => '4',
+  },
+  {
+    key: 'adaptive_enabled', label: 'Adaptive Thresholds', hint: 'Scale dip/TP/SL with volatility (ATR)',
+    options: [
+      { label: 'On (recommended)', value: 'true' },
+      { label: 'Off — fixed floors only', value: 'false' },
+    ],
+    rec: (_c) => 'true',
+  },
+  {
+    key: 'dip_k', label: 'Dip ATR Multiplier', hint: 'dip = max(k × ATR%, min_pct)',
+    options: [
+      { label: '0.3 — Sensitive', value: '0.3' },
+      { label: '0.5 — Default', value: '0.5' },
+      { label: '0.8 — Conservative', value: '0.8' },
+      { label: '1.0 — Wide', value: '1.0' },
+    ],
+    rec: (_c) => '0.5',
+  },
+  {
+    key: 'tp_k', label: 'TP ATR Multiplier', hint: 'tp = max(k × ATR%, min_pct)',
+    options: [
+      { label: '0.5 — Tight', value: '0.5' },
+      { label: '1.0 — Default', value: '1.0' },
+      { label: '1.5 — Wide', value: '1.5' },
+    ],
+    rec: (_c) => '1.0',
   },
 ]
 
@@ -125,25 +152,34 @@ const PRESETS: PresetDef[] = [
 interface FreeDef { key: string; label: string; hint: string; suffix?: string; step?: string; min?: string; max?: string }
 
 const FREE_INPUTS: FreeDef[] = [
-  { key: 'cex_capital', label: 'CEX Capital', hint: 'USDT per spot position', step: '1', min: '5' },
-  { key: 'dex_capital', label: 'DEX Capital', hint: 'USDC per futures position', step: '1', min: '5' },
-  { key: 'grid_position_capital', label: 'Grid Pos. Capital', hint: 'USDT per grid scalp position', step: '1', min: '5' },
-  { key: 'take_profit', label: 'Take Profit', hint: '% above entry (reversal scalper)', step: '0.1', min: '0.1', suffix: '%' },
-  { key: 'ml_threshold', label: 'ML Threshold', hint: 'Gate score (0.01–1.00)', step: '0.01', min: '0.5', max: '1.0' },
+  { key: 'dex_slot_pct', label: 'DEX Slot %', hint: '% equity per futures position', step: '1', min: '1', suffix: '%' },
+  { key: 'cex_slot_pct', label: 'CEX Slot %', hint: '% equity per spot position', step: '1', min: '1', suffix: '%' },
+  { key: 'atr_period', label: 'ATR Period', hint: 'Candles for ATR calculation', step: '1', min: '5', max: '50' },
+  { key: 'max_hold_minutes_spot', label: 'Max Hold (Spot)', hint: 'Minutes before time stop on CEX', step: '5', min: '10' },
+  { key: 'max_hold_minutes_futures', label: 'Max Hold (Futures)', hint: 'Minutes before time stop on DEX', step: '5', min: '10' },
+  { key: 'max_leverage', label: 'Max Leverage', hint: 'Hard cap on DEX leverage', step: '1', min: '1', max: '10' },
+  { key: 'slope_threshold', label: 'Trend Slope', hint: 'Regime slope threshold (0.0012 default)', step: '0.0001', min: '0.0005' },
+  { key: 'assumed_slippage_pct', label: 'Assumed Slippage', hint: '% for net-edge validation', step: '0.01', min: '0', suffix: '%' },
+  { key: 'min_net_edge_pct', label: 'Min Net Edge', hint: 'Refuse to trade below this', step: '0.01', min: '0', suffix: '%' },
+  { key: 'dex_round_trip_fee_pct', label: 'DEX Fee (round-trip)', hint: 'Orderly round-trip fee %', step: '0.01', min: '0', suffix: '%' },
+  { key: 'cex_round_trip_fee_pct', label: 'CEX Fee (round-trip)', hint: 'Binance round-trip fee %', step: '0.01', min: '0', suffix: '%' },
 ]
 
 // ── Select fields ───────────────────────────────────────────────
 interface SelectDef { key: string; label: string; hint: string; options: string[] }
 
 const SELECTS: SelectDef[] = [
-  { key: 'auto_trade_dex', label: 'DEX Mode', hint: 'Orderly futures', options: ['False', 'Signal', 'Automatic'] },
-  { key: 'auto_trade_cex', label: 'CEX Mode', hint: 'Binance spot', options: ['False', 'Signal', 'Automatic'] },
+  { key: 'auto_trade_orderly', label: 'DEX Mode', hint: 'Orderly futures', options: ['false', 'true'] },
+  { key: 'auto_trade_binance', label: 'CEX Mode', hint: 'Binance spot', options: ['false', 'true'] },
+  { key: 'trading_enabled', label: 'Trading Enabled', hint: 'Global on/off', options: ['1', '0'] },
+  { key: 'dry_run', label: 'Dry Run', hint: 'Simulate orders (no real money)', options: ['true', 'false'] },
 ]
 
 type ComboOption = { label: string; value: string; recommended?: boolean }
 
-function NumberField({ value, suffix, disabled, step, min, max, error, onChange }: { value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string; error?: boolean; onChange: (v: string) => void }) {
+function NumberField({ value, suffix, disabled, step, min, max, error, verdict, onChange }: { value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string; error?: boolean; verdict?: Verdict; onChange: (v: string) => void }) {
   const [draft, setDraft] = useState(value)
+  const vLevel = verdict?.level
 
   useEffect(() => {
     setDraft(value)
@@ -161,8 +197,9 @@ function NumberField({ value, suffix, disabled, step, min, max, error, onChange 
         step={step ?? 'any'}
         min={min}
         max={max}
+        title={verdict?.message || ''}
         className={`flex-1 min-w-0 px-3 py-2.5 text-sm text-left bg-[#171421] border rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] disabled:opacity-50 transition-colors
-          ${error ? 'border-red-500' : 'border-[#2a2240]'}`}
+          ${vLevel === 'error' ? 'border-red-500' : vLevel === 'warn' ? 'border-amber-500' : error ? 'border-red-500' : 'border-[#2a2240]'}`}
       />
       {suffix && <span className="text-xs text-[#7a7090] w-5 text-right shrink-0">{suffix}</span>}
     </div>
@@ -288,7 +325,10 @@ function MiniSettingsComponent() {
   const [loaded, setLoaded] = useState(false)
   const [editable, setEditable] = useState(isTelegram)
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
-  const capital = parseFloat(settings.cex_capital || settings.capital_usage || '10')
+  const capital = parseFloat(settings.cex_slot_pct || settings.dex_slot_pct || '15')
+
+  // Inline validation (Amendment 002 — pure TS, no network)
+  const verdicts = React.useMemo(() => validateAll(settings), [settings])
 
   useEffect(() => {
     fetch('/api/miniapp')
@@ -428,6 +468,7 @@ function MiniSettingsComponent() {
                 value={val}
                 suffix={f.suffix}
                 step={f.step}
+                verdict={verdicts[f.key]}
                 min={f.min}
                 max={f.max}
                 disabled={!editable}

@@ -190,6 +190,7 @@ def invalidate_cache(asset: str | None = None, venue: str | None = None):
     """Clear cached regimes, optionally scoped to asset/venue."""
     if asset is None and venue is None:
         _cache.clear()
+        _candle_cache.clear()
         return
     to_delete = []
     for key in _cache:
@@ -200,3 +201,60 @@ def invalidate_cache(asset: str | None = None, venue: str | None = None):
         to_delete.append(key)
     for key in to_delete:
         del _cache[key]
+
+
+# ── ATR from 5m candles (Amendment 001) ──────────────────────────────────────
+
+_candle_cache: dict[str, tuple[float, list[dict]]] = {}  # key -> (ts, candles)
+
+
+def _candle_cache_key(asset: str, venue: str, interval: str) -> str:
+    return f"{venue}:{asset}:{interval}"
+
+
+def get_atr_pct(asset: str, venue: str) -> float | None:
+    """Compute ATR as % of current price from 5m candles. Cached per candle_cache_sec."""
+    cache_sec = get_setting_int("candle_cache_sec", 60)
+    period = get_setting_int("atr_period", 14)
+    key = _candle_cache_key(asset, venue, "5m")
+    now = time.time()
+
+    if key in _candle_cache:
+        cached_at, candles = _candle_cache[key]
+        if now - cached_at < cache_sec and len(candles) >= period:
+            return _compute_atr_pct(candles, period)
+
+    symbol = f"{asset}USDT" if venue == "binance" else f"PERP_{asset}_USDC"
+    try:
+        candles = _fetch_ohlcv(venue, symbol, "5m", period + 5)
+        _candle_cache[key] = (now, candles)
+        if len(candles) >= period:
+            return _compute_atr_pct(candles, period)
+    except Exception:
+        if key in _candle_cache:
+            _, old = _candle_cache[key]
+            if len(old) >= period:
+                return _compute_atr_pct(old, period)
+    return None
+
+
+def _compute_atr_pct(candles: list[dict], period: int = 14) -> float | None:
+    """ATR as percentage of current price."""
+    n = min(period, len(candles))
+    if n < 2:
+        return None
+    tr_values = []
+    for i in range(1, n):
+        c = candles[-n + i]
+        prev = candles[-n + i - 1]
+        tr = max(
+            c["high"] - c["low"],
+            abs(c["high"] - prev["close"]),
+            abs(c["low"] - prev["close"]),
+        )
+        tr_values.append(tr)
+    atr = sum(tr_values) / len(tr_values)
+    price = candles[-1]["close"]
+    if price <= 0:
+        return None
+    return (atr / price) * 100

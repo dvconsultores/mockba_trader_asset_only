@@ -144,7 +144,132 @@ def command_list(m):
     markup.row(InlineKeyboardButton(translate("� Manage Assets", cid), callback_data="ManageAssets"))
     markup.row(InlineKeyboardButton(translate("▶️ Start / Stop Bot", cid), callback_data="StartStop"))
     markup.row(InlineKeyboardButton(translate("�📋 List All Settings", cid), callback_data="ListSettings"))
+    markup.row(InlineKeyboardButton(translate("💡 Explain Setting", cid), callback_data="ExplainPrompt"))
+    markup.row(InlineKeyboardButton(translate("🤖 Propose Changes", cid), callback_data="ProposeStart"))
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
+
+
+@bot.message_handler(commands=['explain'])
+def command_explain(m):
+    """Explain a setting using LLM (cached). Usage: /explain <key>"""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+    key = m.text.replace('/explain', '').strip()
+    if not key or key.startswith('@'):
+        bot.send_message(cid, translate("Usage: /explain <setting_key>\nExample: /explain tp_min_pct\nUse /list to see all settings.", cid))
+        return
+    _send_explain(cid, key)
+
+
+@bot.message_handler(commands=['propose'])
+def command_propose(m):
+    """Generate setting proposals from measured context."""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+    _send_proposals(cid)
+
+
+def _send_explain(cid, key):
+    try:
+        from research.settings_llm import explain
+        from db.db_ops import get_setting_bool, get_setting
+        lang = get_setting("llm_language") or "en"
+        text = explain(key, lang, "100_to_1k")
+        verdict_text = ""
+        try:
+            from trade.settings_rules import validate
+            v = validate(key, get_setting(key) or "")
+            if v.level != "ok":
+                verdict_text = f"\n\n⚠️ Validator: {v.level.upper()} — {v.message}"
+        except Exception:
+            pass
+        send_text_message_chunked(cid, f"💡 {key}\n{text}{verdict_text}")
+    except ImportError:
+        try:
+            from trade.settings_schema import BY_KEY
+            spec = BY_KEY.get(key)
+            if spec:
+                send_text_message_chunked(cid, f"💡 {key}\n{spec.short}\nType: {spec.type.__name__}, range: {spec.soft_min}–{spec.soft_max}\n(LLM helper not available)")
+            else:
+                bot.send_message(cid, translate(f"❌ Unknown setting: {key}. Use /list.", cid))
+        except Exception:
+            bot.send_message(cid, translate("❌ Settings helper not available.", cid))
+
+
+def _send_proposals(cid):
+    try:
+        from research.settings_llm import propose
+        import sqlite3, os as _os, json as _json
+        # Build context summary from DB
+        db_path = _os.path.join(_os.path.dirname(__file__), "data", "trading.db")
+        conn = sqlite3.connect(db_path); conn.row_factory = sqlite3.Row
+        sig_count = conn.execute("SELECT COUNT(*) as c FROM signals").fetchone()["c"]
+        trade_count = conn.execute("SELECT COUNT(*) as c FROM closed_trades").fetchone()["c"]
+        recent_pnl = conn.execute("SELECT COALESCE(SUM(pnl_net),0) as p FROM closed_trades").fetchone()["p"]
+        conn.close()
+        ctx = f"Signals: {sig_count}, Trades: {trade_count}, Total PnL: ${recent_pnl:.2f}"
+        if sig_count == 0:
+            ctx += "\nNo measured data available — dry-run has not run."
+        proposals = propose(ctx)
+        if not proposals:
+            bot.send_message(cid, translate("No proposals generated — configuration looks valid.", cid))
+            return
+        for p in proposals:
+            conf_icon = {"measured": "🟢", "heuristic": "🟡", "no_basis": "⚪"}.get(p.confidence, "⚪")
+            text = (
+                f"{conf_icon} {p.key}: {p.current_value} → {p.proposed_value}\n"
+                f"{p.reason}\nConfidence: {p.confidence}"
+            )
+            bot.send_message(cid, text)
+    except ImportError:
+        bot.send_message(cid, translate("❌ Settings helper not available.", cid))
+    except Exception as e:
+        bot.send_message(cid, f"❌ Error: {str(e)[:200]}")
+
+
+def explain_prompt(m):
+    """Show settings grouped for /explain selection."""
+    cid = m.chat.id
+    try:
+        from trade.settings_schema import BY_KEY, GROUPS
+    except ImportError:
+        bot.send_message(cid, translate("❌ Settings schema not available.", cid))
+        return
+    markup = InlineKeyboardMarkup()
+    for g in GROUPS:
+        keys_in_group = [k for k, s in BY_KEY.items() if s.group == g]
+        markup.row(InlineKeyboardButton(f"{g} ({len(keys_in_group)})", callback_data=f"ExplainGroup:{g}"))
+    markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="List"))
+    bot.send_message(cid, translate("Select a setting group:", cid), reply_markup=markup)
+
+
+def propose_start(m):
+    """Run propose and show results."""
+    cid = m.chat.id
+    bot.send_message(cid, translate("Analyzing settings...", cid))
+    _send_proposals(cid)
+
+
+def _show_group_keys(cid, group):
+    """Show settings in a group as clickable buttons for /explain."""
+    try:
+        from trade.settings_schema import BY_KEY
+    except ImportError:
+        bot.send_message(cid, translate("❌ Settings schema not available.", cid))
+        return
+    markup = InlineKeyboardMarkup()
+    keys = sorted([k for k, s in BY_KEY.items() if s.group == group])
+    for k in keys:
+        spec = BY_KEY[k]
+        markup.row(InlineKeyboardButton(f"{k} ({spec.unit or '-'})", callback_data=f"ExplainKey:{k}"))
+    markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="ExplainPrompt"))
+    bot.send_message(cid, translate(f"Settings in {group}:", cid), reply_markup=markup)
 
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -198,6 +323,12 @@ def callback_handler(call):
         _, exchange, mode = call.data.split(":")
         handle_bot_toggle(cid, exchange, mode)
         start_stop_menu(call.message)
+    elif call.data.startswith("ExplainGroup:"):
+        group = call.data.split(":", 1)[1]
+        _show_group_keys(cid, group)
+    elif call.data.startswith("ExplainKey:"):
+        key = call.data.split(":", 1)[1]
+        _send_explain(cid, key)
     else:
         options = {
             'List': command_list,
@@ -206,6 +337,8 @@ def callback_handler(call):
             'AnalyzeTradesPerforming': execute_trade_performance,
             'ManageAssets': manage_assets,
             'StartStop': start_stop_menu,
+            'ExplainPrompt': explain_prompt,
+            'ProposeStart': propose_start,
         }
         func = options.get(call.data)
         if func:

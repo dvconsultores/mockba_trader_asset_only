@@ -35,39 +35,28 @@ from trading_bot.futures_scalper import manage_open_positions as futures_manage,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def validate_startup() -> bool:
-    """Run all startup checks. Returns True if trading can proceed."""
-    errors = []
+    """Run all startup checks via settings_rules. Returns True if trading can proceed."""
+    from trade.settings_rules import validate_all, SettingsContext
+    results = validate_all()
+    errors = [f"{k}: {v.message}" for k, v in results.items() if v.level == "error"]
+    warns = [f"{k}: {v.message}" for k, v in results.items() if v.level == "warn"]
 
-    tp = get_setting_float("tp_pct", 0.8)
-    sl = get_setting_float("sl_pct", 0.5)
-
-    if tp <= sl:
-        breakeven = (sl + 0.06) / (tp + sl) * 100
-        errors.append(f"tp_pct ({tp}) <= sl_pct ({sl}). Breakeven WR: {breakeven:.1f}%")
-
-    fee_key = "dex_round_trip_fee_pct" if get_setting_bool("auto_trade_orderly", False) else "cex_round_trip_fee_pct"
-    fee = get_setting_float(fee_key, 0.06)
-    slippage = get_setting_float("assumed_slippage_pct", 0.03)
-    min_edge = get_setting_float("min_net_edge_pct", 0.30)
-    net = tp - fee - slippage
-    if net < min_edge:
-        errors.append(f"net edge {net:.2f}% < minimum {min_edge}% (tp={tp}, fee={fee}, slippage={slippage})")
-
-    leverage = get_setting_int("leverage", 3)
-    max_lev = get_setting_int("max_leverage", 3)
-    if leverage > max_lev:
-        logger.warning(f"leverage {leverage}x exceeds max_leverage {max_lev}x — clamping")
-        upsert_setting("leverage", str(max_lev))
-
-    assets = get_asset_list()
-    if not assets:
-        errors.append("no assets configured")
-
+    for w in warns:
+        logger.warning(f"[STARTUP] {w}")
     if errors:
         for e in errors:
             logger.error(f"[STARTUP] {e}")
         return False
 
+    assets = get_asset_list()
+    if not assets:
+        logger.error("[STARTUP] no assets configured")
+        return False
+
+    tp = get_setting_float("tp_min_pct", 0.8); sl = get_setting_float("sl_min_pct", 0.5)
+    fee_key = "dex_round_trip_fee_pct" if get_setting_bool("auto_trade_orderly", False) else "cex_round_trip_fee_pct"
+    fee = get_setting_float(fee_key, 0.06); slip = get_setting_float("assumed_slippage_pct", 0.03)
+    net = tp - fee - slip
     logger.info(f"[STARTUP] validation OK — tp={tp} sl={sl} net_edge={net:.2f}% assets={assets}")
     return True
 
@@ -98,9 +87,10 @@ def run():
         try:
             # Refresh settings
             current = {k: get_setting(k) or "" for k in [
-                "tp_pct", "sl_pct", "dip_pct", "pump_pct", "obi_buy_threshold",
-                "obi_sell_threshold", "max_slots", "cooldown_sec",
-                "min_entry_spacing_pct", "daily_loss_limit", "max_consecutive_losses",
+                "tp_min_pct", "sl_min_pct", "dip_min_pct", "pump_min_pct",
+                "dip_k", "pump_k", "tp_k", "sl_k", "adaptive_enabled",
+                "max_slots", "cooldown_sec", "min_entry_spacing_pct",
+                "daily_loss_limit", "daily_loss_limit_pct", "max_consecutive_losses",
                 "trading_enabled", "dry_run", "leverage", "max_leverage",
                 "auto_trade_binance", "auto_trade_orderly",
             ]}

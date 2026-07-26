@@ -287,6 +287,25 @@ def health():
             "log_exists": os.path.exists(LOG_PATH)}
 
 
+# ── Settings validation (Amendment 002) ──────────────────────────
+@app.post("/api/settings/validate")
+async def api_settings_validate(request: Request):
+    """Validate a setting value. Returns Verdict {level, message, suggested_value}."""
+    try:
+        from trade.settings_rules import validate as rules_validate, SettingsContext
+        body = await request.json()
+        key = body.get("key", "")
+        value = body.get("value", "")
+        venue = body.get("venue", "")
+        equity = float(body.get("equity", 0))
+        min_notional = float(body.get("min_notional", 0))
+        ctx = SettingsContext(venue=venue, equity=equity, min_notional=min_notional)
+        v = rules_validate(key, value, ctx)
+        return {"ok": True, "verdict": {"level": v.level, "message": v.message, "suggested_value": v.suggested_value}}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 # ── Telegram Mini App: Auth ─────────────────────────────────────
 BOT_TOKEN = os.getenv("API_TOKEN", os.getenv("BOT_TOKEN", ""))
 AUTHORIZED_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "556159355"))
