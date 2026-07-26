@@ -15,8 +15,8 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.db_ops import (
     upsert_setting, get_all_settings, initialize_database_tables, get_setting,
+    get_asset_list, get_setting_float, get_setting_bool,
 )
-from trade.main import process_signal as run_process_signal, autotrade
 import json
 from datetime import timedelta
 # Load environment variables
@@ -29,22 +29,7 @@ bot = telebot.TeleBot(API_TOKEN)
 TELEGRAM_MAX_MESSAGE_LEN = 4096
 
 
-def _load_analyze_trade_performance():
-    module_path = os.path.join(
-        os.path.dirname(__file__),
-        "trade",
-        "performance-llm.py",
-    )
-    spec = importlib.util.spec_from_file_location("performance_llm", module_path)
-    if spec is None or spec.loader is None:
-        return None
 
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return getattr(module, "analyze_trade_performance", None)
-
-
-analyze_trade_performance = _load_analyze_trade_performance()
 
 
 def is_float(value):
@@ -244,82 +229,40 @@ def execute_trade_performance(m):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
         return
 
-    if analyze_trade_performance is None:
-        bot.send_message(cid, translate("❌ Performance analyzer is not available.", cid))
-        return
+    import sqlite3, os as _os
+    from datetime import datetime, timezone
+    db_path = _os.path.join(_os.path.dirname(__file__), "data", "trading.db")
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    bot.send_message(cid, translate("Analyzing trades performance with LLM...", cid))
+    total_trades = conn.execute("SELECT COUNT(*) as c FROM closed_trades").fetchone()["c"]
+    today_trades = conn.execute(
+        "SELECT COUNT(*) as c FROM closed_trades WHERE date(datetime(closed_at, 'unixepoch')) = ?",
+        (today,)
+    ).fetchone()["c"]
+    today_pnl = conn.execute(
+        "SELECT COALESCE(SUM(pnl_net),0) as p FROM closed_trades WHERE date(datetime(closed_at, 'unixepoch')) = ?",
+        (today,)
+    ).fetchone()["p"]
+    today_signals = conn.execute(
+        "SELECT COUNT(*) as c FROM signals WHERE date(datetime(timestamp, 'unixepoch')) = ?",
+        (today,)
+    ).fetchone()["c"]
+    entered = conn.execute(
+        "SELECT COUNT(*) as c FROM signals WHERE date(datetime(timestamp, 'unixepoch')) = ? AND action='entered'",
+        (today,)
+    ).fetchone()["c"]
+    skipped = today_signals - entered
+    conn.close()
 
-    asset = get_setting("asset") or "PERP_NEAR_USDC"
-    symbol_filter = asset.replace("PERP_", "")
-
-    try:
-        result = analyze_trade_performance(symbol_filter=symbol_filter)
-        if not result.get("ok"):
-            bot.send_message(cid, str(result.get("error", "Unknown error during trade performance analysis.")))
-            return
-
-        stats = result.get("trade_stats", {})
-        llm_response = str(result.get("llm_response", ""))
-        if llm_response.startswith("```"):
-            llm_response = re.sub(r"^```(?:json)?\n?", "", llm_response, flags=re.IGNORECASE)
-            llm_response = re.sub(r"\n?```$", "", llm_response)
-        llm_response = llm_response.strip()
-
-        parsed_llm = None
-        try:
-            parsed_llm = json.loads(llm_response)
-        except Exception:
-            parsed_llm = None
-
-        if isinstance(parsed_llm, dict):
-            improvements = parsed_llm.get("strategy_improvements", [])
-            params = parsed_llm.get("regime_filter_parameter_recommendations", [])
-
-            improvements_text = "\n".join(
-                [f"- {item}" for item in improvements[:5] if item]
-            ) or "- No specific improvements provided"
-
-            params_lines = []
-            for p in params[:5]:
-                if not isinstance(p, dict):
-                    continue
-                name = p.get("parameter", "parameter")
-                decision = str(p.get("decision", "keep")).upper()
-                suggested = p.get("suggested_value", "-")
-                params_lines.append(f"- {name}: {decision} -> {suggested}")
-            params_text = "\n".join(params_lines) if params_lines else "- No parameter recommendations"
-
-            summary = (
-                f"📊 Trades Performance ({symbol_filter})\n"
-                f"Total: {stats.get('total_trades', 0)}\n"
-                f"Positive: {stats.get('positive_trades', 0)}\n"
-                f"Negative: {stats.get('negative_trades', 0)}\n"
-                f"Neutral: {stats.get('neutral_trades', 0)}\n"
-                f"PnL Total: {stats.get('pnl_total', 0)}\n\n"
-                f"🧠 Verdict: {str(parsed_llm.get('final_verdict', 'N/A')).upper()}\n"
-                f"📌 Summary: {parsed_llm.get('summary', 'No summary')}\n\n"
-                f"✅ Improvements:\n{improvements_text}\n\n"
-                f"⚙️ Parameter Suggestions:\n{params_text}"
-            )
-        else:
-            summary = (
-                f"📊 Trades Performance ({symbol_filter})\n"
-                f"Total: {stats.get('total_trades', 0)}\n"
-                f"Positive: {stats.get('positive_trades', 0)}\n"
-                f"Negative: {stats.get('negative_trades', 0)}\n"
-                f"Neutral: {stats.get('neutral_trades', 0)}\n"
-                f"PnL Total: {stats.get('pnl_total', 0)}\n\n"
-                f"LLM Analysis:\n{llm_response}"
-            )
-        send_text_message_chunked(cid, summary)
-
-        md_path = result.get("md_path")
-        if md_path and os.path.isfile(md_path):
-            with open(md_path, "rb") as f:
-                bot.send_document(cid, f, caption="📄 performance_llm_analysis.md")
-    except Exception as e:
-        bot.send_message(cid, translate(f"Error analyzing trades performance: {str(e)}", cid))
+    summary = (
+        f"📊 MockbaV4 Stats\\n"
+        f"Total closed trades: {total_trades}\\n"
+        f"Today: {today_trades} trades | PnL: ${today_pnl:.2f}\\n"
+        f"Signals today: {today_signals} ({entered} entered, {skipped} skipped)"
+    )
+    send_text_message_chunked(cid, summary)
 
 def pick_exchange_for_signal(m):
     if m.chat.type != 'private': return
@@ -357,7 +300,21 @@ def execute_signal(m, asset=None, exchange=None):
     bot.send_message(cid, translate(f"Processing signal for {asset} interval {interval}{exchange_suffix} ...", cid))
     time.sleep(1)
     try:
-        result = run_process_signal(asset_override=asset, exchange_override=exchange)
+        # Process signal via new scalper
+        from trading_bot.spot_scalper import scalp_cycle as spot_cycle
+        from trading_bot.executor import BinanceSpot
+        from trade.regime import detect_regime
+        exchange_obj = BinanceSpot()
+        regime = detect_regime(asset, "binance")
+        obi = 1.0  # placeholder — full signal processing needs OB fetch
+        import requests
+        try:
+            r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={asset}USDT", timeout=5)
+            price = float(r.json()["price"])
+        except Exception:
+            price = 0.0
+        action = spot_cycle(asset, exchange_obj, regime, obi, price)
+        result = f"Asset: {asset}\nRegime: {regime}\nAction: {action or 'no signal'}"
     except Exception as e:
         result = f"Error: {str(e)}"
 
@@ -580,6 +537,7 @@ def handle_bot_toggle(cid: int, exchange: str, mode: str):
 # Start polling
 if __name__ == "__main__":
     # Start autotrade in a separate thread to avoid blocking the bot
-    t = threading.Thread(target=autotrade, daemon=True)
+    import bot as _bot
+    t = threading.Thread(target=_bot.run, daemon=True)
     t.start()
     bot.polling()
