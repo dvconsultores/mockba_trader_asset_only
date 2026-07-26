@@ -59,7 +59,7 @@ def _upsert_setting(key: str, value: str):
 
 def _get_asset_list() -> list:
     """Returns the asset setting as a list of strings."""
-    val = _get_setting("asset")
+    val = _get_setting("assets")
     if not val:
         return []
     return [x.strip() for x in val.split(",") if x.strip()]
@@ -70,7 +70,7 @@ def _add_asset(asset: str):
     assets = _get_asset_list()
     if asset not in assets:
         assets.append(asset)
-        _upsert_setting("asset", ",".join(assets))
+        _upsert_setting("assets", ",".join(assets))
 
 
 def _remove_asset(asset: str):
@@ -78,7 +78,7 @@ def _remove_asset(asset: str):
     assets = _get_asset_list()
     if asset in assets:
         assets.remove(asset)
-        _upsert_setting("asset", ",".join(assets))
+        _upsert_setting("assets", ",".join(assets))
 
 
 def _get_db() -> sqlite3.Connection:
@@ -109,43 +109,20 @@ def api_status():
     try:
         db = _get_db()
         dex_mode = db.execute(
-            "SELECT value FROM settings WHERE key='auto_trade_dex'"
+            "SELECT value FROM settings WHERE key='auto_trade_orderly'"
         ).fetchone()
         cex_mode = db.execute(
-            "SELECT value FROM settings WHERE key='auto_trade_cex'"
-        ).fetchone()
-        ml_threshold_row = db.execute(
-            "SELECT value FROM settings WHERE key='ml_threshold'"
+            "SELECT value FROM settings WHERE key='auto_trade_binance'"
         ).fetchone()
         db.close()
     except Exception:
-        dex_mode, cex_mode, ml_threshold_row = None, None, None
-
-    try:
-        ml_threshold = float(ml_threshold_row["value"]) if ml_threshold_row else 0.80
-    except (ValueError, TypeError):
-        ml_threshold = 0.80
-
-    # Current regime: read from latest signal in signal_history
-    current_regime = None
-    try:
-        db = _get_db()
-        regime_row = db.execute(
-            "SELECT regime FROM signal_history ORDER BY id DESC LIMIT 1"
-        ).fetchone()
-        if regime_row:
-            current_regime = regime_row["regime"]
-        db.close()
-    except Exception:
-        pass
+        dex_mode, cex_mode = None, None
 
     return {
         "uptime_seconds": round(time.time() - START_TIME),
         "dex_mode": dex_mode["value"] if dex_mode else "unknown",
         "cex_mode": cex_mode["value"] if cex_mode else "unknown",
-        "ml_threshold": ml_threshold,
         "model_loaded": os.path.exists(MODEL_PATH),
-        "current_regime": current_regime,
     }
 
 
@@ -154,34 +131,22 @@ def api_status():
 def api_signals(limit: int = Query(50, ge=1, le=500),
                 exchange: str = Query(None),
                 outcome: str = Query(None)):
-    """Recent signal history from signal_history table."""
+    """Recent signal history from signals table."""
     try:
         db = _get_db()
-        query = "SELECT * FROM signal_history WHERE 1=1"
+        query = "SELECT * FROM signals WHERE 1=1"
         params = []
         if exchange:
-            query += " AND exchange = ?"
-            params.append(exchange)
+            query += " AND venue = ?"
+            params.append("binance" if exchange == "cex" else "orderly")
         if outcome:
-            query += " AND trade_outcome = ?"
+            query += " AND action = ?"
             params.append(outcome)
         query += " ORDER BY id DESC LIMIT ?"
         params.append(limit)
-
         rows = db.execute(query, params).fetchall()
         db.close()
-
-        signals = []
-        for row in rows:
-            d = dict(row)
-            # Parse JSON fields
-            for field in ("rejection_reasons", "manipulation_warnings"):
-                if d.get(field):
-                    try:
-                        d[field] = json.loads(d[field])
-                    except (json.JSONDecodeError, TypeError):
-                        d[field] = str(d[field]) if d[field] else []
-            signals.append(d)
+        signals = [dict(r) for r in rows]
         return {"signals": signals, "count": len(signals)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -192,20 +157,11 @@ def api_signal_detail(signal_id: int):
     """Full detail for one signal."""
     try:
         db = _get_db()
-        row = db.execute(
-            "SELECT * FROM signal_history WHERE id = ?", (signal_id,)
-        ).fetchone()
+        row = db.execute("SELECT * FROM signals WHERE id = ?", (signal_id,)).fetchone()
         db.close()
         if row is None:
             raise HTTPException(status_code=404, detail="Signal not found")
-        d = dict(row)
-        for field in ("rejection_reasons", "manipulation_warnings"):
-            if d.get(field):
-                try:
-                    d[field] = json.loads(d[field])
-                except (json.JSONDecodeError, TypeError):
-                    d[field] = str(d[field]) if d[field] else []
-        return d
+        return dict(row)
     except HTTPException:
         raise
     except Exception as e:
@@ -215,92 +171,57 @@ def api_signal_detail(signal_id: int):
 # ── API: Daily Stats ────────────────────────────────────────────
 @app.get("/api/stats/daily")
 def api_daily_stats():
-    """Today's signal stats."""
+    """Today's signal and trade stats."""
     try:
         db = _get_db()
         today = time.strftime("%Y-%m-%d")
         total = db.execute(
-            "SELECT COUNT(*) as c FROM signal_history WHERE date(timestamp) = ?",
+            "SELECT COUNT(*) as c FROM signals WHERE date(datetime(timestamp, 'unixepoch')) = ?",
             (today,)
         ).fetchone()["c"]
-        approved = db.execute(
-            "SELECT COUNT(*) as c FROM signal_history WHERE date(timestamp) = ? AND approved = 1",
+        entered = db.execute(
+            "SELECT COUNT(*) as c FROM signals WHERE date(datetime(timestamp, 'unixepoch')) = ? AND action = 'entered'",
             (today,)
         ).fetchone()["c"]
-        wins = db.execute(
-            "SELECT COUNT(*) as c FROM signal_history WHERE date(timestamp) = ? AND trade_outcome = 'win'",
+        trades = db.execute(
+            "SELECT COUNT(*) as c FROM closed_trades WHERE date(datetime(closed_at, 'unixepoch')) = ?",
             (today,)
         ).fetchone()["c"]
-        losses = db.execute(
-            "SELECT COUNT(*) as c FROM signal_history WHERE date(timestamp) = ? AND trade_outcome = 'loss'",
+        pnl = db.execute(
+            "SELECT COALESCE(SUM(pnl_net), 0) as p FROM closed_trades WHERE date(datetime(closed_at, 'unixepoch')) = ?",
             (today,)
-        ).fetchone()["c"]
-        # Avg ML score for today (non-null)
-        avg_ml = db.execute(
-            "SELECT AVG(ml_score) as a FROM signal_history WHERE date(timestamp) = ? AND ml_score IS NOT NULL",
-            (today,)
-        ).fetchone()["a"]
+        ).fetchone()["p"]
         db.close()
         return {
             "date": today,
             "total_signals": total,
-            "approved": approved,
-            "rejected": total - approved,
-            "wins": wins,
-            "losses": losses,
-            "avg_ml_score": round(avg_ml, 4) if avg_ml else None,
+            "entered": entered,
+            "skipped": total - entered,
+            "trades_closed": trades,
+            "pnl_net": round(pnl, 4),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── API: ML Info ────────────────────────────────────────────────
+# ── API: PnL Info ───────────────────────────────────────────────
 @app.get("/api/ml/info")
-def api_ml_info():
-    """ML model info + recent score distribution."""
+def api_pnl_info():
+    """Recent trade PnL summary."""
     try:
         db = _get_db()
-        # Score distribution (last 500 scored signals)
         rows = db.execute(
-            "SELECT ml_score FROM signal_history WHERE ml_score IS NOT NULL ORDER BY id DESC LIMIT 500"
+            "SELECT pnl_net FROM closed_trades ORDER BY closed_at DESC LIMIT 50"
         ).fetchall()
-        scores = [r["ml_score"] for r in rows if r["ml_score"] is not None]
-
-        # Decision counts
-        approved_count = db.execute(
-            "SELECT COUNT(*) as c FROM signal_history WHERE ml_decision = 'approved'"
-        ).fetchone()["c"]
-        rejected_count = db.execute(
-            "SELECT COUNT(*) as c FROM signal_history WHERE ml_decision = 'rejected'"
-        ).fetchone()["c"]
-
-        ml_threshold_row = db.execute(
-            "SELECT value FROM settings WHERE key='ml_threshold'"
-        ).fetchone()
+        pnls = [r["pnl_net"] for r in rows]
+        wins = sum(1 for p in pnls if p > 0)
+        losses = sum(1 for p in pnls if p < 0)
         db.close()
-
-        try:
-            ml_threshold = float(ml_threshold_row["value"]) if ml_threshold_row else 0.80
-        except (ValueError, TypeError):
-            ml_threshold = 0.80
-
-        # Histogram buckets
-        if scores:
-            hist = {}
-            for bucket in [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]:
-                count = sum(1 for s in scores if bucket <= s < bucket + 0.1)
-                hist[f"{bucket:.1f}-{bucket+0.1:.1f}"] = count
-        else:
-            hist = {}
-
         return {
-            "threshold": ml_threshold,
             "model_loaded": os.path.exists(MODEL_PATH),
-            "recent_scores": scores[-50:] if scores else [],
-            "score_distribution": hist,
-            "total_scored": len(scores),
-            "approved_by_ml": approved_count,
-            "rejected_by_ml": rejected_count,
+            "recent_pnls": pnls,
+            "recent_wins": wins,
+            "recent_losses": losses,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -531,7 +452,7 @@ async def api_assets_get():
     """Return asset list and current active asset."""
     try:
         assets = _get_asset_list()
-        current = _get_setting("current_asset") or ""
+        current = assets[0] if assets else ""
         return {"ok": True, "assets": assets, "current_asset": current}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -598,12 +519,8 @@ async def api_assets_remove(asset_name: str, request: Request):
 
     try:
         _remove_asset(asset_name)
-        # If the removed asset was the current one, clear current_asset
-        current = _get_setting("current_asset") or ""
-        if current == asset_name:
-            remaining = _get_asset_list()
-            new_current = remaining[0] if remaining else ""
-            _upsert_setting("current_asset", new_current)
+        # If the removed asset was the first one, the first asset changes naturally
+        remaining = _get_asset_list()
         assets = _get_asset_list()
         return {"ok": True, "assets": assets, "removed": asset_name}
     except Exception as e:
@@ -642,7 +559,7 @@ async def api_assets_select(request: Request):
         raise HTTPException(status_code=400, detail=f"Asset '{asset}' not in list. Add it first.")
 
     try:
-        _upsert_setting("current_asset", asset)
+        # Asset is already in list — no need to set "current", just return
         return {"ok": True, "current_asset": asset}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -685,7 +602,7 @@ async def api_bot_control(request: Request):
     if mode not in VALID_MODES:
         raise HTTPException(status_code=400, detail=f"Mode must be one of: {', '.join(sorted(VALID_MODES))}")
 
-    key = "auto_trade_dex" if exchange == "dex" else "auto_trade_cex"
+    key = "auto_trade_orderly" if exchange == "dex" else "auto_trade_binance"
 
     try:
         db = _get_db_rw()
@@ -697,8 +614,8 @@ async def api_bot_control(request: Request):
         db.close()
 
         # Read back current state for both exchanges
-        current_dex = _get_setting("auto_trade_dex") or "False"
-        current_cex = _get_setting("auto_trade_cex") or "False"
+        current_dex = _get_setting("auto_trade_orderly") or "False"
+        current_cex = _get_setting("auto_trade_binance") or "False"
 
         return {
             "ok": True,

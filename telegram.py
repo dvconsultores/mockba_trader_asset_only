@@ -269,9 +269,10 @@ def pick_exchange_for_signal(m):
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
-    asset = get_setting("current_asset")
+    assets = get_asset_list()
+    asset = assets[0] if assets else None
     if not asset:
-        bot.send_message(cid, translate("❌ No current asset set. Please configure one first.", cid))
+        bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
         return
 
     markup = InlineKeyboardMarkup()
@@ -288,16 +289,16 @@ def execute_signal(m, asset=None, exchange=None):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     if asset is None:
-        asset = get_setting("current_asset")
+        assets = get_asset_list()
+        asset = assets[0] if assets else None
         if not asset:
-            bot.send_message(cid, translate("❌ No current asset set. Please configure one first.", cid))
+            bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
             return
 
-    interval = get_setting("interval")
     exchange_label = "DEX" if exchange == "dex" else "CEX" if exchange == "cex" else ""
     exchange_suffix = f" ({exchange_label})" if exchange_label else ""
 
-    bot.send_message(cid, translate(f"Processing signal for {asset} interval {interval}{exchange_suffix} ...", cid))
+    bot.send_message(cid, translate(f"Processing signal for {asset}{exchange_suffix} ...", cid))
     time.sleep(1)
     try:
         # Process signal via new scalper
@@ -359,8 +360,8 @@ def start_stop_menu(m):
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
-    dex_mode = get_setting("auto_trade_dex") or "False"
-    cex_mode = get_setting("auto_trade_cex") or "False"
+    dex_mode = "true" if get_setting_bool("auto_trade_orderly", False) else "False"
+    cex_mode = "true" if get_setting_bool("auto_trade_binance", False) else "False"
 
     dex_label = "🟢 DEX: ON" if dex_mode != "False" else "🔴 DEX: OFF"
     cex_label = "🟢 CEX: ON" if cex_mode != "False" else "🔴 CEX: OFF"
