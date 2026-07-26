@@ -84,7 +84,7 @@ def _spacing_ok(asset: str, price: float, spacing_pct: float) -> bool:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def manage_open_positions(asset: str, exchange: BinanceSpot):
-    """Check TP fills, time stops. Spot has no SL."""
+    """Check TP fills, SL fills, time stops."""
     positions = load_all_positions(asset=asset, venue="binance")
     if not positions:
         return
@@ -96,6 +96,7 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
     for pos_dict in positions:
         pos_id = pos_dict["id"]
         tp_id = pos_dict.get("tp_order_id")
+        sl_id = pos_dict.get("sl_order_id")
         entry = float(pos_dict["entry_price"])
         signal = float(pos_dict["signal_price"])
         qty = float(pos_dict["qty"])
@@ -105,19 +106,26 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
         if tp_id:
             status = exchange.get_order_status(symbol, tp_id)
             if status == "FILLED":
-                # Get fill price — query the order for actual fill
-                # For simplicity, use TP price as exit (close enough; exact fill from API if available)
                 exit_price = float(pos_dict["tp_price"])
                 _close_position(asset, "binance", "long", entry, exit_price, signal, qty,
-                                fee_rate=0.001, pos_id=pos_id, tp_id=tp_id, reason="tp")
+                                fee_rate=0.001, pos_id=pos_id, reason="tp")
+                continue
+
+        # Check SL fill
+        if sl_id:
+            status = exchange.get_order_status(symbol, sl_id)
+            if status == "FILLED":
+                exit_price = float(pos_dict.get("sl_price", entry))
+                _close_position(asset, "binance", "long", entry, exit_price, signal, qty,
+                                fee_rate=0.001, pos_id=pos_id, reason="sl")
                 continue
 
         # Check time stop
         if (now - opened) > max_hold:
-            logger_msg = f"[EXIT] asset={asset} venue=binance reason=time_stop age={int((now-opened)/60)}m"
-            # Cancel TP order first
             if tp_id:
                 exchange.cancel_order(symbol, tp_id)
+            if sl_id:
+                exchange.cancel_order(symbol, sl_id)
             # Market close — for spot, this means market sell
             # In dry_run, simulate: exit at current price
             exit_price = entry  # placeholder; real code uses live price
@@ -190,6 +198,7 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float,
     cooldown_sec = get_setting_float("cooldown_sec", 300)
     spacing_pct = get_setting_float("min_entry_spacing_pct", 0.6)
     tp_pct = get_setting_float("tp_pct", 0.8)
+    sl_pct = get_setting_float("sl_pct", 0.5)
 
     is_dip = _is_price_dip(asset, live_price, dip_pct)
     is_pump = _is_price_pump(asset, live_price, pump_pct)
@@ -221,11 +230,11 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float,
             return None
 
         pos_id = str(uuid.uuid4())
-        fill = exchange.place_entry(asset, "long", qty, live_price, tp_pct, pos_id)
+        fill = exchange.place_entry(asset, "long", qty, live_price, tp_pct, pos_id, sl_pct)
         if fill is None:
             return None
 
-        _save_open(asset, venue, "long", fill, live_price, tp_pct, pos_id)
+        _save_open(asset, venue, "long", fill, live_price, tp_pct, sl_pct, pos_id)
         _last_entry[f"{venue}:{asset}:long"] = time.time()
         _log_signal(asset, venue, regime, obi, extreme_pct, "entered", f"dip {extreme_pct:.2f}%")
         return "buy"
@@ -242,13 +251,14 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float,
 
 
 def _save_open(asset: str, venue: str, side: str, fill: Fill, signal_price: float,
-               tp_pct: float, pos_id: str):
+               tp_pct: float, sl_pct: float, pos_id: str):
     tp_price = fill.fill_price * (1 + tp_pct / 100)
+    sl_price = fill.fill_price * (1 - sl_pct / 100) if sl_pct > 0 else None
     save_position({
         "id": pos_id, "asset": asset, "venue": venue, "side": side,
         "qty": fill.sellable_qty, "entry_price": fill.fill_price,
         "signal_price": signal_price, "tp_price": tp_price,
-        "sl_price": None, "tp_order_id": fill.order_id,
+        "sl_price": sl_price, "tp_order_id": fill.order_id,
         "sl_order_id": None, "opened_at": time.time(),
     })
 

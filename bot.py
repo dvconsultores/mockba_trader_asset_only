@@ -201,28 +201,13 @@ def _get_live_price_binance(asset: str) -> float | None:
 
 
 def _get_obi_orderly(asset: str) -> float | None:
-    try:
-        import requests
-        r = requests.get("https://api-evm.orderly.org/v1/public/orderbook",
-                         params={"symbol": f"PERP_{asset}_USDC", "depth": 10}, timeout=5)
-        data = r.json().get("data", {})
-        bids = sum(float(b[1]) for b in data.get("bids", []))
-        asks = sum(float(a[1]) for a in data.get("asks", []))
-        if asks == 0:
-            return 2.0
-        return bids / asks
-    except Exception:
-        return None
+    """Orderly public orderbook is restricted — use Binance as proxy (same asset, correlated books)."""
+    return _get_obi_binance(asset)
 
 
 def _get_live_price_orderly(asset: str) -> float | None:
-    try:
-        import requests
-        r = requests.get("https://api-evm.orderly.org/v1/public/ticker",
-                         params={"symbol": f"PERP_{asset}_USDC"}, timeout=5)
-        return float(r.json().get("data", {}).get("last", 0))
-    except Exception:
-        return None
+    """Orderly public ticker is restricted — use Binance as proxy."""
+    return _get_live_price_binance(asset)
 
 
 if __name__ == "__main__":

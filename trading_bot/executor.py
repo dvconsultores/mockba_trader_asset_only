@@ -141,9 +141,9 @@ class BinanceSpot:
 
     def place_entry(
         self, asset: str, side: str, qty: float, price: float,
-        tp_pct: float, position_id: str,
+        tp_pct: float, position_id: str, sl_pct: float = 0.0,
     ) -> Fill | None:
-        """Market buy + limit sell TP. Returns Fill with actual fill price."""
+        """Market buy + limit sell TP + optional stop-loss. Returns Fill with actual fill price."""
         dry = get_setting_bool("dry_run", True)
         symbol = f"{asset}USDT"
         cid = f"mockba-{self.name}-{asset}-{position_id}-entry"
@@ -213,6 +213,28 @@ class BinanceSpot:
             r = self._post("/api/v3/order", tp_params)
             if r.status_code != 200:
                 logger.error(f"Binance TP placement failed: {r.status_code} {r.text[:200]}")
+
+        # Place SL stop-limit sell (if sl_pct > 0)
+        sl_price = 0.0
+        if sl_pct > 0:
+            sl_price = fill.fill_price * (1 - sl_pct / 100)
+            sl_price = _floor(sl_price, info.quote_tick)  # away from entry = lower = wider
+            sl_limit = sl_price * 0.995  # 0.5% below stop trigger for limit fill
+            sl_limit = _floor(sl_limit, info.quote_tick)
+            sl_cid = f"mockba-{self.name}-{asset}-{position_id}-sl"
+
+            if not dry:
+                sl_params = {
+                    "symbol": symbol, "side": "SELL", "type": "STOP_LOSS_LIMIT",
+                    "timeInForce": "GTC",
+                    "quantity": _fmt(fill.sellable_qty, info.base_tick),
+                    "price": _fmt(sl_limit, info.quote_tick),
+                    "stopPrice": _fmt(sl_price, info.quote_tick),
+                    "newClientOrderId": sl_cid,
+                }
+                r = self._post("/api/v3/order", sl_params)
+                if r.status_code != 200:
+                    logger.error(f"Binance SL placement failed: {r.status_code} {r.text[:200]}")
 
         return fill
 
