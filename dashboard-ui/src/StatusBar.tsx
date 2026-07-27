@@ -169,6 +169,7 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
             </button>
           )}
         </div>
+      </div>
 
       {/* Quick Links */}
       <div className="mt-4 p-3 bg-[#1a1528] border border-[#2a2240]">
