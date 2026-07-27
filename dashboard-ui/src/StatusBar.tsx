@@ -62,7 +62,7 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
   const toggleExchange = useCallback(async (exchange: 'dex' | 'cex') => {
     if (!status) return
     const currentMode = exchange === 'dex' ? status.dex_mode : status.cex_mode
-    const newMode = isRunning(currentMode) ? 'false' : 'true'
+    const newMode = isRunning(currentMode) ? 'False' : 'Automatic'
     const key = exchange
 
     setTransitioning(prev => new Set(prev).add(key))
