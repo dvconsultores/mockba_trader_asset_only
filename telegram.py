@@ -152,7 +152,7 @@ def command_list(m):
 
 @bot.message_handler(commands=['explain'])
 def command_explain(m):
-    """Explain a setting using LLM (cached). Usage: /explain <key>"""
+    """Explain a setting using LLM (cached). Usage: /explain <key>  or  /explain all"""
     if m.chat.type != 'private': return
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
@@ -160,7 +160,13 @@ def command_explain(m):
         return
     key = m.text.replace('/explain', '').strip()
     if not key or key.startswith('@'):
-        bot.send_message(cid, translate("Usage: /explain <setting_key>\nExample: /explain tp_min_pct\nUse /list to see all settings.", cid))
+        bot.send_message(cid, translate(
+            "Usage:\n/explain <setting_key> — explain one setting\n"
+            "/explain all — LLM analysis of all settings\n"
+            "Use /list to browse settings.", cid))
+        return
+    if key.lower() == 'all':
+        _send_explain_all(cid)
         return
     _send_explain(cid, key)
 
@@ -201,6 +207,31 @@ def _send_explain(cid, key):
                 bot.send_message(cid, translate(f"❌ Unknown setting: {key}. Use /list.", cid))
         except Exception:
             bot.send_message(cid, translate("❌ Settings helper not available.", cid))
+
+
+def _send_explain_all(cid):
+    """Analyze ALL settings via LLM in one call and return a paragraph per setting."""
+    bot.send_message(cid, translate("📖 Analyzing all settings via LLM, please wait…", cid))
+    try:
+        from research.settings_llm import explain_all
+        from db.db_ops import get_setting
+        lang = get_setting("llm_language") or "en"
+        text = explain_all(lang, "100_to_1k")
+        send_text_message_chunked(cid, text)
+    except ImportError:
+        # Fallback: list all settings with validator verdicts
+        from db.db_ops import get_all_settings
+        from trade.settings_rules import validate, SettingsContext
+        current = get_all_settings()
+        ctx = SettingsContext()
+        lines = ["⚙️ All Settings (LLM helper not available — validator only):\n"]
+        for key, val in sorted(current.items()):
+            v = validate(key, val, ctx)
+            icon = {"ok": "✅", "warn": "⚠️", "error": "❌"}.get(v.level, "❓")
+            lines.append(f"{icon} {key} = {val}")
+        send_text_message_chunked(cid, "\n".join(lines))
+    except Exception as e:
+        bot.send_message(cid, f"❌ Error: {str(e)[:200]}")
 
 
 def _send_proposals(cid):
@@ -246,8 +277,9 @@ def explain_prompt(m):
     for g in GROUPS:
         keys_in_group = [k for k, s in BY_KEY.items() if s.group == g]
         markup.row(InlineKeyboardButton(f"{g} ({len(keys_in_group)})", callback_data=f"ExplainGroup:{g}"))
+    markup.row(InlineKeyboardButton(translate("� Explain All Settings", cid), callback_data="ExplainAll"))
     markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="List"))
-    bot.send_message(cid, translate("Select a setting group:", cid), reply_markup=markup)
+    bot.send_message(cid, translate("Select a setting group or explain all:", cid), reply_markup=markup)
 
 
 def propose_start(m):
@@ -319,6 +351,8 @@ def _dispatch_callback(call, cid):
     elif call.data.startswith("ExplainKey:"):
         key = call.data.split(":", 1)[1]
         _send_explain(cid, key)
+    elif call.data == "ExplainAll":
+        _send_explain_all(cid)
     else:
         options = {
             'List': command_list,

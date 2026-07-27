@@ -117,6 +117,89 @@ def explain(key: str, language: str = "en", capital_band: str = "100_to_1k") -> 
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# explain_all() — reads all settings, LLM analyzes and explains each
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def explain_all(language: str = "en", capital_band: str = "100_to_1k") -> str:
+    """Read all settings from DB, send to LLM for analysis, return a paragraph
+    per setting covering what it does, its current value, and what changing it means.
+    Cached for the same hour (settings-snapshot hash)."""
+    current = get_all_settings()
+    if not current:
+        return "No settings found in database."
+
+    # Build a snapshot hash for caching (changes when settings change)
+    snapshot = json.dumps(dict(sorted(current.items())), sort_keys=True)
+    cache_key = hashlib.sha256(f"explain_all:{snapshot}:{language}:{capital_band}".encode()).hexdigest()[:16]
+    cache_file = os.path.join(CACHE_DIR, f"explain_all_{cache_key}.json")
+    if os.path.exists(cache_file):
+        age = time.time() - os.path.getmtime(cache_file)
+        if age < 3600:  # 1-hour cache
+            with open(cache_file) as f:
+                return json.load(f).get("text", "")
+
+    # Build context with schema info + current values + validation
+    ctx = SettingsContext()
+    settings_summary = []
+    for key, val in sorted(current.items()):
+        spec = BY_KEY.get(key)
+        verdict = validate(key, val, ctx)
+        if spec:
+            settings_summary.append(
+                f"  {key} = {val}  (type: {spec.type.__name__}, unit: {spec.unit or 'none'}, "
+                f"range: {spec.soft_min}–{spec.soft_max}, verdict: {verdict.level})"
+            )
+        else:
+            settings_summary.append(f"  {key} = {val}  (verdict: {verdict.level})")
+
+    if not _rate_limit_ok():
+        # Return a simple listing with validation verdicts when rate-limited
+        lines = ["⚠️ LLM rate-limited. Current settings with validator verdicts:\n"]
+        for s in settings_summary:
+            lines.append(s)
+        return "\n".join(lines)
+
+    prompt = (
+        f"Analyze these trading bot settings in {language}. "
+        f"Capital band: {capital_band}.\n\n"
+        f"=== ALL SETTINGS ===\n"
+        + "\n".join(settings_summary)
+        + "\n\nFor EACH setting, write ONE paragraph (3-4 sentences) covering:\n"
+        "1. What the setting controls and why it matters.\n"
+        "2. What the current value means in practice.\n"
+        "3. What would happen if you raised it vs lowered it.\n"
+        "4. How it interacts with other settings (if any).\n"
+        "Format each paragraph with the setting key as a bold header, like:\n"
+        "**setting_name**: explanation paragraph here.\n\n"
+        "Do NOT give numeric recommendations. Focus on education, not calibration.\n"
+        "If a setting's verdict is 'error', note that it's outside the safe range."
+    )
+
+    try:
+        r = requests.post(API_URL, headers={
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json",
+        }, json={
+            "model": get_setting("llm_model") or "deepseek-chat",
+            "temperature": 0.1, "max_tokens": 4000,
+            "messages": [{"role": "user", "content": prompt}],
+        }, timeout=get_setting_int("llm_timeout_sec", 60))
+        _record_call()
+        r.raise_for_status()
+        text = r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        # Fallback: validator-only summary
+        lines = [f"⚠️ LLM unavailable ({e}). Validator analysis:\n"]
+        for s in settings_summary:
+            lines.append(s)
+        text = "\n".join(lines)
+
+    with open(cache_file, "w") as f:
+        json.dump({"text": text, "settings_count": len(current), "ts": time.time()}, f)
+    return text
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # propose() — advisory, never writes to settings
 # ═══════════════════════════════════════════════════════════════════════════════
 
