@@ -363,38 +363,46 @@ export default function AssetManager() {
                   {/* Row 2: capital values + edit */}
                   <div className="flex items-center justify-between mt-1.5">
                     {isEditing ? (
-                      <div className="flex items-center gap-2 w-full">
-                        <input
-                          type="number"
-                          value={editCapitalDex}
-                          onChange={e => setEditCapitalDex(e.target.value)}
-                          placeholder="DEX $"
-                          min="0"
-                          step="1"
-                          className="flex-1 min-w-0 px-3 py-2.5 text-sm bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC]"
-                        />
-                        <input
-                          type="number"
-                          value={editCapitalCex}
-                          onChange={e => setEditCapitalCex(e.target.value)}
-                          placeholder="CEX $"
-                          min="0"
-                          step="1"
-                          className="flex-1 min-w-0 px-3 py-2.5 text-sm bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC]"
-                        />
-                        <button
-                          onClick={() => saveCapital(asset.symbol)}
-                          disabled={isBusy}
-                          className="px-3 py-2 text-xs bg-green-500/10 border border-green-500/30 rounded-lg text-green-400 hover:bg-green-500/20 disabled:opacity-40 font-medium"
-                        >
-                          {isBusy && actionLoading === `${asset.symbol}:capital` ? <Loader2 size={14} className="animate-spin" /> : 'Save'}
-                        </button>
-                        <button
-                          onClick={() => setEditingSymbol(null)}
-                          className="px-3 py-2 text-xs text-[#4a4060] hover:text-[#D0CFCC] border border-[#2a2240] rounded-lg hover:bg-[#2a2240]"
-                        >
-                          Cancel
-                        </button>
+                      <div className="flex flex-col gap-2 w-full">
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] text-[#4a4060] font-medium">DEX</span>
+                          <input
+                            type="number"
+                            value={editCapitalDex}
+                            onChange={e => setEditCapitalDex(e.target.value)}
+                            placeholder="0"
+                            min="0"
+                            step="1"
+                            className="w-full pl-10 pr-3 py-2.5 text-sm bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC]"
+                          />
+                        </div>
+                        <div className="relative">
+                          <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[10px] text-[#4a4060] font-medium">CEX</span>
+                          <input
+                            type="number"
+                            value={editCapitalCex}
+                            onChange={e => setEditCapitalCex(e.target.value)}
+                            placeholder="0"
+                            min="0"
+                            step="1"
+                            className="w-full pl-10 pr-3 py-2.5 text-sm bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC]"
+                          />
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => saveCapital(asset.symbol)}
+                            disabled={isBusy}
+                            className="flex-1 px-3 py-2 text-xs bg-green-500/10 border border-green-500/30 rounded-lg text-green-400 hover:bg-green-500/20 disabled:opacity-40 font-medium"
+                          >
+                            {isBusy && actionLoading === `${asset.symbol}:capital` ? <Loader2 size={14} className="animate-spin" /> : 'Save'}
+                          </button>
+                          <button
+                            onClick={() => setEditingSymbol(null)}
+                            className="flex-1 px-3 py-2 text-xs text-[#4a4060] hover:text-[#D0CFCC] border border-[#2a2240] rounded-lg hover:bg-[#2a2240]"
+                          >
+                            Cancel
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <>
