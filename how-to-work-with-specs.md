@@ -149,7 +149,7 @@ Ask for change
     │
     ▼
 /speckit.analyze   ─── Consistency check (optional, before implement)
-    │
+    │https://stlukesfc.org
     ▼
 /speckit.implement ─── Executes tasks (AUTHORIZATION REQUIRED)
     │
