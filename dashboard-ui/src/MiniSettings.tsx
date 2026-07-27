@@ -171,8 +171,6 @@ interface SelectDef { key: string; label: string; hint: string; options: string[
 const SELECTS: SelectDef[] = [
   { key: 'auto_trade_orderly', label: 'DEX Mode', hint: 'Orderly futures', options: ['false', 'true'] },
   { key: 'auto_trade_binance', label: 'CEX Mode', hint: 'Binance spot', options: ['false', 'true'] },
-  { key: 'trading_enabled', label: 'Trading Enabled', hint: 'Global on/off', options: ['1', '0'] },
-  { key: 'dry_run', label: 'Dry Run', hint: 'Simulate orders (no real money)', options: ['true', 'false'] },
 ]
 
 type ComboOption = { label: string; value: string; recommended?: boolean }

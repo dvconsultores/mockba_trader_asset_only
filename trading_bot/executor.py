@@ -122,7 +122,7 @@ class BinanceSpot:
             self._symbol_cache[symbol] = info
             return info
         except Exception as e:
-            logger.error(f"Binance symbol info failed for {symbol}: {e}")
+            logger.warning(f"Binance symbol info failed for {symbol}: {e}")
             return None
 
     # ── Equity ────────────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ class BinanceSpot:
             }
             r = self._post("/api/v3/order", params)
             if r.status_code != 200:
-                logger.error(f"Binance entry failed: {r.status_code} {r.text[:200]}")
+                logger.warning(f"Binance entry failed: {r.status_code} {r.text[:200]}")
                 return None
             data = r.json()
             fill_price = sum(float(f["price"]) * float(f["qty"]) for f in data.get("fills", []))
@@ -212,7 +212,7 @@ class BinanceSpot:
             }
             r = self._post("/api/v3/order", tp_params)
             if r.status_code != 200:
-                logger.error(f"Binance TP placement failed: {r.status_code} {r.text[:200]}")
+                logger.warning(f"Binance TP placement failed: {r.status_code} {r.text[:200]}")
 
         # Place SL stop-limit sell (if sl_pct > 0)
         sl_price = 0.0
@@ -234,7 +234,7 @@ class BinanceSpot:
                 }
                 r = self._post("/api/v3/order", sl_params)
                 if r.status_code != 200:
-                    logger.error(f"Binance SL placement failed: {r.status_code} {r.text[:200]}")
+                    logger.warning(f"Binance SL placement failed: {r.status_code} {r.text[:200]}")
 
         return fill
 
@@ -339,7 +339,7 @@ class OrderlyFutures:
             self._symbol_cache[symbol] = info
             return info
         except Exception as e:
-            logger.error(f"Orderly symbol info failed for {symbol}: {e}")
+            logger.warning(f"Orderly symbol info failed for {symbol}: {e}")
             return None
 
     # ── Equity ────────────────────────────────────────────────────────────
@@ -398,7 +398,7 @@ class OrderlyFutures:
         }
         r = self._post("/v1/order", body)
         if r.status_code != 200:
-            logger.error(f"Orderly entry failed: {r.status_code} {r.text[:200]}")
+            logger.warning(f"Orderly entry failed: {r.status_code} {r.text[:200]}")
             return None
 
         data = r.json().get("data", r.json())
@@ -444,7 +444,7 @@ class OrderlyFutures:
 
         # Verify SL exists (constitution III)
         if sl_r.status_code != 200:
-            logger.error(f"SL placement failed: {sl_r.status_code}")
+            logger.warning(f"SL placement failed: {sl_r.status_code}")
             # Emergency: place standalone stop
             sl_r2 = self._post("/v1/order", sl_body)
             if sl_r2.status_code != 200:

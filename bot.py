@@ -45,12 +45,12 @@ def validate_startup() -> bool:
         logger.warning(f"[STARTUP] {w}")
     if errors:
         for e in errors:
-            logger.error(f"[STARTUP] {e}")
+            logger.warning(f"[STARTUP] {e}")
         return False
 
     assets = get_asset_list()
     if not assets:
-        logger.error("[STARTUP] no assets configured")
+        logger.warning("[STARTUP] no assets configured")
         return False
 
     tp = get_setting_float("tp_min_pct", 0.8); sl = get_setting_float("sl_min_pct", 0.5)
@@ -73,7 +73,7 @@ def run():
     logger.info(f"[STARTUP] dry_run={dry}")
 
     if not validate_startup():
-        logger.error("[STARTUP] validation failed — trading disabled")
+        logger.warning("[STARTUP] validation failed — trading disabled")
         upsert_setting("trading_enabled", "0")
         # Don't exit — user may fix config via Telegram and validation re-runs
 
@@ -110,7 +110,7 @@ def run():
             # Periodic re-validation
             if time.time() - _last_validation > VALIDATION_INTERVAL:
                 if not validate_startup():
-                    logger.error("[VALIDATION] failed — halting new entries")
+                    logger.warning("[VALIDATION] failed — halting new entries")
                     upsert_setting("trading_enabled", "0")
                 _last_validation = time.time()
 
