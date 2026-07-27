@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react'
-import { Plus, Trash2, AlertCircle, Loader2, Power, PowerOff } from 'lucide-react'
+import { Plus, Trash2, AlertCircle, Loader2 } from 'lucide-react'
 import { TG, isTelegram } from './TelegramProvider'
 
 interface AssetItem {
@@ -19,10 +19,15 @@ interface AssetData {
 export default function AssetManager() {
   const [data, setData] = useState<AssetData>({ assets: [], summary: [] })
   const [newAsset, setNewAsset] = useState('')
+  const [newCapitalDex, setNewCapitalDex] = useState('')
+  const [newCapitalCex, setNewCapitalCex] = useState('')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [editable, setEditable] = useState(isTelegram)
+  const [editingSymbol, setEditingSymbol] = useState<string | null>(null)
+  const [editCapitalDex, setEditCapitalDex] = useState('')
+  const [editCapitalCex, setEditCapitalCex] = useState('')
 
   const authHeaders = useCallback((): Record<string, string> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -69,19 +74,51 @@ export default function AssetManager() {
   const addAsset = async () => {
     const symbol = newAsset.trim()
     if (!symbol) return
+    const cd = parseFloat(newCapitalDex) || 0
+    const cc = parseFloat(newCapitalCex) || 0
     setActionLoading(symbol)
     setError(null)
     try {
       const res = await fetch('/api/assets', {
         method: 'POST',
         headers: authHeaders(),
-        body: JSON.stringify({ symbol, capital_dex: 0, capital_cex: 0, active_dex: false, active_cex: false }),
+        body: JSON.stringify({ symbol, capital_dex: cd, capital_cex: cc, active_dex: cd > 0, active_cex: cc > 0 }),
       })
       if (!res.ok) throw new Error(await res.text())
       setNewAsset('')
+      setNewCapitalDex('')
+      setNewCapitalCex('')
       await fetchAssets()
     } catch (e: any) {
       setError(e.message || 'Failed to add asset')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const saveCapital = async (symbol: string) => {
+    const asset = data.assets.find(a => a.symbol === symbol)
+    if (!asset) return
+    const cd = parseFloat(editCapitalDex) || 0
+    const cc = parseFloat(editCapitalCex) || 0
+    setActionLoading(`${symbol}:capital`)
+    setError(null)
+    try {
+      const res = await fetch(`/api/assets/${encodeURIComponent(symbol)}`, {
+        method: 'PUT',
+        headers: authHeaders(),
+        body: JSON.stringify({
+          capital_dex: cd,
+          capital_cex: cc,
+          active_dex: asset.active_dex,
+          active_cex: asset.active_cex,
+        }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      setEditingSymbol(null)
+      await fetchAssets()
+    } catch (e: any) {
+      setError(e.message || 'Failed to save capital')
     } finally {
       setActionLoading(null)
     }
@@ -180,26 +217,52 @@ export default function AssetManager() {
 
       {/* Add asset */}
       {editable && (
-        <div className="mb-4 flex gap-2">
+        <div className="mb-4 space-y-2">
           <input
             type="text"
             value={newAsset}
             onChange={e => setNewAsset(e.target.value)}
             onKeyUp={e => { if (e.key === 'Enter') addAsset() }}
             placeholder="e.g. PERP_NEAR_USDC"
-            className="flex-1 px-3 py-2.5 text-sm bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] placeholder-[#4a4060]"
+            className="w-full px-3 py-2.5 text-sm bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] placeholder-[#4a4060]"
           />
+          <div className="flex gap-2">
+            <div className="flex-1 relative">
+              <input
+                type="number"
+                value={newCapitalDex}
+                onChange={e => setNewCapitalDex(e.target.value)}
+                placeholder="DEX capital (USD)"
+                min="0"
+                step="1"
+                className="w-full px-3 py-2.5 text-sm bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] placeholder-[#4a4060]"
+              />
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-[#4a4060]">DEX</span>
+            </div>
+            <div className="flex-1 relative">
+              <input
+                type="number"
+                value={newCapitalCex}
+                onChange={e => setNewCapitalCex(e.target.value)}
+                placeholder="CEX capital (USD)"
+                min="0"
+                step="1"
+                className="w-full px-3 py-2.5 text-sm bg-[#171421] border border-[#2a2240] rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] placeholder-[#4a4060]"
+              />
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-[#4a4060]">CEX</span>
+            </div>
+          </div>
           <button
             onClick={addAsset}
             disabled={!newAsset.trim() || actionLoading === newAsset.trim()}
-            className="px-4 py-2.5 bg-[#2a2240] hover:bg-[#3a3050] border border-[#3a3050] rounded-lg text-[#D0CFCC] text-sm font-medium disabled:opacity-40 transition-colors flex items-center gap-1.5 shrink-0"
+            className="w-full px-4 py-2.5 bg-[#2a2240] hover:bg-[#3a3050] border border-[#3a3050] rounded-lg text-[#D0CFCC] text-sm font-medium disabled:opacity-40 transition-colors flex items-center justify-center gap-1.5"
           >
             {actionLoading === newAsset.trim() ? (
               <Loader2 size={16} className="animate-spin" />
             ) : (
               <Plus size={16} />
             )}
-            Add
+            Add Asset
           </button>
         </div>
       )}
@@ -213,78 +276,136 @@ export default function AssetManager() {
         <div className="rounded-xl border border-[#2a2240] bg-[#1a1528] overflow-hidden">
           <div className="divide-y divide-[#2a2240]">
             {data.assets.map(asset => {
-              const isBusy = actionLoading === asset.symbol || actionLoading === `${asset.symbol}:dex` || actionLoading === `${asset.symbol}:cex`
+              const isBusy = actionLoading === asset.symbol || actionLoading === `${asset.symbol}:dex` || actionLoading === `${asset.symbol}:cex` || actionLoading === `${asset.symbol}:capital`
+              const isEditing = editingSymbol === asset.symbol
               return (
                 <div
                   key={asset.symbol}
-                  className="flex items-center justify-between px-3 py-3 hover:bg-[#171421]/30 transition-colors"
+                  className="px-3 py-3 hover:bg-[#171421]/30 transition-colors"
                 >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <div>
-                      <div className="text-sm font-medium text-[#D0CFCC] truncate">{asset.symbol}</div>
-                      <div className="text-[10px] text-[#7a7090]">
-                        {asset.open_positions > 0 ? `${asset.open_positions} open` : 'No positions'}
+                  {/* Row 1: symbol + toggles + actions */}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div>
+                        <div className="text-sm font-medium text-[#D0CFCC] truncate">{asset.symbol}</div>
+                        <div className="text-[10px] text-[#7a7090]">
+                          {asset.open_positions > 0 ? `${asset.open_positions} open` : 'No positions'}
+                        </div>
                       </div>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                      {/* DEX toggle */}
+                      {editable && (
+                        <button
+                          onClick={() => toggleVenue(asset.symbol, 'dex', asset.active_dex)}
+                          disabled={isBusy}
+                          className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${
+                            asset.active_dex
+                              ? 'text-green-400 bg-green-500/10 hover:bg-green-500/20'
+                              : 'text-[#4a4060] hover:text-[#D0CFCC] hover:bg-[#2a2240]'
+                          }`}
+                          title={asset.active_dex ? 'DEX ON — click to deactivate' : 'DEX OFF — click to activate'}
+                        >
+                          {isBusy && actionLoading === `${asset.symbol}:dex` ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <span className="text-[10px] font-bold">{asset.active_dex ? 'DEX' : 'DEX'}</span>
+                          )}
+                        </button>
+                      )}
+                      {/* CEX toggle */}
+                      {editable && (
+                        <button
+                          onClick={() => toggleVenue(asset.symbol, 'cex', asset.active_cex)}
+                          disabled={isBusy}
+                          className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${
+                            asset.active_cex
+                              ? 'text-green-400 bg-green-500/10 hover:bg-green-500/20'
+                              : 'text-[#4a4060] hover:text-[#D0CFCC] hover:bg-[#2a2240]'
+                          }`}
+                          title={asset.active_cex ? 'CEX ON — click to deactivate' : 'CEX OFF — click to activate'}
+                        >
+                          {isBusy && actionLoading === `${asset.symbol}:cex` ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <span className="text-[10px] font-bold">CEX</span>
+                          )}
+                        </button>
+                      )}
+                      {/* Remove */}
+                      {editable && asset.open_positions === 0 && (
+                        <button
+                          onClick={() => removeAsset(asset.symbol)}
+                          disabled={isBusy}
+                          className="p-1.5 rounded-lg text-[#7a7090] hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
+                          title="Remove asset"
+                        >
+                          {isBusy && actionLoading === asset.symbol ? (
+                            <Loader2 size={14} className="animate-spin" />
+                          ) : (
+                            <Trash2 size={14} />
+                          )}
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
-                    {/* DEX toggle */}
-                    {editable && (
-                      <button
-                        onClick={() => toggleVenue(asset.symbol, 'dex', asset.active_dex)}
-                        disabled={isBusy}
-                        className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${
-                          asset.active_dex
-                            ? 'text-green-400 bg-green-500/10 hover:bg-green-500/20'
-                            : 'text-[#4a4060] hover:text-[#D0CFCC] hover:bg-[#2a2240]'
-                        }`}
-                        title={asset.active_dex ? 'DEX active — click to deactivate' : 'DEX inactive — click to activate'}
-                      >
-                        {isBusy && actionLoading === `${asset.symbol}:dex` ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : asset.active_dex ? (
-                          <Power size={14} />
-                        ) : (
-                          <PowerOff size={14} />
+                  {/* Row 2: capital values + edit */}
+                  <div className="flex items-center justify-between mt-1.5">
+                    {isEditing ? (
+                      <div className="flex items-center gap-2 w-full">
+                        <input
+                          type="number"
+                          value={editCapitalDex}
+                          onChange={e => setEditCapitalDex(e.target.value)}
+                          placeholder="DEX $"
+                          min="0"
+                          step="1"
+                          className="flex-1 min-w-0 px-2 py-1 text-xs bg-[#171421] border border-[#2a2240] rounded text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC]"
+                        />
+                        <input
+                          type="number"
+                          value={editCapitalCex}
+                          onChange={e => setEditCapitalCex(e.target.value)}
+                          placeholder="CEX $"
+                          min="0"
+                          step="1"
+                          className="flex-1 min-w-0 px-2 py-1 text-xs bg-[#171421] border border-[#2a2240] rounded text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC]"
+                        />
+                        <button
+                          onClick={() => saveCapital(asset.symbol)}
+                          disabled={isBusy}
+                          className="px-2 py-1 text-[10px] bg-green-500/10 border border-green-500/30 rounded text-green-400 hover:bg-green-500/20 disabled:opacity-40"
+                        >
+                          {isBusy && actionLoading === `${asset.symbol}:capital` ? <Loader2 size={12} className="animate-spin" /> : 'Save'}
+                        </button>
+                        <button
+                          onClick={() => setEditingSymbol(null)}
+                          className="px-2 py-1 text-[10px] text-[#4a4060] hover:text-[#D0CFCC]"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="flex gap-3 text-[11px] text-[#7a7090]">
+                          <span>DEX: <span className={asset.active_dex ? 'text-[#D0CFCC]' : ''}>${asset.capital_dex.toFixed(0)}</span></span>
+                          <span>CEX: <span className={asset.active_cex ? 'text-[#D0CFCC]' : ''}>${asset.capital_cex.toFixed(0)}</span></span>
+                        </div>
+                        {editable && (
+                          <button
+                            onClick={() => {
+                              setEditingSymbol(asset.symbol)
+                              setEditCapitalDex(String(asset.capital_dex))
+                              setEditCapitalCex(String(asset.capital_cex))
+                            }}
+                            className="text-[10px] text-[#4a4060] hover:text-[#D0CFCC] transition-colors"
+                          >
+                            Edit $
+                          </button>
                         )}
-                      </button>
-                    )}
-                    {/* CEX toggle */}
-                    {editable && (
-                      <button
-                        onClick={() => toggleVenue(asset.symbol, 'cex', asset.active_cex)}
-                        disabled={isBusy}
-                        className={`p-1.5 rounded-lg transition-colors disabled:opacity-40 ${
-                          asset.active_cex
-                            ? 'text-green-400 bg-green-500/10 hover:bg-green-500/20'
-                            : 'text-[#4a4060] hover:text-[#D0CFCC] hover:bg-[#2a2240]'
-                        }`}
-                        title={asset.active_cex ? 'CEX active — click to deactivate' : 'CEX inactive — click to activate'}
-                      >
-                        {isBusy && actionLoading === `${asset.symbol}:cex` ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : asset.active_cex ? (
-                          <Power size={14} />
-                        ) : (
-                          <PowerOff size={14} />
-                        )}
-                      </button>
-                    )}
-                    {/* Remove */}
-                    {editable && asset.open_positions === 0 && (
-                      <button
-                        onClick={() => removeAsset(asset.symbol)}
-                        disabled={isBusy}
-                        className="p-1.5 rounded-lg text-[#7a7090] hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
-                        title="Remove asset"
-                      >
-                        {isBusy && actionLoading === asset.symbol ? (
-                          <Loader2 size={14} className="animate-spin" />
-                        ) : (
-                          <Trash2 size={14} />
-                        )}
-                      </button>
+                      </>
                     )}
                   </div>
                 </div>

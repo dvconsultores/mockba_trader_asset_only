@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 import sqlite3
 import subprocess
@@ -20,6 +21,8 @@ from fastapi.responses import StreamingResponse
 from sse_starlette.sse import EventSourceResponse
 
 app = FastAPI(title="Mockba Dashboard API")
+
+logger = logging.getLogger("mockba_dashboard")
 
 # Allow all origins (Docker internal + NPM proxy)
 app.add_middleware(
@@ -55,30 +58,6 @@ def _upsert_setting(key: str, value: str):
     )
     db.commit()
     db.close()
-
-
-def _get_asset_list() -> list:
-    """Returns the asset setting as a list of strings (legacy compat)."""
-    val = _get_setting("assets")
-    if not val:
-        return []
-    return [x.strip() for x in val.split(",") if x.strip()]
-
-
-def _add_asset(asset: str):
-    """Adds an asset to the list if not present (legacy compat)."""
-    assets = _get_asset_list()
-    if asset not in assets:
-        assets.append(asset)
-        _upsert_setting("assets", ",".join(assets))
-
-
-def _remove_asset(asset: str):
-    """Removes an asset from the list (legacy compat)."""
-    assets = _get_asset_list()
-    if asset in assets:
-        assets.remove(asset)
-        _upsert_setting("assets", ",".join(assets))
 
 
 # ── Asset config helpers (Amendment 004) ───────────────────────────
@@ -359,7 +338,6 @@ def _validate_setting(key: str, value: str) -> dict:
         "daily_loss_limit_pct": (0, 100, "Daily loss %"),
         "max_consecutive_losses": (0, 50, "Consec losses"),
         "leverage": (1, 10, "Leverage"), "max_leverage": (1, 10, "Max leverage"),
-        "dex_slot_pct": (1, 100, "DEX slot %"), "cex_slot_pct": (1, 100, "CEX slot %"),
         "tp_k": (0.1, 5, "TP k"), "sl_k": (0.1, 5, "SL k"),
         "dip_k": (0.1, 5, "Dip k"), "pump_k": (0.1, 5, "Pump k"),
         "max_hold_minutes_spot": (5, 1440, "Spot hold"), "max_hold_minutes_futures": (5, 1440, "Futures hold"),
@@ -386,13 +364,8 @@ def _validate_setting(key: str, value: str) -> dict:
             if float(value) > ml:
                 return {"level": "error", "message": f"Leverage ({value}x) > max ({ml}x)"}
         except: pass
-    if key in ("max_slots", "dex_slot_pct", "cex_slot_pct"):
-        try:
-            slots = float(_get_setting("max_slots") or "9")
-            pct = float(_get_setting("dex_slot_pct") or "10")
-            if slots * pct > 100:
-                return {"level": "error", "message": f"{slots} slots × {pct}% = {slots*pct}% > 100%"}
-        except: pass
+    # Per-asset capital validation is handled by trade/settings_rules.py (Amendment 004)
+    # Legacy dex_slot_pct/cex_slot_pct cross-check removed — replaced by asset_configs.capital_dex/capital_cex
     return {"level": "ok", "message": ""}
 
 
@@ -576,7 +549,15 @@ async def api_assets_get():
         for vk, vl in [("dex", "orderly"), ("cex", "binance")]:
             total = sum(a[f"capital_{vk}"] for a in assets if a[f"active_{vk}"] and a[f"capital_{vk}"] > 0)
             active = sum(1 for a in assets if a[f"active_{vk}"] and a[f"capital_{vk}"] > 0)
-            summary.append({"venue": vl, "total_allocated": round(total, 2), "active_pairs": active, "remaining": None})
+            # Exchange equity query requires API credentials — not available in dashboard context.
+            # The bot's startup validation gate checks overallocation via settings_rules.py.
+            summary.append({
+                "venue": vl,
+                "total_allocated": round(total, 2),
+                "active_pairs": active,
+                "remaining": None,
+                "balance_error": "Equity query unavailable in dashboard — use Telegram bot for balance-checked saves",
+            })
         return {"ok": True, "assets": assets, "summary": summary}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -642,6 +623,99 @@ async def api_assets_remove(symbol: str, request: Request):
     _delete_asset_config_inline(symbol)
     remaining = [c["symbol"] for c in _get_asset_configs()]
     return {"ok": True, "removed": symbol, "assets": remaining}
+
+
+# ── Asset Validation & Force-Save (Amendment 004) ─────────────────
+
+@app.post("/api/assets/validate")
+async def api_assets_validate(request: Request):
+    """Dry-run validation for asset config without saving. Requires auth.
+
+    Body: { symbol, capital_dex, capital_cex, active_dex, active_cex }
+    Returns: { ok, warnings: [{field, message}], errors: [{field, message}] }
+    """
+    _a = await _check_auth(request)
+    if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
+    body = await request.json()
+    symbol = (body.get("symbol") or "").strip()
+    cd = float(body.get("capital_dex", 0) or 0)
+    cc = float(body.get("capital_cex", 0) or 0)
+    ad = bool(body.get("active_dex", False))
+    ac = bool(body.get("active_cex", False))
+
+    warnings = []
+    errors = []
+
+    if not symbol:
+        errors.append({"field": "symbol", "message": "Symbol is required"})
+    if cd < 0:
+        errors.append({"field": "capital_dex", "message": "Capital must be >= 0"})
+    if cc < 0:
+        errors.append({"field": "capital_cex", "message": "Capital must be >= 0"})
+    if ad and cd == 0:
+        warnings.append({"field": "capital_dex", "message": "DEX active but capital is $0"})
+    if ac and cc == 0:
+        warnings.append({"field": "capital_cex", "message": "CEX active but capital is $0"})
+
+    # Check for duplicate symbol (skip if editing existing)
+    existing = body.get("is_edit")
+    if not existing:
+        configs = _get_asset_configs()
+        if any(c["symbol"] == symbol for c in configs):
+            errors.append({"field": "symbol", "message": f"Asset '{symbol}' already exists"})
+
+    # Overallocation check (best-effort — exchange balance query may fail)
+    try:
+        configs = _get_asset_configs()
+        total_dex = sum(float(c.get("capital_dex", 0) or 0) for c in configs if c.get("active_dex") and c["symbol"] != symbol)
+        total_cex = sum(float(c.get("capital_cex", 0) or 0) for c in configs if c.get("active_cex") and c["symbol"] != symbol)
+        if ad:
+            total_dex += cd
+        if ac:
+            total_cex += cc
+        # Warn if total > 0 but actual balance check requires exchange API
+        if total_dex > 0 and ad:
+            warnings.append({"field": "capital_dex", "message": f"Total DEX allocation would be ${total_dex:,.0f} — verify against exchange balance"})
+        if total_cex > 0 and ac:
+            warnings.append({"field": "capital_cex", "message": f"Total CEX allocation would be ${total_cex:,.0f} — verify against exchange balance"})
+    except Exception:
+        warnings.append({"field": "_global", "message": "Could not verify total allocation — exchange balance query unavailable"})
+
+    return {"ok": len(errors) == 0, "warnings": warnings, "errors": errors}
+
+
+@app.post("/api/assets/{symbol}/force-save")
+async def api_assets_force_save(symbol: str, request: Request):
+    """Save asset config bypassing balance check. Requires auth.
+
+    Logs the override prominently. Use only when balance query fails (Constitution IV emergency).
+    """
+    _a = await _check_auth(request)
+    if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
+    symbol = symbol.strip()
+    body = await request.json()
+    cd = float(body.get("capital_dex", 0) or 0)
+    cc = float(body.get("capital_cex", 0) or 0)
+    ad = bool(body.get("active_dex", False))
+    ac = bool(body.get("active_cex", False))
+    if cd < 0 or cc < 0:
+        raise HTTPException(status_code=422, detail="Capital must be >= 0")
+
+    configs = _get_asset_configs()
+    ex = next((c for c in configs if c["symbol"] == symbol), None)
+
+    _upsert_asset_config_inline(symbol, cd, cc, ad, ac)
+    logger.warning(f"[FORCE-SAVE] Asset '{symbol}' saved without balance check. "
+                   f"capital_dex={cd}, capital_cex={cc}, active_dex={ad}, active_cex={ac}")
+
+    return {
+        "ok": True,
+        "symbol": symbol,
+        "capital_dex": cd, "capital_cex": cc,
+        "active_dex": ad, "active_cex": ac,
+        "force_saved": True,
+        "open_positions": _get_asset_open_position_count(symbol),
+    }
 
 
 async def _check_auth(request: Request) -> bool:

@@ -152,8 +152,6 @@ const PRESETS: PresetDef[] = [
 interface FreeDef { key: string; label: string; hint: string; suffix?: string; step?: string; min?: string; max?: string }
 
 const FREE_INPUTS: FreeDef[] = [
-  { key: 'dex_slot_pct', label: 'DEX Slot %', hint: '% equity per futures position', step: '1', min: '1', suffix: '%' },
-  { key: 'cex_slot_pct', label: 'CEX Slot %', hint: '% equity per spot position', step: '1', min: '1', suffix: '%' },
   { key: 'atr_period', label: 'ATR Period', hint: 'Candles for ATR calculation', step: '1', min: '5', max: '50' },
   { key: 'max_hold_minutes_spot', label: 'Max Hold (Spot)', hint: 'Minutes before time stop on CEX', step: '5', min: '10' },
   { key: 'max_hold_minutes_futures', label: 'Max Hold (Futures)', hint: 'Minutes before time stop on DEX', step: '5', min: '10' },
@@ -318,7 +316,9 @@ function MiniSettingsComponent() {
   const [loaded, setLoaded] = useState(false)
   const [editable, setEditable] = useState(isTelegram)
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
-  const capital = parseFloat(settings.cex_slot_pct || settings.dex_slot_pct || '15')
+  // Per-asset capital is managed via asset_configs table (Amendment 004).
+  // Use a fixed default for preset recommendations (no longer derived from legacy slot_pct).
+  const capital = 1000 // reference capital for preset recommendations
 
   // Inline validation (Amendment 002 — pure TS, no network)
   const verdicts = React.useMemo(() => validateAll(settings), [settings])

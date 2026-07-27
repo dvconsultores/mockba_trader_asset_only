@@ -20,7 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from db.db_ops import (
     get_setting, get_setting_float, get_setting_int, get_setting_bool,
-    upsert_setting, get_asset_list, get_active_pairs, initialize_database_tables,
+    upsert_setting, get_active_pairs, initialize_database_tables,
 )
 from logs.log_config import apolo_trader_logger as logger
 from trade.regime import detect_regime, invalidate_cache

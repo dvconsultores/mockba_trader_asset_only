@@ -15,7 +15,9 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.db_ops import (
     upsert_setting, get_all_settings, initialize_database_tables, get_setting,
-    get_asset_list, get_setting_float, get_setting_bool,
+    get_setting_float, get_setting_bool,
+    get_all_asset_configs, upsert_asset_config, delete_asset_config,
+    load_all_positions,
 )
 import json
 from datetime import timedelta
@@ -141,7 +143,9 @@ def command_list(m):
 
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
-    markup.row(InlineKeyboardButton(translate("💡 Explain Setting", cid), callback_data="ExplainPrompt"))
+    markup.row(InlineKeyboardButton(translate("� Manage Assets", cid), callback_data="ManageAssets"))
+    markup.row(InlineKeyboardButton(translate("▶️ Start / Stop Bot", cid), callback_data="StartStop"))
+    markup.row(InlineKeyboardButton(translate("�💡 Explain Setting", cid), callback_data="ExplainPrompt"))
     markup.row(InlineKeyboardButton(translate("🤖 Propose Changes", cid), callback_data="ProposeStart"))
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
 
@@ -274,7 +278,7 @@ def _dispatch_callback(call, cid):
     immediate_remove = False
     if call.data.startswith("exec_sig:") or call.data.startswith("exec_sig_dex:") or call.data.startswith("exec_sig_cex:"):
         immediate_remove = True
-    if call.data.startswith("asset_select:") or call.data.startswith("asset_remove:") or call.data.startswith("bot_toggle:"):
+    if call.data.startswith("asset_toggle:") or call.data.startswith("asset_remove:") or call.data.startswith("asset_venuetoggle:") or call.data.startswith("bot_toggle:"):
         immediate_remove = True
 
     if immediate_remove:
@@ -294,13 +298,16 @@ def _dispatch_callback(call, cid):
         execute_signal(call.message, asset=asset)
     elif call.data == "asset_add_prompt":
         handle_asset_add_prompt(call.message)
-    elif call.data.startswith("asset_select:"):
-        asset = call.data.split(":", 1)[1]
-        handle_asset_select(cid, asset)
+    elif call.data.startswith("asset_venuetoggle:"):
+        _, symbol, venue, activate_str = call.data.split(":")
+        handle_asset_venuetoggle(cid, symbol, venue, activate_str == "1")
         manage_assets(call.message)
+    elif call.data.startswith("asset_toggle:"):
+        symbol = call.data.split(":", 1)[1]
+        handle_asset_toggle(cid, symbol)
     elif call.data.startswith("asset_remove:"):
-        asset = call.data.split(":", 1)[1]
-        handle_asset_remove(cid, asset)
+        symbol = call.data.split(":", 1)[1]
+        handle_asset_remove(cid, symbol)
         manage_assets(call.message)
     elif call.data.startswith("bot_toggle:"):
         _, exchange, mode = call.data.split(":")
@@ -315,7 +322,6 @@ def _dispatch_callback(call, cid):
     else:
         options = {
             'List': command_list,
-            'ListSettings': ListSettings,
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
             'ManageAssets': manage_assets,
@@ -414,8 +420,9 @@ def pick_exchange_for_signal(m):
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
-    assets = get_asset_list()
-    asset = assets[0] if assets else None
+    configs = get_all_asset_configs()
+    symbols = [c["symbol"] for c in configs]
+    asset = symbols[0] if symbols else None
     if not asset:
         bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
         return
@@ -434,8 +441,9 @@ def execute_signal(m, asset=None, exchange=None):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     if asset is None:
-        assets = get_asset_list()
-        asset = assets[0] if assets else None
+        configs = get_all_asset_configs()
+        symbols = [c["symbol"] for c in configs]
+        asset = symbols[0] if symbols else None
         if not asset:
             bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
             return
@@ -475,28 +483,47 @@ def execute_signal(m, asset=None, exchange=None):
          
 
 def manage_assets(m):
-    """Show current asset list with options to add, remove or select."""
+    """Show asset configs with per-venue capital, active flags, and open position counts."""
     if m.chat.type != 'private': return
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
-    from db.db_ops import get_asset_list as _gal, get_setting as _gs
-    assets = _gal()
-    current = _gs("current_asset") or ""
-
+    configs = get_all_asset_configs()
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("➕ Add Asset", cid), callback_data="asset_add_prompt"))
 
-    if assets:
-        for a in assets:
-            label = f"{'✅ ' if a == current else ''}{a}"
-            markup.row(InlineKeyboardButton(label, callback_data=f"asset_select:{a}"))
-            markup.row(
-                InlineKeyboardButton(translate("❌ Remove", cid), callback_data=f"asset_remove:{a}"),
-            )
+    if configs:
+        for c in configs:
+            sym = c["symbol"]
+            dex_on = c.get("active_dex", 0)
+            cex_on = c.get("active_cex", 0)
+            cap_d = float(c.get("capital_dex", 0) or 0)
+            cap_c = float(c.get("capital_cex", 0) or 0)
+            ops = c.get("open_positions", 0)
+            dex_icon = "🟢" if dex_on else "🔴"
+            cex_icon = "🟢" if cex_on else "🔴"
+            label = f"{sym}\n  DEX {dex_icon} ${cap_d:.0f}  |  CEX {cex_icon} ${cap_c:.0f}"
+            if ops > 0:
+                label += f"  ({ops} open)"
+            markup.row(InlineKeyboardButton(label, callback_data=f"asset_toggle:{sym}"))
+            markup.row(InlineKeyboardButton(
+                translate("❌ Remove", cid), callback_data=f"asset_remove:{sym}"
+            ))
 
     markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="List"))
-    bot.send_message(cid, translate(f"📦 Assets (active: {current or 'none'})", cid), reply_markup=markup)
+    total = len(configs)
+    active = sum(1 for c in configs if c.get("active_dex") or c.get("active_cex"))
+    # Per-venue allocation summary
+    dex_alloc = sum(float(c.get("capital_dex", 0) or 0) for c in configs if c.get("active_dex"))
+    cex_alloc = sum(float(c.get("capital_cex", 0) or 0) for c in configs if c.get("active_cex"))
+    dex_count = sum(1 for c in configs if c.get("active_dex") and float(c.get("capital_dex", 0) or 0) > 0)
+    cex_count = sum(1 for c in configs if c.get("active_cex") and float(c.get("capital_cex", 0) or 0) > 0)
+    summary_lines = [
+        f"📦 Assets: {total} total, {active} active",
+        f"DEX: ${dex_alloc:,.0f} allocated ({dex_count} active pairs)",
+        f"CEX: ${cex_alloc:,.0f} allocated ({cex_count} active pairs)",
+    ]
+    bot.send_message(cid, translate("\n".join(summary_lines), cid), reply_markup=markup)
 
 
 def start_stop_menu(m):
@@ -527,7 +554,7 @@ def start_stop_menu(m):
 
 
 def handle_asset_add_prompt(m):
-    """Prompt user to send the asset name."""
+    """Prompt user to send the asset name to add."""
     if m.chat.type != 'private': return
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
@@ -538,145 +565,107 @@ def handle_asset_add_prompt(m):
 
 
 def handle_asset_add_reply(m):
-    """Process the asset name from user reply."""
+    """Process the asset name from user reply. Adds with zero capital, inactive — user edits after."""
     if m.chat.type != 'private': return
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
-    asset = (m.text or "").strip()
-    if not asset:
+    symbol = (m.text or "").strip()
+    if not symbol:
         bot.send_message(cid, translate("❌ Invalid asset name.", cid))
         return
 
-    from db.db_ops import add_asset as _aa, get_asset_list as _gal
-    _aa(asset)
-    bot.send_message(cid, translate(f"✅ Asset '{asset}' added. Total: {len(_gal())}", cid))
+    configs = get_all_asset_configs()
+    if any(c["symbol"] == symbol for c in configs):
+        bot.send_message(cid, translate(f"❌ Asset '{symbol}' already exists.", cid))
+        return
+
+    upsert_asset_config(symbol, capital_dex=0, capital_cex=0, active_dex=False, active_cex=False)
+    bot.send_message(cid, translate(f"✅ Asset '{symbol}' added with zero capital. Edit to set capital and activate.", cid))
     manage_assets(m)
 
 
-def handle_asset_select(cid: int, asset: str):
-    """Set the current active asset."""
-    from db.db_ops import upsert_setting
-    upsert_setting("current_asset", asset)
-    bot.send_message(cid, translate(f"✅ Active asset set to: {asset}", cid))
+def handle_asset_toggle(cid: int, symbol: str):
+    """Show inline keyboard to toggle DEX/CEX activation and edit capital for an asset."""
+    configs = get_all_asset_configs()
+    cfg = next((c for c in configs if c["symbol"] == symbol), None)
+    if not cfg:
+        bot.send_message(cid, translate(f"❌ Asset '{symbol}' not found.", cid))
+        return
+
+    dex_on = cfg.get("active_dex", 0)
+    cex_on = cfg.get("active_cex", 0)
+    cap_d = float(cfg.get("capital_dex", 0) or 0)
+    cap_c = float(cfg.get("capital_cex", 0) or 0)
+    ops = cfg.get("open_positions", 0)
+
+    markup = InlineKeyboardMarkup()
+    # DEX toggle
+    dex_icon = "🟢 ON" if dex_on else "🔴 OFF"
+    markup.row(InlineKeyboardButton(
+        f"DEX {dex_icon} — ${cap_d:.0f}",
+        callback_data=f"asset_venuetoggle:{symbol}:dex:{int(not dex_on)}"
+    ))
+    # CEX toggle
+    cex_icon = "🟢 ON" if cex_on else "🔴 OFF"
+    markup.row(InlineKeyboardButton(
+        f"CEX {cex_icon} — ${cap_c:.0f}",
+        callback_data=f"asset_venuetoggle:{symbol}:cex:{int(not cex_on)}"
+    ))
+    markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="ManageAssets"))
+
+    status = f"📊 {symbol}\nDEX: {dex_icon}  |  CEX: {cex_icon}\nCapital: DEX=${cap_d:.0f}  CEX=${cap_c:.0f}"
+    if ops > 0:
+        status += f"\n⚠️ {ops} open position(s)"
+    bot.send_message(cid, status, reply_markup=markup)
 
 
-def handle_asset_remove(cid: int, asset: str):
-    """Remove an asset from the list."""
-    from db.db_ops import remove_asset as _ra, get_asset_list as _gal, get_setting as _gs, upsert_setting
-    _ra(asset)
-    current = _gs("current_asset") or ""
-    if current == asset:
-        remaining = _gal()
-        new_current = remaining[0] if remaining else ""
-        upsert_setting("current_asset", new_current)
-    bot.send_message(cid, translate(f"✅ Asset '{asset}' removed.", cid))
+def handle_asset_venuetoggle(cid: int, symbol: str, venue: str, activate: bool):
+    """Toggle active_dex or active_cex for an asset."""
+    configs = get_all_asset_configs()
+    cfg = next((c for c in configs if c["symbol"] == symbol), None)
+    if not cfg:
+        bot.send_message(cid, translate(f"❌ Asset '{symbol}' not found.", cid))
+        return
+
+    cd = float(cfg.get("capital_dex", 0) or 0)
+    cc = float(cfg.get("capital_cex", 0) or 0)
+    ad = bool(cfg.get("active_dex", 0))
+    ac = bool(cfg.get("active_cex", 0))
+
+    if venue == "dex":
+        ad = activate
+    else:
+        ac = activate
+
+    upsert_asset_config(symbol, capital_dex=cd, capital_cex=cc, active_dex=ad, active_cex=ac)
+    vlabel = "DEX" if venue == "dex" else "CEX"
+    status = "ON" if activate else "OFF"
+    bot.send_message(cid, translate(f"✅ {symbol} {vlabel} is now {status}", cid))
+
+
+def handle_asset_remove(cid: int, symbol: str):
+    """Remove an asset config. Blocked if open positions exist."""
+    positions = load_all_positions(asset=symbol)
+    if positions:
+        bot.send_message(cid, translate(
+            f"❌ Cannot remove '{symbol}' — {len(positions)} open position(s). Deactivate first, wait for positions to close, then remove.",
+            cid
+        ))
+        return
+
+    delete_asset_config(symbol)
+    configs = get_all_asset_configs()
+    bot.send_message(cid, translate(f"✅ Asset '{symbol}' removed. {len(configs)} remaining.", cid))
 
 
 def handle_bot_toggle(cid: int, exchange: str, mode: str):
-    """Toggle auto_trade for an exchange."""
-    key = "auto_trade_dex" if exchange == "dex" else "auto_trade_cex"
-    from db.db_ops import upsert_setting
+    """Toggle auto_trade for an exchange (legacy global mode)."""
+    key = "auto_trade_orderly" if exchange == "dex" else "auto_trade_binance"
     upsert_setting(key, mode)
     status = "ON" if mode != "False" else "OFF"
     ex_label = "DEX" if exchange == "dex" else "CEX"
     bot.send_message(cid, translate(f"✅ {ex_label} is now {status} (mode: {mode})", cid))
-    if m.chat.type != 'private':
-        return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
-        return
-    
-    settings = get_all_settings()
-    
-    # Add defaults for missing important settings
-    if 'prompt_mode' not in settings:
-        settings['prompt_mode'] = os.getenv('PROMPT_MODE', 'mixed')
-    
-    if not settings:
-        bot.send_message(cid, "❌ No settings configured")
-        return
-    
-    # Build plain text message (safe for long content + chunking)
-    message_lines = []
-    message_lines.append("⚙️ BOT SETTINGS\n")
-    message_lines.append("═══════════════════\n\n")
-    
-    # Shared settings
-    message_lines.append("📋 Shared Settings:\n")
-    shared_keys = [
-        ("🌟", "current_asset", "Current Asset"),
-        ("⏱️", "interval", "Interval"),
-        ("🎯", "take_profit", "Take Profit"),
-        ("🧠", "ml_threshold", "ML Threshold"),
-    ]
-    for emoji, key, label in shared_keys:
-        if key in settings:
-            value = settings[key]
-            if key == "take_profit":
-                value = f"{value}%"
-            message_lines.append(f"{emoji} {label}: {value}\n")
-
-    dex_mode = settings.get("auto_trade_dex", "False")
-    cex_mode = settings.get("auto_trade_cex", "False")
-    message_lines.append(f"🤖 Auto Mode DEX: {dex_mode}\n")
-    message_lines.append(f"🤖 Auto Mode CEX: {cex_mode}\n")
-    
-    # DEX-only settings
-    message_lines.append("\n🌐 DEX Only (Orderly Futures):\n")
-    dex_keys = [
-        ("🛡️", "stop_loss", "Stop Loss"),
-        ("⚠️", "risk_level", "Risk Level"),
-        ("💰", "capital_usage", "Capital Usage"),
-        ("⚖️", "leverage", "Leverage"),
-    ]
-    for emoji, key, label in dex_keys:
-        if key in settings:
-            value = settings[key]
-            if key == "stop_loss":
-                value = f"{value}% (min floor, ATR-adjusted)"
-            elif key == "risk_level":
-                value = f"{value}% of balance"
-            elif key == "capital_usage":
-                value = f"{value}% of buying power"
-            elif key == "leverage":
-                value = f"{value}x"
-            message_lines.append(f"{emoji} {label}: {value}\n")
-    
-    # CEX-only settings
-    message_lines.append("\n💱 CEX Only (Binance Spot):\n")
-    message_lines.append("🟢 Mode: BUY only (long-only)\n")
-    cex_capital = settings.get("cex_capital", "10")
-    message_lines.append(f"💵 Capital per position: {cex_capital} USDT\n")
-
-    # Grid scalper settings (CEX, RANGE regime)
-    grid_keys = [
-        ("📉", "grid_obi_buy", "Grid OBI Buy"),
-        ("📈", "grid_obi_sell", "Grid OBI Sell"),
-        ("🎯", "grid_tp_pct", "Grid TP"),
-        ("⏱️", "grid_cooldown_sec", "Grid Cooldown"),
-        ("📊", "grid_price_dip_pct", "Grid Price Dip %"),
-        ("📦", "grid_max_positions", "Grid Max Positions"),
-    ]
-    has_grid = any(k in settings for _, k, _ in grid_keys)
-    if has_grid:
-        message_lines.append("\n📊 Grid Scalper (CEX RANGE regime):\n")
-        for emoji, key, label in grid_keys:
-            if key in settings:
-                value = settings[key]
-                if key in ("grid_tp_pct", "grid_price_dip_pct"):
-                    value = f"{value}%"
-                elif key == "grid_cooldown_sec":
-                    value = f"{value}s"
-                message_lines.append(f"{emoji} {label}: {value}\n")
-    
-    # Add timestamp
-    from datetime import datetime
-    timestamp = datetime.now().strftime("%H:%M:%S")
-    message_lines.append(f"\n⏰ Updated: {timestamp} | Total: {len(settings)} settings")
-    
-    message = "".join(message_lines)
-    send_text_message_chunked(cid, message)
 
 
 
