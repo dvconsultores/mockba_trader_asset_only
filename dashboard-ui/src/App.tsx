@@ -54,7 +54,7 @@ export default function App() {
     if (!isTelegram || !TG?.BackButton) return
 
     const backBtn = TG.BackButton
-    const mainTabIds: Tab[] = ['live', 'signals']
+    const mainTabIds: Tab[] = ['live', 'signals', 'assets']
     const isHome = tab === 'live' && !moreOpen
 
     // Remove previous handler if any
