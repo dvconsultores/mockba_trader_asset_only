@@ -141,9 +141,6 @@ def command_list(m):
 
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
-    markup.row(InlineKeyboardButton(translate("� Manage Assets", cid), callback_data="ManageAssets"))
-    markup.row(InlineKeyboardButton(translate("▶️ Start / Stop Bot", cid), callback_data="StartStop"))
-    markup.row(InlineKeyboardButton(translate("�📋 List All Settings", cid), callback_data="ListSettings"))
     markup.row(InlineKeyboardButton(translate("💡 Explain Setting", cid), callback_data="ExplainPrompt"))
     markup.row(InlineKeyboardButton(translate("🤖 Propose Changes", cid), callback_data="ProposeStart"))
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
