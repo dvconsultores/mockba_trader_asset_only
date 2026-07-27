@@ -1,23 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
-import { TerminalSquare, BarChart3, Bot, Radio, Settings2, MoreHorizontal, Package } from 'lucide-react'
+import { TerminalSquare, BarChart3, Radio, Settings2, MoreHorizontal, Package } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import Terminal from './Terminal'
 import Signals from './Signals'
-import MLMonitor from './MLMonitor'
 import StatusBar from './StatusBar'
 import MiniSettings from './MiniSettings'
 import AssetManager from './AssetManager'
 import { TG, isTelegram } from './TelegramProvider'
 
-type Tab = 'live' | 'signals' | 'ml' | 'status' | 'settings' | 'assets'
+type Tab = 'live' | 'signals' | 'status' | 'settings' | 'assets'
 
 interface BotStatus {
   uptime_seconds: number
   dex_mode: string
   cex_mode: string
-  ml_threshold: number
-  model_loaded: boolean
-  current_regime: string | null
 }
 
 export default function App() {
@@ -58,7 +54,7 @@ export default function App() {
     if (!isTelegram || !TG?.BackButton) return
 
     const backBtn = TG.BackButton
-    const mainTabIds: Tab[] = ['live', 'signals', 'ml']
+    const mainTabIds: Tab[] = ['live', 'signals']
     const isHome = tab === 'live' && !moreOpen
 
     // Remove previous handler if any
@@ -101,7 +97,6 @@ export default function App() {
   const mainTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'live', label: 'Live', icon: TerminalSquare },
     { id: 'signals', label: 'Signals', icon: BarChart3 },
-    { id: 'ml', label: 'ML', icon: Bot },
     { id: 'assets', label: 'Assets', icon: Package },
   ]
 
@@ -118,15 +113,12 @@ export default function App() {
         <div className="flex items-center gap-2 sm:gap-3 text-[10px] sm:text-xs">
           {status && (
             <>
-              <span className={status.dex_mode !== 'False' ? 'text-[#D0CFCC]' : 'text-[#4a4060]'}>
+              <span className={status.dex_mode !== 'false' && status.dex_mode !== 'False' ? 'text-[#D0CFCC]' : 'text-[#4a4060]'}>
                 DEX:{status.dex_mode}
               </span>
-              <span className={status.cex_mode !== 'False' ? 'text-[#D0CFCC]' : 'text-[#4a4060]'}>
+              <span className={status.cex_mode !== 'false' && status.cex_mode !== 'False' ? 'text-[#D0CFCC]' : 'text-[#4a4060]'}>
                 CEX:{status.cex_mode}
               </span>
-              {status.model_loaded && (
-                <span className="text-cyan-500">ML:on</span>
-              )}
             </>
           )}
         </div>
@@ -136,7 +128,6 @@ export default function App() {
       <div className="flex-1 overflow-y-auto">
         {tab === 'live' && <Terminal />}
         {tab === 'signals' && <Signals />}
-        {tab === 'ml' && <MLMonitor />}
         {tab === 'assets' && <AssetManager />}
         {tab === 'status' && <StatusBar status={status} />}
         {tab === 'settings' && <MiniSettings />}

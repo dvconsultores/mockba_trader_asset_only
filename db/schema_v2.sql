@@ -1,7 +1,5 @@
 -- MockbaV4 Schema v2 + Amendment 001
--- Idempotent. WAL mode for concurrent access.
-
-PRAGMA journal_mode=WAL;
+-- Idempotent. Single-file SQLite (default journal mode).
 
 -- ── settings ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS settings (
@@ -16,8 +14,6 @@ DELETE FROM settings WHERE key IN ('obi_buy_threshold','obi_sell_threshold','dip
 
 -- Core
 INSERT OR IGNORE INTO settings (key, value) VALUES ('assets', 'NEAR');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('tp_pct', '0.8');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('sl_pct', '0.5');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('max_slots', '9');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('cooldown_sec', '60');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('min_entry_spacing_pct', '0.3');
@@ -28,8 +24,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('daily_loss_limit_pct', '5')
 INSERT OR IGNORE INTO settings (key, value) VALUES ('max_consecutive_losses', '4');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('max_hold_minutes_spot', '120');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('max_hold_minutes_futures', '240');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('dex_slot_pct', '15');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('cex_slot_pct', '15');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('dex_slot_pct', '10');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('cex_slot_pct', '10');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('dex_round_trip_fee_pct', '0.06');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('cex_round_trip_fee_pct', '0.20');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('assumed_slippage_pct', '0.03');
@@ -40,6 +36,14 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('dry_run', 'true');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('trading_enabled', '1');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_trade_binance', 'false');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('auto_trade_orderly', 'false');
+
+-- LLM helper (Amendment 002)
+INSERT OR IGNORE INTO settings (key, value) VALUES ('llm_helper_enabled', 'false');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('llm_language', 'en');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('llm_model', 'deepseek-v4-pro');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('llm_timeout_sec', '30');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('llm_explain_cache_days', '90');
+INSERT OR IGNORE INTO settings (key, value) VALUES ('llm_max_calls_per_hour', '10');
 
 -- Amendment 001: Adaptive thresholds
 INSERT OR IGNORE INTO settings (key, value) VALUES ('adaptive_enabled', 'true');

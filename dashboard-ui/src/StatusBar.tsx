@@ -6,9 +6,6 @@ interface BotStatus {
   uptime_seconds: number
   dex_mode: string
   cex_mode: string
-  ml_threshold: number
-  model_loaded: boolean
-  current_regime: string | null
 }
 
 function fmtUptime(s: number): string {
@@ -18,17 +15,13 @@ function fmtUptime(s: number): string {
   return `${h}h ${m}m ${sec}s`
 }
 
-const VALID_MODES = ['False', 'Signal', 'Automatic'] as const
-
-function nextMode(current: string): string {
-  // Toggle: False → Automatic, anything else → False
-  return current === 'False' ? 'Automatic' : 'False'
+function modeLabel(mode: string): string {
+  if (mode === 'false' || mode === 'False') return 'STOPPED'
+  return 'RUNNING'
 }
 
-function modeLabel(mode: string): string {
-  if (mode === 'False') return 'STOPPED'
-  if (mode === 'Signal') return 'SIGNAL'
-  return 'RUNNING'
+function isRunning(mode: string): boolean {
+  return mode !== 'false' && mode !== 'False'
 }
 
 export default function StatusBar({ status: initialStatus }: { status: BotStatus | null }) {
@@ -69,7 +62,7 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
   const toggleExchange = useCallback(async (exchange: 'dex' | 'cex') => {
     if (!status) return
     const currentMode = exchange === 'dex' ? status.dex_mode : status.cex_mode
-    const newMode = nextMode(currentMode)
+    const newMode = isRunning(currentMode) ? 'false' : 'true'
     const key = exchange
 
     setTransitioning(prev => new Set(prev).add(key))
@@ -125,12 +118,6 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
           <div className="text-[#D0CFCC] text-lg">{fmtUptime(status.uptime_seconds)}</div>
         </div>
 
-        {/* ML Threshold */}
-        <div className="bg-[#1a1528] border border-[#2a2240] p-3">
-          <div className="text-[#4a4060] text-[10px]">ML THRESHOLD</div>
-          <div className="text-cyan-500 text-lg">{status.ml_threshold.toFixed(2)}</div>
-        </div>
-
         {/* DEX Mode */}
         <div className={`flex flex-col border p-3 ${isRunning(status.dex_mode) ? 'border-[#D0CFCC]/20 bg-[#D0CFCC]/3' : 'border-[#2a2240] bg-[#1a1528]'}`}>
           <div className="text-[#4a4060] text-[10px]">DEX MODE (Orderly Futures)</div>
@@ -183,48 +170,11 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
           )}
         </div>
 
-        {/* Model Status */}
-        <div className="bg-[#1a1528] border border-[#2a2240] p-3">
-          <div className="text-[#4a4060] text-[10px]">ML MODEL</div>
-          <div className={status.model_loaded ? 'text-[#D0CFCC]' : 'text-red-400'}>
-            {status.model_loaded ? '✅ LOADED' : '❌ NOT FOUND'}
-          </div>
-        </div>
-
-        {/* Current Regime */}
-        <div className="bg-[#1a1528] border border-[#2a2240] p-3">
-          <div className="text-[#4a4060] text-[10px]">REGIME</div>
-          <div className={`text-lg font-bold ${
-            status.current_regime === 'RANGE'
-              ? 'text-yellow-400'
-              : status.current_regime === 'TREND_UP'
-                ? 'text-green-400'
-                : status.current_regime === 'TREND_DOWN'
-                  ? 'text-red-400'
-                  : 'text-[#4a4060]'
-          }`}>
-            {(status.current_regime || 'UNKNOWN').toUpperCase()}
-          </div>
-        </div>
-
-        {/* Active Strategy */}
-        <div className="bg-[#1a1528] border border-[#2a2240] p-3">
-          <div className="text-[#4a4060] text-[10px]">CEX STRATEGY</div>
-          <div className={`text-lg font-bold ${
-            status.current_regime === 'RANGE' ? 'text-yellow-400' : 'text-cyan-500'
-          }`}>
-            {status.current_regime === 'RANGE' ? 'GRID SCALP' : 'REVERSAL'}
-          </div>
-        </div>
-      </div>
-
       {/* Quick Links */}
       <div className="mt-4 p-3 bg-[#1a1528] border border-[#2a2240]">
         <div className="text-[#4a4060] text-[10px] mb-2">API ENDPOINTS</div>
         <div className="space-y-1 text-[11px]">
           <div><span className="text-cyan-500">GET</span> <span className="text-[#D0CFCC]">/api/status</span></div>
-          <div><span className="text-cyan-500">GET</span> <span className="text-[#D0CFCC]">/api/signals?limit=50</span></div>
-          <div><span className="text-cyan-500">GET</span> <span className="text-[#D0CFCC]">/api/ml/info</span></div>
           <div><span className="text-cyan-500">GET</span> <span className="text-[#D0CFCC]">/api/logs/recent?lines=200</span></div>
           <div><span className="text-cyan-500">GET</span> <span className="text-[#D0CFCC]">/api/logs/stream</span> <span className="text-[#4a4060]">(SSE)</span></div>
         </div>
