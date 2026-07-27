@@ -143,9 +143,7 @@ def command_list(m):
 
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
-    markup.row(InlineKeyboardButton(translate("� Manage Assets", cid), callback_data="ManageAssets"))
-    markup.row(InlineKeyboardButton(translate("▶️ Start / Stop Bot", cid), callback_data="StartStop"))
-    markup.row(InlineKeyboardButton(translate("�💡 Explain Setting", cid), callback_data="ExplainPrompt"))
+    markup.row(InlineKeyboardButton(translate("📖 Explain Settings", cid), callback_data="ExplainAll"))
     markup.row(InlineKeyboardButton(translate("🤖 Propose Changes", cid), callback_data="ProposeStart"))
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
 
@@ -210,7 +208,7 @@ def _send_explain(cid, key):
 
 
 def _send_explain_all(cid):
-    """Analyze ALL settings via LLM in one call and return a paragraph per setting."""
+    """Analyze ALL settings via LLM in one call. Falls back to structured validator summary."""
     bot.send_message(cid, translate("📖 Analyzing all settings via LLM, please wait…", cid))
     try:
         from research.settings_llm import explain_all
@@ -219,19 +217,59 @@ def _send_explain_all(cid):
         text = explain_all(lang, "100_to_1k")
         send_text_message_chunked(cid, text)
     except ImportError:
-        # Fallback: list all settings with validator verdicts
-        from db.db_ops import get_all_settings
-        from trade.settings_rules import validate, SettingsContext
-        current = get_all_settings()
-        ctx = SettingsContext()
-        lines = ["⚙️ All Settings (LLM helper not available — validator only):\n"]
-        for key, val in sorted(current.items()):
-            v = validate(key, val, ctx)
-            icon = {"ok": "✅", "warn": "⚠️", "error": "❌"}.get(v.level, "❓")
-            lines.append(f"{icon} {key} = {val}")
-        send_text_message_chunked(cid, "\n".join(lines))
+        _send_explain_all_fallback(cid)
     except Exception as e:
-        bot.send_message(cid, f"❌ Error: {str(e)[:200]}")
+        # If LLM call fails (timeout, etc), use structured fallback
+        bot.send_message(cid, translate(f"⚠️ LLM unavailable, showing validator analysis…", cid))
+        _send_explain_all_fallback(cid)
+
+
+def _send_explain_all_fallback(cid):
+    """Structured, Telegram-friendly settings overview grouped by category with descriptions."""
+    from db.db_ops import get_all_settings
+    from trade.settings_rules import validate, SettingsContext
+    from trade.settings_schema import BY_KEY, GROUPS
+
+    current = get_all_settings()
+    ctx = SettingsContext()
+
+    grouped: dict[str, list[tuple[str, str, str, str, str, str]]] = {}
+    for g in GROUPS:
+        grouped[g] = []
+
+    for key, val in sorted(current.items()):
+        spec = BY_KEY.get(key)
+        group = spec.group if spec else None
+        if group is None or group not in grouped:
+            continue
+        v = validate(key, val, ctx)
+        icon = "🟢" if v.level == "ok" else "🟡" if v.level == "warn" else "🔴"
+        unit = f" {spec.unit}" if spec and spec.unit else ""
+        desc = spec.short if spec else ""
+        verdict_msg = f" — {v.message}" if v.level != "ok" and v.message else ""
+        grouped[group].append((icon, key, val, unit, desc, verdict_msg))
+
+    lines = ["📊 *Settings Overview*\n"]
+
+    for group in GROUPS:
+        items = grouped.get(group, [])
+        if not items:
+            continue
+        lines.append(f"▸ *{group}*")
+        for icon, key, val, unit, desc, verdict_msg in items:
+            line = f"  {icon} `{key}` = `{val}{unit}`"
+            if verdict_msg:
+                line += f" {verdict_msg}"
+            lines.append(line)
+            if desc:
+                lines.append(f"    _{desc}_")
+        lines.append("")
+
+    errors = sum(1 for items in grouped.values() for icon, *_ in items if icon == "🔴")
+    warns = sum(1 for items in grouped.values() for icon, *_ in items if icon == "🟡")
+    lines.append(f"🔴 {errors} errors  🟡 {warns} warnings  🟢 OK")
+
+    send_text_message_chunked(cid, "\n".join(lines))
 
 
 def _send_proposals(cid):

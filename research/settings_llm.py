@@ -153,11 +153,8 @@ def explain_all(language: str = "en", capital_band: str = "100_to_1k") -> str:
             settings_summary.append(f"  {key} = {val}  (verdict: {verdict.level})")
 
     if not _rate_limit_ok():
-        # Return a simple listing with validation verdicts when rate-limited
-        lines = ["⚠️ LLM rate-limited. Current settings with validator verdicts:\n"]
-        for s in settings_summary:
-            lines.append(s)
-        return "\n".join(lines)
+        # Grouped layout matching the Telegram fallback
+        return _format_settings_grouped(current, "⚠️ LLM rate-limited — validator overview only")
 
     prompt = (
         f"Analyze these trading bot settings in {language}. "
@@ -188,15 +185,67 @@ def explain_all(language: str = "en", capital_band: str = "100_to_1k") -> str:
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
-        # Fallback: validator-only summary
-        lines = [f"⚠️ LLM unavailable ({e}). Validator analysis:\n"]
-        for s in settings_summary:
-            lines.append(s)
-        text = "\n".join(lines)
+        text = _format_settings_grouped(current, f"⚠️ LLM unavailable — validator overview")
 
     with open(cache_file, "w") as f:
         json.dump({"text": text, "settings_count": len(current), "ts": time.time()}, f)
     return text
+
+
+def _format_settings_grouped(current: dict, header: str = "") -> str:
+    """Group settings by schema group with descriptions — Telegram-friendly."""
+    from trade.settings_rules import validate, SettingsContext
+    ctx = SettingsContext()
+    lines = [f"{header}"] if header else []
+    lines.append("📊 *Settings Overview*\n")
+
+    try:
+        from trade.settings_schema import BY_KEY, GROUPS
+        grouped: dict[str, list[tuple[str, str, str, str, str, str]]] = {}
+        for g in GROUPS:
+            grouped[g] = []
+
+        for key, val in sorted(current.items()):
+            spec = BY_KEY.get(key)
+            group = spec.group if spec else "Other"
+            if group not in grouped:
+                continue
+            v = validate(key, val, ctx)
+            icon = "🟢" if v.level == "ok" else "🟡" if v.level == "warn" else "🔴"
+            unit = f" {spec.unit}" if spec and spec.unit else ""
+            desc = spec.short if spec else ""
+            verdict_msg = f" — {v.message}" if v.level != "ok" and v.message else ""
+            grouped[group].append((icon, key, val, unit, desc, verdict_msg))
+
+        for group in GROUPS:
+            items = grouped.get(group, [])
+            if not items:
+                continue
+            lines.append(f"▸ *{group}*")
+            for icon, key, val, unit, desc, verdict_msg in items:
+                line = f"  {icon} `{key}` = `{val}{unit}`"
+                if verdict_msg:
+                    line += f" {verdict_msg}"
+                if desc:
+                    lines.append(line)
+                    lines.append(f"    _{desc}_")
+                else:
+                    lines.append(line)
+            lines.append("")
+
+        # Count errors/warnings across all items
+        errors = sum(1 for items in grouped.values() for icon, *_ in items if icon == "🔴")
+        warns = sum(1 for items in grouped.values() for icon, *_ in items if icon == "🟡")
+    except ImportError:
+        for key, val in sorted(current.items()):
+            v = validate(key, val, SettingsContext())
+            icon = "🟢" if v.level == "ok" else "🟡" if v.level == "warn" else "🔴"
+            lines.append(f"  {icon} `{key}` = `{val}`")
+        errors = sum(1 for k in current if validate(k, current[k], SettingsContext()).level == "error")
+        warns = sum(1 for k in current if validate(k, current[k], SettingsContext()).level == "warn")
+
+    lines.append(f"\n🔴 {errors} errors  🟡 {warns} warnings  🟢 OK")
+    return "\n".join(lines)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
