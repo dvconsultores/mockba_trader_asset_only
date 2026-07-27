@@ -193,58 +193,140 @@ def explain_all(language: str = "en", capital_band: str = "100_to_1k") -> str:
 
 
 def _format_settings_grouped(current: dict, header: str = "") -> str:
-    """Group settings by schema group with descriptions — Telegram-friendly."""
+    """Produce a friendly, manual-style settings overview — easy to read like a book."""
     from trade.settings_rules import validate, SettingsContext
     ctx = SettingsContext()
+
     lines = [f"{header}"] if header else []
-    lines.append("📊 *Settings Overview*\n")
+    lines.append("📖 Your Trading Bot Manual\n")
+    lines.append("Here is what each setting does and what it means for your trading.\n")
 
-    try:
-        from trade.settings_schema import BY_KEY, GROUPS
-        grouped: dict[str, list[tuple[str, str, str, str, str, str]]] = {}
-        for g in GROUPS:
-            grouped[g] = []
+    # Helper to get val + verdict
+    def v(k): return current.get(k, "")
+    def verdict(k): return validate(k, v(k), ctx)
+    def icon(k): vd = verdict(k); return "✅" if vd.level == "ok" else "⚠️" if vd.level == "warn" else "❌"
+    def ok(k): return verdict(k).level == "ok"
 
-        for key, val in sorted(current.items()):
-            spec = BY_KEY.get(key)
-            group = spec.group if spec else "Other"
-            if group not in grouped:
-                continue
-            v = validate(key, val, ctx)
-            icon = "🟢" if v.level == "ok" else "🟡" if v.level == "warn" else "🔴"
-            unit = f" {spec.unit}" if spec and spec.unit else ""
-            desc = spec.short if spec else ""
-            verdict_msg = f" — {v.message}" if v.level != "ok" and v.message else ""
-            grouped[group].append((icon, key, val, unit, desc, verdict_msg))
+    # Shorthand for common values
+    tp = v("tp_min_pct"); sl = v("sl_min_pct")
+    lev = v("leverage"); ml = v("max_leverage")
+    dip = v("dip_min_pct"); pump = v("pump_min_pct")
+    adaptive = v("adaptive_enabled") in ("true", "True", "1")
+    cooldown = v("cooldown_sec")
+    spacing = v("min_entry_spacing_pct")
+    dloss = v("daily_loss_limit_pct"); dloss_abs = v("daily_loss_limit")
+    consec = v("max_consecutive_losses")
+    fee_d = v("dex_round_trip_fee_pct"); fee_c = v("cex_round_trip_fee_pct")
+    slip = v("assumed_slippage_pct"); edge = v("min_net_edge_pct")
+    net = float(tp or 0.8) - float(fee_d or 0.06) - float(slip or 0.03)
+    atr_p = v("atr_period")
+    lev_val = int(lev or 3)
 
-        for group in GROUPS:
-            items = grouped.get(group, [])
-            if not items:
-                continue
-            lines.append(f"▸ *{group}*")
-            for icon, key, val, unit, desc, verdict_msg in items:
-                line = f"  {icon} `{key}` = `{val}{unit}`"
-                if verdict_msg:
-                    line += f" {verdict_msg}"
-                if desc:
-                    lines.append(line)
-                    lines.append(f"    _{desc}_")
-                else:
-                    lines.append(line)
-            lines.append("")
+    # ═══════════════════════════════════════════════════════
+    # Chapter 1: How the bot decides to buy and sell
+    # ═══════════════════════════════════════════════════════
+    lines.append("━━━ 🎯 How the bot enters trades ━━━\n")
 
-        # Count errors/warnings across all items
-        errors = sum(1 for items in grouped.values() for icon, *_ in items if icon == "🔴")
-        warns = sum(1 for items in grouped.values() for icon, *_ in items if icon == "🟡")
-    except ImportError:
-        for key, val in sorted(current.items()):
-            v = validate(key, val, SettingsContext())
-            icon = "🟢" if v.level == "ok" else "🟡" if v.level == "warn" else "🔴"
-            lines.append(f"  {icon} `{key}` = `{val}`")
-        errors = sum(1 for k in current if validate(k, current[k], SettingsContext()).level == "error")
-        warns = sum(1 for k in current if validate(k, current[k], SettingsContext()).level == "warn")
+    lines.append(f"Your bot watches prices and looks for dips to buy and pumps to sell. "
+                 f"Right now, a dip must be at least {dip}% below the recent peak before "
+                 f"the bot considers buying. A pump must be at least {pump}% above the "
+                 f"recent trough before it considers selling.")
 
-    lines.append(f"\n🔴 {errors} errors  🟡 {warns} warnings  🟢 OK")
+    if adaptive:
+        lines.append(f"\nAdaptive thresholds are ON. This means the bot uses market "
+                     f"volatility to decide how big a dip or pump needs to be. When the "
+                     f"market is calm, it uses the minimums above ({dip}% / {pump}%). "
+                     f"When the market gets wild, it automatically raises those bars so "
+                     f"it does not jump into every wiggle.")
+    else:
+        lines.append(f"\nAdaptive thresholds are OFF. The bot will always use exactly "
+                     f"{dip}% for dips and {pump}% for pumps, no matter how volatile "
+                     f"the market gets.")
+
+    lines.append(f"\nAfter each entry, the bot waits at least {cooldown} seconds before "
+                 f"entering the same asset again in the same direction. It also requires "
+                 f"at least {spacing}% distance from any existing position's entry price, "
+                 f"so it does not stack entries on top of each other.")
+
+    # ═══════════════════════════════════════════════════════
+    # Chapter 2: Profit targets and stop losses
+    # ═══════════════════════════════════════════════════════
+    lines.append("\n━━━ 💰 Profit targets and stop losses ━━━\n")
+
+    if ok("tp_min_pct") and ok("sl_min_pct"):
+        lines.append(f"Your take-profit is set to {tp}% and your stop-loss to {sl}%. "
+                     f"This means the bot aims to make {tp}% on winning trades and limits "
+                     f"losses to {sl}% on losing ones.")
+    else:
+        lines.append(f"⚠️ Your take-profit ({tp}%) and stop-loss ({sl}%) need attention. "
+                     f"Take-profit must be higher than stop-loss, otherwise the math "
+                     f"does not work in your favor.")
+        if verdict("tp_min_pct").level != "ok":
+            lines.append(f"   Problem: {verdict('tp_min_pct').message}")
+        if verdict("sl_min_pct").level != "ok":
+            lines.append(f"   Problem: {verdict('sl_min_pct').message}")
+
+    lines.append(f"\nAfter accounting for exchange fees and expected slippage, your net "
+                 f"edge per trade is approximately {net:.2f}% (take-profit {tp}% minus "
+                 f"DEX fees {fee_d}% minus slippage {slip}%). The bot refuses to trade "
+                 f"if this drops below {edge}% — this is your safety floor.")
+
+    if lev_val > 1:
+        lines.append(f"\nOn DEX (futures), you are using {lev_val}x leverage with a "
+                     f"hard cap of {ml}x. Every position has a mandatory stop-loss — "
+                     f"the bot never leaves a leveraged position unprotected.")
+
+    # ═══════════════════════════════════════════════════════
+    # Chapter 3: How the bot protects your capital
+    # ═══════════════════════════════════════════════════════
+    lines.append("\n━━━ 🛡️ Capital protection ━━━\n")
+
+    if float(dloss or 0) > 0:
+        lines.append(f"Your daily loss limit is set to {dloss}% of your equity. If your "
+                     f"total losses in a single day reach that threshold, the bot stops "
+                     f"trading for the rest of the day. This prevents one bad session "
+                     f"from doing serious damage.")
+    else:
+        lines.append(f"⚠️ Your daily loss limit is set to 0, which means it is "
+                     f"disabled. Consider setting it to 5% or so — it is your circuit "
+                     f"breaker for bad days.")
+
+    if float(consec or 0) > 0:
+        lines.append(f"If the bot loses {consec} trades in a row, it will also stop. "
+                     f"This is an extra safety net for detecting when the strategy "
+                     f"is out of sync with the market.")
+    else:
+        lines.append(f"Consecutive loss protection is OFF. Turning it on (e.g., set "
+                     f"to 4) adds another layer of safety.")
+
+    if float(dloss_abs or 0) > 0:
+        lines.append(f"There is also an absolute daily loss limit of ${dloss_abs}. "
+                     f"If total dollar losses cross that line, trading stops.")
+
+    # ═══════════════════════════════════════════════════════
+    # Chapter 4: Technical details (for reference)
+    # ═══════════════════════════════════════════════════════
+    lines.append("\n━━━ 🔧 Technical reference ━━━\n")
+
+    lines.append(f"⏱️  ATR uses {atr_p} five-minute candles to measure volatility.")
+    lines.append(f"💰  DEX fees: {fee_d}% round-trip. CEX fees: {fee_c}% round-trip.")
+    lines.append(f"📏  Assumed slippage: {slip}%. Minimum net edge required: {edge}%.")
+
+    if float(v("max_hold_minutes_spot") or 0) > 0:
+        lines.append(f"⏰  Spot positions auto-close after {v('max_hold_minutes_spot')} minutes.")
+    if float(v("max_hold_minutes_futures") or 0) > 0:
+        lines.append(f"⏰  Futures positions auto-close after {v('max_hold_minutes_futures')} minutes.")
+
+    # ═══════════════════════════════════════════════════════
+    # Summary
+    # ═══════════════════════════════════════════════════════
+    errors = sum(1 for k in current if verdict(k).level == "error")
+    warns = sum(1 for k in current if verdict(k).level == "warn")
+    if errors > 0 or warns > 0:
+        lines.append(f"\n━━━ ⚠️ Issues to fix ━━━")
+        lines.append(f"There are {errors} errors and {warns} warnings in your configuration. "
+                     f"Use /propose to get suggestions on what to change.")
+
     return "\n".join(lines)
 
 
