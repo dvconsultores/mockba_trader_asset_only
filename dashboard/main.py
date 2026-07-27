@@ -287,23 +287,65 @@ def health():
             "log_exists": os.path.exists(LOG_PATH)}
 
 
-# ── Settings validation (Amendment 002) ──────────────────────────
+# ── Settings validation (Amendment 002 — self-contained, no trade/ imports) ──
 @app.post("/api/settings/validate")
 async def api_settings_validate(request: Request):
     """Validate a setting value. Returns Verdict {level, message, suggested_value}."""
     try:
-        from trade.settings_rules import validate as rules_validate, SettingsContext
         body = await request.json()
         key = body.get("key", "")
         value = body.get("value", "")
-        venue = body.get("venue", "")
-        equity = float(body.get("equity", 0))
-        min_notional = float(body.get("min_notional", 0))
-        ctx = SettingsContext(venue=venue, equity=equity, min_notional=min_notional)
-        v = rules_validate(key, value, ctx)
-        return {"ok": True, "verdict": {"level": v.level, "message": v.message, "suggested_value": v.suggested_value}}
+        return {"ok": True, "verdict": _validate_setting(key, value)}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+def _validate_setting(key: str, value: str) -> dict:
+    """Standalone validator mirroring trade/settings_rules.py — no imports needed."""
+    # Hard bounds for known settings
+    bounds = {
+        "tp_min_pct": (0.1, 10, "TP min %"), "sl_min_pct": (0.1, 10, "SL min %"),
+        "dip_min_pct": (0.05, 5, "Dip min %"), "pump_min_pct": (0.05, 5, "Pump min %"),
+        "cooldown_sec": (10, 3600, "Cooldown"), "max_slots": (1, 50, "Max slots"),
+        "min_entry_spacing_pct": (0.05, 5, "Entry spacing"),
+        "daily_loss_limit_pct": (0, 100, "Daily loss %"),
+        "max_consecutive_losses": (0, 50, "Consec losses"),
+        "leverage": (1, 10, "Leverage"), "max_leverage": (1, 10, "Max leverage"),
+        "dex_slot_pct": (1, 100, "DEX slot %"), "cex_slot_pct": (1, 100, "CEX slot %"),
+        "tp_k": (0.1, 5, "TP k"), "sl_k": (0.1, 5, "SL k"),
+        "dip_k": (0.1, 5, "Dip k"), "pump_k": (0.1, 5, "Pump k"),
+        "max_hold_minutes_spot": (5, 1440, "Spot hold"), "max_hold_minutes_futures": (5, 1440, "Futures hold"),
+        "atr_period": (5, 50, "ATR period"),
+    }
+    if key in bounds:
+        lo, hi, _ = bounds[key]
+        try:
+            v = float(value)
+            if v < lo: return {"level": "error", "message": f"{key} = {v} below minimum {lo}"}
+            if v > hi: return {"level": "error", "message": f"{key} = {v} above maximum {hi}"}
+        except ValueError:
+            return {"level": "error", "message": f"Invalid number: {value}"}
+    # Cross-checks
+    if key == "tp_min_pct":
+        try:
+            sl = float(_get_setting("sl_min_pct") or "0.5")
+            if float(value) <= sl:
+                return {"level": "error", "message": f"TP ({value}) must exceed SL ({sl})"}
+        except: pass
+    if key == "leverage":
+        try:
+            ml = float(_get_setting("max_leverage") or "3")
+            if float(value) > ml:
+                return {"level": "error", "message": f"Leverage ({value}x) > max ({ml}x)"}
+        except: pass
+    if key in ("max_slots", "dex_slot_pct", "cex_slot_pct"):
+        try:
+            slots = float(_get_setting("max_slots") or "9")
+            pct = float(_get_setting("dex_slot_pct") or "10")
+            if slots * pct > 100:
+                return {"level": "error", "message": f"{slots} slots × {pct}% = {slots*pct}% > 100%"}
+        except: pass
+    return {"level": "ok", "message": ""}
 
 
 # ── Telegram Mini App: Auth ─────────────────────────────────────
