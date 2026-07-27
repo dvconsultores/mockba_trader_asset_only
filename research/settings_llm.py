@@ -201,11 +201,22 @@ def _format_settings_grouped(current: dict, header: str = "") -> str:
     lines.append("📖 Your Trading Bot Manual\n")
     lines.append("Here is what each setting does and what it means for your trading.\n")
 
-    # Helper to get val + verdict
+    # Helper: only consider settings that exist in the schema (skip legacy/unknown keys)
+    from trade.settings_schema import BY_KEY
     def v(k): return current.get(k, "")
-    def verdict(k): return validate(k, v(k), ctx)
-    def icon(k): vd = verdict(k); return "✅" if vd.level == "ok" else "⚠️" if vd.level == "warn" else "❌"
-    def ok(k): return verdict(k).level == "ok"
+    def verdict(k):
+        if k not in BY_KEY:
+            return type('V', (), {'level': 'skip', 'message': ''})()
+        return validate(k, v(k), ctx)
+    def has_error(k):
+        vd = verdict(k)
+        return vd.level == "error"
+    def has_warn(k):
+        vd = verdict(k)
+        return vd.level == "warn"
+
+    # Shorthand for common values (only schema-known settings)
+    def g(k, default=""): return v(k) if k in BY_KEY else default
 
     # Shorthand for common values
     tp = v("tp_min_pct"); sl = v("sl_min_pct")
@@ -220,7 +231,7 @@ def _format_settings_grouped(current: dict, header: str = "") -> str:
     slip = v("assumed_slippage_pct"); edge = v("min_net_edge_pct")
     net = float(tp or 0.8) - float(fee_d or 0.06) - float(slip or 0.03)
     atr_p = v("atr_period")
-    lev_val = int(lev or 3)
+    lev_val = int(g("leverage", "3") or 3)
 
     # ═══════════════════════════════════════════════════════
     # Chapter 1: How the bot decides to buy and sell
@@ -253,7 +264,7 @@ def _format_settings_grouped(current: dict, header: str = "") -> str:
     # ═══════════════════════════════════════════════════════
     lines.append("\n━━━ 💰 Profit targets and stop losses ━━━\n")
 
-    if ok("tp_min_pct") and ok("sl_min_pct"):
+    if not has_error("tp_min_pct") and not has_error("sl_min_pct"):
         lines.append(f"Your take-profit is set to {tp}% and your stop-loss to {sl}%. "
                      f"This means the bot aims to make {tp}% on winning trades and limits "
                      f"losses to {sl}% on losing ones.")
@@ -261,9 +272,9 @@ def _format_settings_grouped(current: dict, header: str = "") -> str:
         lines.append(f"⚠️ Your take-profit ({tp}%) and stop-loss ({sl}%) need attention. "
                      f"Take-profit must be higher than stop-loss, otherwise the math "
                      f"does not work in your favor.")
-        if verdict("tp_min_pct").level != "ok":
+        if has_error("tp_min_pct"):
             lines.append(f"   Problem: {verdict('tp_min_pct').message}")
-        if verdict("sl_min_pct").level != "ok":
+        if has_error("sl_min_pct"):
             lines.append(f"   Problem: {verdict('sl_min_pct').message}")
 
     lines.append(f"\nAfter accounting for exchange fees and expected slippage, your net "
@@ -320,8 +331,8 @@ def _format_settings_grouped(current: dict, header: str = "") -> str:
     # ═══════════════════════════════════════════════════════
     # Summary
     # ═══════════════════════════════════════════════════════
-    errors = sum(1 for k in current if verdict(k).level == "error")
-    warns = sum(1 for k in current if verdict(k).level == "warn")
+    errors = sum(1 for k in current if has_error(k))
+    warns = sum(1 for k in current if has_warn(k))
     if errors > 0 or warns > 0:
         lines.append(f"\n━━━ ⚠️ Issues to fix ━━━")
         lines.append(f"There are {errors} errors and {warns} warnings in your configuration. "
