@@ -269,34 +269,20 @@ def _show_group_keys(cid, group):
     bot.send_message(cid, translate(f"Settings in {group}:", cid), reply_markup=markup)
 
 
-@bot.callback_query_handler(func=lambda call: True)
-def callback_handler(call):
-    if call.message.chat.type != 'private': return
-    cid = call.message.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
-        bot.send_message(cid, translate("🔍 Not authorized", cid))
-        return
-
-    # Good practice: Answer callback to stop loading animation
-    try:
-        bot.answer_callback_query(call.id)
-    except:
-        pass
-
-    # Determine if we should remove buttons immediately (long tasks) or later (UI transitions)
+def _dispatch_callback(call, cid):
+    """Route callback data to the appropriate handler. Extracted for clean error boundaries."""
     immediate_remove = False
     if call.data.startswith("exec_sig:") or call.data.startswith("exec_sig_dex:") or call.data.startswith("exec_sig_cex:"):
         immediate_remove = True
     if call.data.startswith("asset_select:") or call.data.startswith("asset_remove:") or call.data.startswith("bot_toggle:"):
         immediate_remove = True
-    
+
     if immediate_remove:
         try:
             bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
-        except:
+        except Exception:
             pass
 
-    # Execute logic
     if call.data.startswith("exec_sig_dex:"):
         asset = call.data.split(":", 1)[1]
         execute_signal(call.message, asset=asset, exchange="dex")
@@ -341,12 +327,41 @@ def callback_handler(call):
         if func:
             func(call.message)
 
-    # Delayed remove for UI transitions (gives time for new menu/message to appear)
     if not immediate_remove:
-        time.sleep(0.5) 
+        time.sleep(0.5)
         try:
             bot.edit_message_reply_markup(chat_id=cid, message_id=call.message.message_id, reply_markup=None)
-        except:
+        except Exception:
+            pass
+
+
+@bot.callback_query_handler(func=lambda call: True)
+def callback_handler(call):
+    # Always answer the callback to stop the loading spinner, even on errors
+    try:
+        bot.answer_callback_query(call.id)
+    except Exception:
+        pass
+
+    if call.message is None:
+        try:
+            bot.send_message(call.from_user.id, translate("⚠️ Could not retrieve the original message. Please use /list again.", call.from_user.id))
+        except Exception:
+            pass
+        return
+
+    cid = call.message.chat.id
+
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+
+    try:
+        _dispatch_callback(call, cid)
+    except Exception as e:
+        try:
+            bot.send_message(cid, f"❌ Error processing request: {str(e)[:300]}")
+        except Exception:
             pass
 
 

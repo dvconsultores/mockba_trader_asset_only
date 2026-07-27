@@ -26,6 +26,10 @@ class SettingsContext:
     venue: str = ""               # "binance" | "orderly" | "" (both)
     equity: float = 0.0           # current venue equity
     min_notional: float = 0.0     # symbol min notional
+    # Multi-asset (Amendment 004)
+    asset_configs: list[dict] | None = None  # from get_all_asset_configs()
+    dex_equity: float = 0.0       # Orderly DEX account balance
+    cex_equity: float = 0.0       # Binance CEX account balance
 
 
 def _coerce(value: Any, spec: SettingSpec) -> Any:
@@ -110,23 +114,17 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
             sug = round(min_edge + fee + slip + 0.05, 2)
             return Verdict("error", f"Net edge {net:.2f}% below minimum {min_edge}% (tp={tp}, fee={fee}, slip={slip})", sug)
 
-    # Slot % × equity < min_notional × 1.5
-    if key in ("dex_slot_pct", "cex_slot_pct") and ctx.equity > 0 and ctx.min_notional > 0:
-        slot = (value / 100) * ctx.equity if isinstance(value, (int, float)) else 0
-        floor = ctx.min_notional * 1.5
-        if 0 < slot < floor:
-            needed_pct = round((floor / ctx.equity) * 100, 1)
-            return Verdict("error", f"Slot ${slot:.0f} below min_notional floor ${floor:.0f} — need ≥{needed_pct}% or more equity", needed_pct)
+    # Multi-asset: max_active_pairs vs actual active pairs
+    if key == "max_active_pairs" and ctx.asset_configs is not None:
+        actual = sum(
+            (1 if (c.get("active_dex") or 0) and (c.get("capital_dex") or 0) > 0 else 0) +
+            (1 if (c.get("active_cex") or 0) and (c.get("capital_cex") or 0) > 0 else 0)
+            for c in ctx.asset_configs
+        )
+        if isinstance(value, int) and actual > value:
+            return Verdict("warn", f"{actual} active pairs exceed max_active_pairs ({value})", actual)
 
-    # max_slots × slot_pct > 100
-    if key in ("max_slots", "dex_slot_pct", "cex_slot_pct"):
-        slots = get_setting_int("max_slots", 9)
-        slot_pct = get_setting_float(f"{ctx.venue}_slot_pct", 15) if ctx.venue else 15
-        if slots * slot_pct > 100:
-            sug = int(100 / slot_pct) if slot_pct > 0 else slots
-            return Verdict("error", f"max_slots ({slots}) × slot_pct ({slot_pct}%) = {slots*slot_pct}% > 100% of equity", sug)
-
-    # leverage > max_leverage
+    # Multi-asset: max_concurrent_positions vs max_slots (already handled above)
     if key == "leverage":
         max_lev = get_setting_int("max_leverage", 3)
         if isinstance(value, int) and value > max_lev:
@@ -152,6 +150,98 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
                 pass
 
     return Verdict("ok", "")
+
+
+# ── Per-asset capital validation (Amendment 004) ─────────────────────────────
+
+def validate_asset_capital(
+    symbol: str,
+    capital_dex: float,
+    capital_cex: float,
+    active_dex: bool,
+    active_cex: bool,
+    ctx: SettingsContext | None = None,
+) -> list[Verdict]:
+    """Validate a single asset's capital and flags. Returns list of verdicts (empty = OK)."""
+    results: list[Verdict] = []
+    if ctx is None:
+        ctx = SettingsContext()
+
+    # Active without capital
+    if active_dex and capital_dex <= 0:
+        results.append(Verdict("warn", f"{symbol}: active_dex=true but capital_dex=0 — DEX will be skipped"))
+    if active_cex and capital_cex <= 0:
+        results.append(Verdict("warn", f"{symbol}: active_cex=true but capital_cex=0 — CEX will be skipped"))
+
+    # Negative capital
+    if capital_dex < 0:
+        results.append(Verdict("error", f"{symbol}: capital_dex must be >= 0", 0.0))
+    if capital_cex < 0:
+        results.append(Verdict("error", f"{symbol}: capital_cex must be >= 0", 0.0))
+
+    return results
+
+
+def validate_asset_overallocation(ctx: SettingsContext) -> list[Verdict]:
+    """Check that sum of allocated capital per venue does not exceed equity."""
+    results: list[Verdict] = []
+    if ctx.asset_configs is None:
+        return results
+
+    # DEX overallocation
+    dex_allocated = sum(
+        c.get("capital_dex", 0) or 0
+        for c in ctx.asset_configs
+        if (c.get("active_dex") or 0) and (c.get("capital_dex") or 0) > 0
+    )
+    if ctx.dex_equity > 0 and dex_allocated > ctx.dex_equity:
+        over = dex_allocated - ctx.dex_equity
+        results.append(Verdict(
+            "error",
+            f"DEX overallocation: total ${dex_allocated:.0f} exceeds available ${ctx.dex_equity:.0f} by ${over:.0f}",
+            ctx.dex_equity,
+        ))
+
+    # CEX overallocation
+    cex_allocated = sum(
+        c.get("capital_cex", 0) or 0
+        for c in ctx.asset_configs
+        if (c.get("active_cex") or 0) and (c.get("capital_cex") or 0) > 0
+    )
+    if ctx.cex_equity > 0 and cex_allocated > ctx.cex_equity:
+        over = cex_allocated - ctx.cex_equity
+        results.append(Verdict(
+            "error",
+            f"CEX overallocation: total ${cex_allocated:.0f} exceeds available ${ctx.cex_equity:.0f} by ${over:.0f}",
+            ctx.cex_equity,
+        ))
+
+    return results
+
+
+def validate_all_assets(ctx: SettingsContext | None = None) -> dict[str, list[Verdict]]:
+    """Run per-asset validation on all asset_configs rows. Returns {symbol: [Verdict]}."""
+    from db.db_ops import get_all_asset_configs
+    if ctx is None:
+        ctx = SettingsContext()
+    configs = ctx.asset_configs if ctx.asset_configs is not None else get_all_asset_configs()
+    results: dict[str, list[Verdict]] = {}
+    for c in configs:
+        verdicts = validate_asset_capital(
+            c["symbol"],
+            float(c.get("capital_dex", 0) or 0),
+            float(c.get("capital_cex", 0) or 0),
+            bool(c.get("active_dex", 0)),
+            bool(c.get("active_cex", 0)),
+            ctx,
+        )
+        if verdicts:
+            results[c["symbol"]] = verdicts
+    # Overallocation check
+    overall = validate_asset_overallocation(ctx)
+    if overall:
+        results["__overallocation__"] = overall
+    return results
 
 
 def validate_all(ctx: SettingsContext | None = None) -> dict[str, Verdict]:

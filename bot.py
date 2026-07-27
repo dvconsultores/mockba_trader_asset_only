@@ -20,11 +20,11 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from db.db_ops import (
     get_setting, get_setting_float, get_setting_int, get_setting_bool,
-    upsert_setting, get_asset_list, initialize_database_tables,
+    upsert_setting, get_asset_list, get_active_pairs, initialize_database_tables,
 )
 from logs.log_config import apolo_trader_logger as logger
 from trade.regime import detect_regime, invalidate_cache
-from trade.pnl import is_entry_blocked, can_trade_venue, compute_slot_size, max_effective_slots
+from trade.pnl import is_entry_blocked, is_entry_blocked_per_pair, can_trade_venue, compute_slot_size, max_effective_slots, check_global_daily_loss
 from trading_bot.executor import BinanceSpot, OrderlyFutures
 from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle
 from trading_bot.futures_scalper import manage_open_positions as futures_manage, scalp_cycle as futures_cycle
@@ -36,7 +36,7 @@ from trading_bot.futures_scalper import manage_open_positions as futures_manage,
 
 def validate_startup() -> bool:
     """Run all startup checks via settings_rules. Returns True if trading can proceed."""
-    from trade.settings_rules import validate_all, SettingsContext
+    from trade.settings_rules import validate_all, SettingsContext, validate_all_assets
     results = validate_all()
     errors = [f"{k}: {v.message}" for k, v in results.items() if v.level == "error"]
     warns = [f"{k}: {v.message}" for k, v in results.items() if v.level == "warn"]
@@ -48,17 +48,112 @@ def validate_startup() -> bool:
             logger.warning(f"[STARTUP] {e}")
         return False
 
-    assets = get_asset_list()
-    if not assets:
-        logger.warning("[STARTUP] no assets configured")
+    pairs = get_active_pairs()
+    if not pairs:
+        logger.warning("[STARTUP] no active pairs configured")
+        return False
+
+    # Per-asset validation (Amendment 004)
+    try:
+        from db.db_ops import get_all_asset_configs
+        asset_ctx = SettingsContext(asset_configs=get_all_asset_configs())
+        asset_results = validate_all_assets(asset_ctx)
+        for symbol, verdicts in asset_results.items():
+            if symbol == "__overallocation__":
+                for v in verdicts:
+                    if v.level == "error":
+                        logger.warning(f"[STARTUP] overallocation: {v.message}")
+                        return False
+                    else:
+                        logger.warning(f"[STARTUP] overallocation warn: {v.message}")
+            else:
+                for v in verdicts:
+                    if v.level == "error":
+                        logger.warning(f"[STARTUP] {symbol}: {v.message}")
+    except Exception as e:
+        logger.error(f"[STARTUP] per-asset validation failed: {e}")
         return False
 
     tp = get_setting_float("tp_min_pct", 0.8); sl = get_setting_float("sl_min_pct", 0.5)
-    fee_key = "dex_round_trip_fee_pct" if get_setting_bool("auto_trade_orderly", False) else "cex_round_trip_fee_pct"
+    fee_key = "dex_round_trip_fee_pct"  # DEX is the stricter venue
     fee = get_setting_float(fee_key, 0.06); slip = get_setting_float("assumed_slippage_pct", 0.03)
     net = tp - fee - slip
-    logger.info(f"[STARTUP] validation OK — tp={tp} sl={sl} net_edge={net:.2f}% assets={assets}")
+    logger.info(f"[STARTUP] validation OK — tp={tp} sl={sl} net_edge={net:.2f}% active_pairs={len(pairs)}")
     return True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Startup reconciliation — Constitution VI: restart safety for all active pairs
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _reconcile_startup(binance, orderly):
+    """Reconcile exchange state with local DB for all active (asset, venue) pairs."""
+    from db.db_ops import get_active_pairs, load_all_positions, save_position, delete_position
+    logger.info("[RECONCILE] starting multi-asset reconciliation")
+
+    pairs = get_active_pairs()
+    if not pairs:
+        logger.info("[RECONCILE] no active pairs — skipping reconciliation")
+        return
+
+    exchange_map = {"binance": binance, "orderly": orderly}
+
+    for asset, venue, capital in pairs:
+        ex = exchange_map.get(venue)
+        if ex is None:
+            continue
+        try:
+            local_positions = load_all_positions(asset=asset, venue=venue)
+            local_ids = {p["id"] for p in local_positions}
+
+            # Query exchange for open positions (dry-run skips actual API calls)
+            exchange_positions = ex.get_open_positions(asset) if hasattr(ex, "get_open_positions") else []
+            if exchange_positions is None:
+                exchange_positions = []
+
+            exchange_ids = set()
+            for ep in exchange_positions:
+                pid = ep.get("id") or ep.get("orderId", "")
+                if not pid:
+                    continue
+                exchange_ids.add(str(pid))
+
+                # Adopt exchange position with no local DB record
+                if str(pid) not in local_ids:
+                    logger.warning(
+                        f"[RECONCILE] adopting orphan position {venue}:{asset}:{pid}"
+                    )
+                    # Minimal save — details will be filled on next manage cycle
+                    try:
+                        save_position({
+                            "id": str(pid),
+                            "asset": asset,
+                            "venue": venue,
+                            "side": ep.get("side", "long"),
+                            "qty": float(ep.get("qty", 0)),
+                            "entry_price": float(ep.get("entryPrice", 0)),
+                            "signal_price": float(ep.get("entryPrice", 0)),
+                            "tp_price": 0.0,
+                            "sl_price": 0.0,
+                            "tp_order_id": None,
+                            "sl_order_id": None,
+                            "opened_at": time.time(),
+                        })
+                    except Exception:
+                        logger.error(f"[RECONCILE] failed to save orphan {venue}:{asset}:{pid}")
+
+            # Close DB records with no matching exchange position
+            for pid in local_ids - exchange_ids:
+                logger.warning(
+                    f"[RECONCILE] closing stale DB record {venue}:{asset}:{pid}"
+                )
+                delete_position(asset, venue, pid)
+
+        except Exception as e:
+            logger.error(f"[RECONCILE] {venue}:{asset} reconciliation failed: {e}")
+            # Continue to next pair — do not abort
+
+    logger.info("[RECONCILE] complete")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -79,6 +174,33 @@ def run():
 
     binance = BinanceSpot()
     orderly = OrderlyFutures()
+
+    # ── Legacy migration (Amendment 004) ───────────────────────────
+    try:
+        from db.db_ops import migrate_legacy_assets
+        dex_eq = orderly.get_equity() if not dry else 0.0
+        cex_eq = binance.get_equity() if not dry else 0.0
+        mig_result = migrate_legacy_assets(dex_eq, cex_eq)
+        if mig_result.get("migrated"):
+            logger.info(f"[MIGRATE] legacy→multi-asset: {len(mig_result.get('assets', []))} assets migrated, "
+                        f"legacy keys removed: {mig_result.get('legacy_keys_removed')}")
+            # Telegram notification — best-effort
+            try:
+                from trading_bot.send_bot_message import send_message
+                assets_str = ", ".join(a["symbol"] for a in mig_result.get("assets", []))
+                send_message(f"🔄 Migration complete: {len(mig_result.get('assets', []))} assets migrated to per-asset model.\n"
+                             f"Primary asset: {mig_result['assets'][0]['symbol'] if mig_result.get('assets') else 'none'}\n"
+                             f"Legacy keys removed.")
+            except Exception:
+                pass
+        elif mig_result.get("reason"):
+            logger.info(f"[MIGRATE] skipped: {mig_result['reason']}")
+    except Exception as e:
+        logger.error(f"[MIGRATE] migration failed: {e}")
+
+    # ── Startup reconciliation (Amendment 004, Constitution VI) ──────────
+    _reconcile_startup(binance, orderly)
+
     _last_settings: dict[str, str] = {}
     _last_validation = time.time()
     VALIDATION_INTERVAL = 300  # re-validate every 5 minutes
@@ -89,10 +211,11 @@ def run():
             current = {k: get_setting(k) or "" for k in [
                 "tp_min_pct", "sl_min_pct", "dip_min_pct", "pump_min_pct",
                 "dip_k", "pump_k", "tp_k", "sl_k", "adaptive_enabled",
-                "max_slots", "cooldown_sec", "min_entry_spacing_pct",
+                "cooldown_sec", "min_entry_spacing_pct",
                 "daily_loss_limit", "daily_loss_limit_pct", "max_consecutive_losses",
+                "global_daily_loss_limit", "global_daily_loss_limit_pct",
+                "max_active_pairs", "max_concurrent_positions",
                 "trading_enabled", "dry_run", "leverage", "max_leverage",
-                "auto_trade_binance", "auto_trade_orderly",
             ]}
 
             # Log setting changes
@@ -114,47 +237,82 @@ def run():
                     upsert_setting("trading_enabled", "0")
                 _last_validation = time.time()
 
-            assets = get_asset_list()
-            cex_active = get_setting_bool("auto_trade_binance", False)
-            dex_active = get_setting_bool("auto_trade_orderly", False)
+            # ── Multi-asset iteration (Amendment 004) ──────────────────
+            pairs = get_active_pairs()
+            max_pairs = get_setting_int("max_active_pairs", 6)
+            if len(pairs) > max_pairs:
+                logger.warning(f"[LIMIT] {len(pairs)} active pairs exceeds max_active_pairs={max_pairs} — capping")
+                pairs = pairs[:max_pairs]
 
-            for asset in assets:
-                # ── Binance (spot) ──────────────────────────────────
-                if cex_active:
+            if not pairs:
+                if time.time() % 300 < 30:  # Log once every ~5 min
+                    logger.debug("[LOOP] no active pairs")
+                time.sleep(30)
+                continue
+
+            # ── Max concurrent positions enforcement ────────────────
+            from db.db_ops import load_all_positions
+            max_positions = get_setting_int("max_concurrent_positions", 9)
+            all_open = load_all_positions()
+            if len(all_open) >= max_positions:
+                logger.info(f"[LIMIT] max_concurrent_positions={max_positions} reached ({len(all_open)} open) — no new entries this cycle")
+
+            exchange_map = {"binance": binance, "orderly": orderly}
+            _venue_failures: dict[str, int] = {}
+
+            for asset, venue, capital in pairs:
+                try:
+                    ex = exchange_map.get(venue)
+                    if ex is None:
+                        continue
+
+                    # ── Equity query ──────────────────────────────
                     try:
-                        equity_b = binance.get_equity()
-                        blocked, reason = is_entry_blocked("binance", equity_b)
-                        regime = detect_regime(asset, "binance")
+                        equity = ex.get_equity()
+                    except Exception:
+                        _venue_failures[venue] = _venue_failures.get(venue, 0) + 1
+                        logger.error(f"[ERROR] {venue}:{asset} equity query failed")
+                        continue
 
-                        # Manage exits FIRST
+                    # ── Per-pair kill switch ──────────────────────
+                    blocked, reason = is_entry_blocked_per_pair(asset, venue, equity)
+                    if len(all_open) >= max_positions:
+                        blocked = True
+                        reason = f"max_concurrent_positions={max_positions} reached"
+                    regime = detect_regime(asset, venue)
+
+                    # ── Manage exits FIRST ────────────────────────
+                    if venue == "binance":
                         spot_manage(asset, binance)
-
                         if not blocked and regime != "UNKNOWN":
-                            # Get OBI and live price
                             obi = _get_obi_binance(asset)
                             price = _get_live_price_binance(asset)
                             if obi is not None and price is not None:
                                 spot_cycle(asset, binance, regime, obi, price)
-                    except Exception as e:
-                        logger.error(f"[ERROR] binance:{asset} cycle failed: {e}")
-
-                # ── Orderly (futures) ───────────────────────────────
-                if dex_active:
-                    try:
-                        equity_o = orderly.get_equity()
-                        blocked, reason = is_entry_blocked("orderly", equity_o)
-                        regime = detect_regime(asset, "orderly")
-
-                        # Manage exits FIRST
+                    else:
                         futures_manage(asset, orderly, regime)
-
                         if not blocked and regime != "UNKNOWN":
                             obi = _get_obi_orderly(asset)
                             price = _get_live_price_orderly(asset)
                             if obi is not None and price is not None:
                                 futures_cycle(asset, orderly, regime, obi, price)
-                    except Exception as e:
-                        logger.error(f"[ERROR] orderly:{asset} cycle failed: {e}")
+
+                except Exception as e:
+                    logger.error(f"[ERROR] {venue}:{asset} cycle failed: {e}")
+                    _venue_failures[venue] = _venue_failures.get(venue, 0) + 1
+                    # Continue to next pair — do not abort
+
+            # ── Venue-level failure escalation (Constitution IV) ────
+            for venue, fails in _venue_failures.items():
+                if fails >= 5:
+                    logger.warning(f"[KILL] {venue} disabled after {fails} consecutive failures")
+                    upsert_setting(f"auto_trade_{venue}", "false")
+
+            # ── Global daily loss check ────────────────────────────
+            should_halt, g_reason = check_global_daily_loss()
+            if should_halt:
+                logger.warning(f"[KILL] global_daily_loss_limit breached: {g_reason}")
+                upsert_setting("trading_enabled", "0")
 
             time.sleep(30)
 

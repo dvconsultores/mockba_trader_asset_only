@@ -26,8 +26,6 @@ class SettingSpec:
 # ═══════════════════════════════════════════════════════════════════════════════
 ALL: list[SettingSpec] = [
     # ── Trading ────────────────────────────────────────────────────────────
-    SettingSpec("assets", str, "trading", None, None, None, None, None,
-                "Comma-separated list of assets to trade"),
     SettingSpec("tp_min_pct", float, "trading", "%", 0.1, 10.0, 0.3, 3.0,
                 "Minimum take-profit percentage (floor when ATR is low)"),
     SettingSpec("sl_min_pct", float, "trading", "%", 0.1, 10.0, 0.3, 3.0,
@@ -54,10 +52,9 @@ ALL: list[SettingSpec] = [
                 "Minimum seconds between entries (same asset, same direction)"),
     SettingSpec("min_entry_spacing_pct", float, "entry", "%", 0.05, 5.0, 0.10, 2.0,
                 "Minimum % distance from any open position's entry price"),
-    SettingSpec("max_slots", int, "entry", None, 1, 50, 1, 20,
-                "Maximum concurrent open positions per venue"),
     SettingSpec("adaptive_enabled", bool, "entry", None, None, None, None, None,
                 "Scale dip/pump/TP/SL thresholds with ATR volatility"),
+    # max_slots removed (Amendment 004) — replaced by max_concurrent_positions in risk group
 
     # ── Exit ───────────────────────────────────────────────────────────────
     SettingSpec("max_hold_minutes_spot", int, "exit", "min", 5, 1440, 30, 480,
@@ -72,10 +69,8 @@ ALL: list[SettingSpec] = [
                 "Stop trading if daily PnL drops below this % of equity"),
     SettingSpec("max_consecutive_losses", int, "risk", None, 0, 50, 2, 10,
                 "Stop trading after N consecutive losses (0 = off)"),
-    SettingSpec("dex_slot_pct", float, "risk", "%", 1, 100, 5, 50,
-                "DEX position size as % of venue equity"),
-    SettingSpec("cex_slot_pct", float, "risk", "%", 1, 100, 5, 50,
-                "CEX position size as % of venue equity"),
+    # dex_slot_pct and cex_slot_pct removed (Amendment 004) — replaced by per-asset capital_dex/capital_cex in asset_configs table
+    # max_concurrent_positions: replaces old max_slots, now global across all pairs
     SettingSpec("dex_round_trip_fee_pct", float, "risk", "%", 0, 5.0, 0.03, 1.0,
                 "Orderly DEX round-trip fee % for net-edge calculation"),
     SettingSpec("cex_round_trip_fee_pct", float, "risk", "%", 0, 5.0, 0.10, 1.0,
@@ -135,13 +130,20 @@ ALL: list[SettingSpec] = [
     SettingSpec("llm_max_calls_per_hour", int, "llm", "calls/hr", 1, 60, 5, 30,
                 "Rate limit for LLM API calls"),
 
+    # ── Multi-Asset (Amendment 004) ────────────────────────────────────────
+    SettingSpec("global_daily_loss_limit", float, "risk", "$", 0, None, None, None,
+                "Stop ALL trading if total daily PnL across all pairs drops below this (0=off)"),
+    SettingSpec("global_daily_loss_limit_pct", float, "risk", "%", 0, 100, 1, 20,
+                "Stop ALL trading if total daily PnL% drops below this (0=off)"),
+    SettingSpec("max_active_pairs", int, "risk", "pairs", 1, 50, 2, 12,
+                "Maximum concurrently active (asset, venue) pairs (default 6)"),
+    SettingSpec("max_concurrent_positions", int, "risk", "positions", 1, 50, 2, 20,
+                "Maximum open positions across all pairs (default 9, replaces max_slots)"),
+
     # ── Mode ───────────────────────────────────────────────────────────────
-    SettingSpec("auto_trade_binance", bool, "mode", None, None, None, None, None,
-                "Enable automated trading on Binance spot"),
-    SettingSpec("auto_trade_orderly", bool, "mode", None, None, None, None, None,
-                "Enable automated trading on Orderly DEX"),
     SettingSpec("trading_enabled", bool, "mode", None, None, None, None, None,
                 "Global trading on/off (kill switch sets this to false)"),
+    # auto_trade_binance and auto_trade_orderly removed (Amendment 004) — replaced by per-asset active_cex/active_dex in asset_configs table
     SettingSpec("dry_run", bool, "mode", None, None, None, None, None,
                 "Simulate orders — no real money is used"),
 ]

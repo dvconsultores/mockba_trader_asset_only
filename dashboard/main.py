@@ -58,7 +58,7 @@ def _upsert_setting(key: str, value: str):
 
 
 def _get_asset_list() -> list:
-    """Returns the asset setting as a list of strings."""
+    """Returns the asset setting as a list of strings (legacy compat)."""
     val = _get_setting("assets")
     if not val:
         return []
@@ -66,7 +66,7 @@ def _get_asset_list() -> list:
 
 
 def _add_asset(asset: str):
-    """Adds an asset to the list if not present."""
+    """Adds an asset to the list if not present (legacy compat)."""
     assets = _get_asset_list()
     if asset not in assets:
         assets.append(asset)
@@ -74,11 +74,59 @@ def _add_asset(asset: str):
 
 
 def _remove_asset(asset: str):
-    """Removes an asset from the list."""
+    """Removes an asset from the list (legacy compat)."""
     assets = _get_asset_list()
     if asset in assets:
         assets.remove(asset)
         _upsert_setting("assets", ",".join(assets))
+
+
+# ── Asset config helpers (Amendment 004) ───────────────────────────
+
+def _get_asset_configs() -> list[dict]:
+    """Return all asset_configs rows."""
+    db = _get_db()
+    rows = db.execute(
+        "SELECT symbol, capital_dex, capital_cex, active_dex, active_cex "
+        "FROM asset_configs ORDER BY symbol"
+    ).fetchall()
+    db.close()
+    return [dict(r) for r in rows]
+
+
+def _get_asset_open_position_count(symbol: str) -> int:
+    """Count open positions for an asset across both venues."""
+    db = _get_db()
+    row = db.execute(
+        "SELECT COUNT(*) as c FROM open_positions WHERE asset = ?", (symbol,)
+    ).fetchone()
+    db.close()
+    return row["c"] if row else 0
+
+
+def _upsert_asset_config_inline(symbol: str, capital_dex: float = 0.0,
+                                 capital_cex: float = 0.0, active_dex: bool = False,
+                                 active_cex: bool = False):
+    """Insert or update asset_config row."""
+    db = _get_db_rw()
+    db.execute(
+        "INSERT INTO asset_configs (symbol, capital_dex, capital_cex, active_dex, active_cex) "
+        "VALUES (?, ?, ?, ?, ?) ON CONFLICT(symbol) DO UPDATE SET "
+        "capital_dex = excluded.capital_dex, capital_cex = excluded.capital_cex, "
+        "active_dex = excluded.active_dex, active_cex = excluded.active_cex, "
+        "updated_at = datetime('now')",
+        (symbol, capital_dex, capital_cex, int(active_dex), int(active_cex)),
+    )
+    db.commit()
+    db.close()
+
+
+def _delete_asset_config_inline(symbol: str):
+    """Delete an asset_config row."""
+    db = _get_db_rw()
+    db.execute("DELETE FROM asset_configs WHERE symbol = ?", (symbol,))
+    db.commit()
+    db.close()
 
 
 def _get_db() -> sqlite3.Connection:
@@ -507,123 +555,110 @@ async def api_miniapp_update(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Asset Management API ─────────────────────────────────────────
+# ── Asset Management API (Amendment 004 — multi-asset) ───────────────
+
 @app.get("/api/assets")
 async def api_assets_get():
-    """Return asset list and current active asset."""
+    """Return all asset_configs rows with open position counts and allocation summary."""
     try:
-        assets = _get_asset_list()
-        current = assets[0] if assets else ""
-        return {"ok": True, "assets": assets, "current_asset": current}
+        configs = _get_asset_configs()
+        assets = []
+        for c in configs:
+            assets.append({
+                "symbol": c["symbol"],
+                "capital_dex": float(c.get("capital_dex", 0) or 0),
+                "capital_cex": float(c.get("capital_cex", 0) or 0),
+                "active_dex": bool(c.get("active_dex", 0)),
+                "active_cex": bool(c.get("active_cex", 0)),
+                "open_positions": _get_asset_open_position_count(c["symbol"]),
+            })
+        summary = []
+        for vk, vl in [("dex", "orderly"), ("cex", "binance")]:
+            total = sum(a[f"capital_{vk}"] for a in assets if a[f"active_{vk}"] and a[f"capital_{vk}"] > 0)
+            active = sum(1 for a in assets if a[f"active_{vk}"] and a[f"capital_{vk}"] > 0)
+            summary.append({"venue": vl, "total_allocated": round(total, 2), "active_pairs": active, "remaining": None})
+        return {"ok": True, "assets": assets, "summary": summary}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/assets")
 async def api_assets_add(request: Request):
-    """Add an asset to the list. Requires auth."""
-    init_data = request.headers.get("X-Telegram-InitData", "")
-    telegram_ok = False
-    if init_data:
-        telegram_ok = _validate_telegram_init_data(init_data)
-        if telegram_ok:
-            try:
-                parsed = parse_qs(init_data)
-                user_json = parsed.get("user", [None])[0]
-                if user_json:
-                    user = json.loads(unquote(user_json))
-                    if user.get("id") != AUTHORIZED_CHAT_ID:
-                        telegram_ok = False
-            except (json.JSONDecodeError, Exception):
-                telegram_ok = False
-
-    if not telegram_ok and not await _validate_admin_session(request):
-        raise HTTPException(status_code=403, detail="Invalid auth")
-
+    """Add an asset configuration. Requires auth."""
+    _a = await _check_auth(request)
+    if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
     body = await request.json()
-    asset = (body.get("asset") or "").strip()
-    if not asset:
-        raise HTTPException(status_code=400, detail="Missing asset name")
-
-    try:
-        _add_asset(asset)
-        assets = _get_asset_list()
-        return {"ok": True, "assets": assets, "added": asset}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.delete("/api/assets/{asset_name}")
-async def api_assets_remove(asset_name: str, request: Request):
-    """Remove an asset from the list. Requires auth."""
-    init_data = request.headers.get("X-Telegram-InitData", "")
-    telegram_ok = False
-    if init_data:
-        telegram_ok = _validate_telegram_init_data(init_data)
-        if telegram_ok:
-            try:
-                parsed = parse_qs(init_data)
-                user_json = parsed.get("user", [None])[0]
-                if user_json:
-                    user = json.loads(unquote(user_json))
-                    if user.get("id") != AUTHORIZED_CHAT_ID:
-                        telegram_ok = False
-            except (json.JSONDecodeError, Exception):
-                telegram_ok = False
-
-    if not telegram_ok and not await _validate_admin_session(request):
-        raise HTTPException(status_code=403, detail="Invalid auth")
-
-    asset_name = asset_name.strip()
-    if not asset_name:
-        raise HTTPException(status_code=400, detail="Missing asset name")
-
-    try:
-        _remove_asset(asset_name)
-        # If the removed asset was the first one, the first asset changes naturally
-        remaining = _get_asset_list()
-        assets = _get_asset_list()
-        return {"ok": True, "assets": assets, "removed": asset_name}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    symbol = (body.get("symbol") or "").strip()
+    if not symbol: raise HTTPException(status_code=422, detail="Symbol is required")
+    cd, cc = float(body.get("capital_dex", 0) or 0), float(body.get("capital_cex", 0) or 0)
+    ad, ac = bool(body.get("active_dex", False)), bool(body.get("active_cex", False))
+    if cd < 0 or cc < 0: raise HTTPException(status_code=422, detail="Capital must be >= 0")
+    configs = _get_asset_configs()
+    if any(c["symbol"] == symbol for c in configs):
+        raise HTTPException(status_code=409, detail=f"Asset {symbol} already exists")
+    _upsert_asset_config_inline(symbol, cd, cc, ad, ac)
+    return {"ok": True, "symbol": symbol, "capital_dex": cd, "capital_cex": cc,
+            "active_dex": ad, "active_cex": ac, "open_positions": 0}
 
 
-@app.post("/api/assets/select")
-async def api_assets_select(request: Request):
-    """Set the active (current) asset. Requires auth."""
-    init_data = request.headers.get("X-Telegram-InitData", "")
-    telegram_ok = False
-    if init_data:
-        telegram_ok = _validate_telegram_init_data(init_data)
-        if telegram_ok:
-            try:
-                parsed = parse_qs(init_data)
-                user_json = parsed.get("user", [None])[0]
-                if user_json:
-                    user = json.loads(unquote(user_json))
-                    if user.get("id") != AUTHORIZED_CHAT_ID:
-                        telegram_ok = False
-            except (json.JSONDecodeError, Exception):
-                telegram_ok = False
-
-    if not telegram_ok and not await _validate_admin_session(request):
-        raise HTTPException(status_code=403, detail="Invalid auth")
-
+@app.put("/api/assets/{symbol}")
+async def api_assets_edit(symbol: str, request: Request):
+    """Edit an existing asset configuration. Partial update."""
+    _a = await _check_auth(request)
+    if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
+    symbol = symbol.strip()
+    configs = _get_asset_configs()
+    ex = next((c for c in configs if c["symbol"] == symbol), None)
+    if ex is None: raise HTTPException(status_code=404, detail=f"Asset {symbol} not found")
     body = await request.json()
-    asset = (body.get("asset") or "").strip()
-    if not asset:
-        raise HTTPException(status_code=400, detail="Missing asset name")
+    cd = float(body.get("capital_dex", ex.get("capital_dex", 0) or 0))
+    cc = float(body.get("capital_cex", ex.get("capital_cex", 0) or 0))
+    ad = bool(body.get("active_dex", ex.get("active_dex", 0)))
+    ac = bool(body.get("active_cex", ex.get("active_cex", 0)))
+    if cd < 0 or cc < 0: raise HTTPException(status_code=422, detail="Capital must be >= 0")
+    if not ad and not ac and cd == 0 and cc == 0:
+        oc = _get_asset_open_position_count(symbol)
+        if oc > 0:
+            raise HTTPException(status_code=409,
+                detail=f"Cannot remove {symbol} — {oc} open position(s). Deactivate first.")
+    _upsert_asset_config_inline(symbol, cd, cc, ad, ac)
+    return {"ok": True, "symbol": symbol, "capital_dex": cd, "capital_cex": cc,
+            "active_dex": ad, "active_cex": ac, "open_positions": _get_asset_open_position_count(symbol)}
 
-    # Validate asset exists in the list
-    assets = _get_asset_list()
-    if asset not in assets:
-        raise HTTPException(status_code=400, detail=f"Asset '{asset}' not in list. Add it first.")
 
-    try:
-        # Asset is already in list — no need to set "current", just return
-        return {"ok": True, "current_asset": asset}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.delete("/api/assets/{symbol}")
+async def api_assets_remove(symbol: str, request: Request):
+    """Remove an asset configuration. Blocked if open positions exist."""
+    _a = await _check_auth(request)
+    if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
+    symbol = symbol.strip()
+    configs = _get_asset_configs()
+    if not any(c["symbol"] == symbol for c in configs):
+        raise HTTPException(status_code=404, detail=f"Asset {symbol} not found")
+    oc = _get_asset_open_position_count(symbol)
+    if oc > 0:
+        raise HTTPException(status_code=409,
+            detail=f"Cannot remove {symbol} — {oc} open position(s). Deactivate first.")
+    _delete_asset_config_inline(symbol)
+    remaining = [c["symbol"] for c in _get_asset_configs()]
+    return {"ok": True, "removed": symbol, "assets": remaining}
+
+
+async def _check_auth(request: Request) -> bool:
+    """Common auth check for asset endpoints."""
+    init_data = request.headers.get("X-Telegram-InitData", "")
+    if init_data:
+        ok = _validate_telegram_init_data(init_data)
+        if ok:
+            try:
+                parsed = parse_qs(init_data)
+                uj = parsed.get("user", [None])[0]
+                if uj and json.loads(unquote(uj)).get("id") != AUTHORIZED_CHAT_ID:
+                    return False
+            except Exception:
+                return False
+            return True
+    return await _validate_admin_session(request)
 
 
 # ── Bot Control API (start/stop) ──────────────────────────────────

@@ -71,6 +71,19 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('spread_z_max', '2.5');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('depth_ratio_min', '0.5');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('obi_z_max', '2.5');
 
+-- ── asset_configs (Amendment 004) ────────────────────────────────────────────
+-- Per-asset capital and venue activation. Replaces global %-based capital
+-- and global auto_trade_* booleans.
+CREATE TABLE IF NOT EXISTS asset_configs (
+    symbol      TEXT PRIMARY KEY,
+    capital_dex REAL NOT NULL DEFAULT 0.0,
+    capital_cex REAL NOT NULL DEFAULT 0.0,
+    active_dex  INTEGER NOT NULL DEFAULT 0,
+    active_cex  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 -- ── open_positions ──────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS open_positions (
     id              TEXT PRIMARY KEY,

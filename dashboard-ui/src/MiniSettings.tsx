@@ -161,17 +161,12 @@ const FREE_INPUTS: FreeDef[] = [
   { key: 'slope_threshold', label: 'Trend Slope', hint: 'Regime slope threshold (0.0012 default)', step: '0.0001', min: '0.0005' },
   { key: 'assumed_slippage_pct', label: 'Assumed Slippage', hint: '% for net-edge validation', step: '0.01', min: '0', suffix: '%' },
   { key: 'min_net_edge_pct', label: 'Min Net Edge', hint: 'Refuse to trade below this', step: '0.01', min: '0', suffix: '%' },
-  { key: 'dex_round_trip_fee_pct', label: 'DEX Fee (round-trip)', hint: 'Orderly round-trip fee %', step: '0.01', min: '0', suffix: '%' },
-  { key: 'cex_round_trip_fee_pct', label: 'CEX Fee (round-trip)', hint: 'Binance round-trip fee %', step: '0.01', min: '0', suffix: '%' },
 ]
 
 // ── Select fields ───────────────────────────────────────────────
 interface SelectDef { key: string; label: string; hint: string; options: string[] }
 
-const SELECTS: SelectDef[] = [
-  { key: 'auto_trade_orderly', label: 'DEX Mode', hint: 'Orderly futures', options: ['false', 'true'] },
-  { key: 'auto_trade_binance', label: 'CEX Mode', hint: 'Binance spot', options: ['false', 'true'] },
-]
+const SELECTS: SelectDef[] = []
 
 type ComboOption = { label: string; value: string; recommended?: boolean }
 
@@ -478,20 +473,6 @@ function MiniSettingsComponent() {
         })}
       </Section>
 
-      {/* ── Auto Trade Modes ── */}
-      <Section title="Auto Trade Modes">
-        {SELECTS.map(s => (
-          <SettingRow key={s.key} label={s.label} hint={s.hint} statusKey={s.key}>
-            <ComboList
-              label={s.label}
-              value={settings[s.key] ?? ''}
-              options={s.options.map(o => ({ label: o, value: o }))}
-              onChange={v => selectAndSave(s.key, v)}
-              disabled={!editable}
-            />
-          </SettingRow>
-        ))}
-      </Section>
 
       <div className="text-center text-[10px] text-[#4a4060] pb-6">
         {editable ? 'Changes save automatically on selection or after typing' : 'Open via Telegram bot to edit'}

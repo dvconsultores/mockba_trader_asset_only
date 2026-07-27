@@ -106,15 +106,108 @@ def disable_trading(reason: str):
     # Log would go here — caller logs
 
 
+def is_entry_blocked_per_pair(asset: str, venue: str, equity: float = 0.0) -> tuple[bool, str]:
+    """Check if new entries for a specific (asset, venue) pair should be blocked.
+    
+    Amendment 004: per-pair kill switches. Returns (blocked, reason).
+    """
+    if not get_setting_bool("trading_enabled", True):
+        return True, "trading_enabled is off"
+
+    # Daily loss limit — absolute (override) takes priority, then percentage
+    limit_abs = get_setting_float("daily_loss_limit", 0.0)
+    limit_pct = get_setting_float("daily_loss_limit_pct", 5.0)
+    limit = limit_abs if limit_abs > 0 else (equity * limit_pct / 100 if equity > 0 else 0)
+
+    if limit > 0:
+        pnl = _get_asset_daily_pnl(asset, venue)
+        if pnl <= -limit:
+            return True, f"daily_loss_limit breached for {venue}:{asset}: {pnl:.2f} <= -{limit:.2f}"
+
+    # Consecutive losses (per pair)
+    max_consec = get_setting_int("max_consecutive_losses", 4)
+    if max_consec > 0:
+        consec = _get_asset_consecutive_losses(asset, venue)
+        if consec >= max_consec:
+            return True, f"max_consecutive_losses breached for {venue}:{asset}: {consec} >= {max_consec}"
+
+    return False, ""
+
+
+def get_global_daily_pnl() -> float:
+    """Sum PnL across all pairs for today (UTC)."""
+    today = _today_utc()
+    from db.db_ops import get_db_connection
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl_net), 0) AS total FROM closed_trades "
+            "WHERE date(datetime(closed_at, 'unixepoch')) = ?",
+            (today,),
+        ).fetchone()
+        return float(row["total"]) if row else 0.0
+
+
+def check_global_daily_loss() -> tuple[bool, str]:
+    """Check global daily loss limit. Returns (should_disable, reason)."""
+    limit_abs = get_setting_float("global_daily_loss_limit", 0.0)
+    limit_pct = get_setting_float("global_daily_loss_limit_pct", 0.0)
+    if limit_abs <= 0 and limit_pct <= 0:
+        return False, ""
+
+    total_pnl = get_global_daily_pnl()
+    if limit_abs > 0 and total_pnl <= -limit_abs:
+        return True, f"global_daily_loss_limit breached: {total_pnl:.2f} <= -{limit_abs:.2f}"
+    if limit_pct > 0:
+        # Percentage requires total equity — skip if not available
+        pass  # Percentage check delegated to startup validation
+
+    return False, ""
+
+
+def _get_asset_daily_pnl(asset: str, venue: str) -> float:
+    """Daily PnL for a specific (asset, venue) pair."""
+    today = _today_utc()
+    from db.db_ops import get_db_connection
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(SUM(pnl_net), 0) AS total FROM closed_trades "
+            "WHERE asset=? AND venue=? AND date(datetime(closed_at, 'unixepoch')) = ?",
+            (asset, venue, today),
+        ).fetchone()
+        return float(row["total"]) if row else 0.0
+
+
+def _get_asset_consecutive_losses(asset: str, venue: str) -> int:
+    """Consecutive losses for a specific (asset, venue) pair."""
+    from db.db_ops import get_db_connection
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT pnl_net FROM closed_trades WHERE asset=? AND venue=? "
+            "ORDER BY closed_at DESC LIMIT 20",
+            (asset, venue),
+        ).fetchall()
+    count = 0
+    for row in rows:
+        if row["pnl_net"] < 0:
+            count += 1
+        else:
+            break
+    return count
+
+
 # ── Slot sizing ───────────────────────────────────────────────────────────────
 
 def compute_slot_size(
     venue: str,
     equity: float,
     min_notional: float,
+    capital: float = 0.0,
 ) -> float:
     """
-    Equity-based position size for a single slot.
+    Absolute-USD position size for a single slot (Amendment 004).
+
+    If capital > 0, uses the per-asset capital allocation directly.
+    Falls back to percentage-based sizing for backward compatibility.
 
     Recomputed once per UTC day. Uses realized PnL compounding for DEX.
     Returns the slot size in quote currency (USDT/USDC).
@@ -125,8 +218,13 @@ def compute_slot_size(
     if _day_cache_date.get(venue) == today and venue in _day_cache:
         return _day_cache[venue]
 
-    slot_pct = get_setting_float(f"{venue}_slot_pct", 15.0)
-    raw = equity * (slot_pct / 100)
+    if capital > 0:
+        # Absolute USD capital — use directly
+        raw = capital
+    else:
+        # Fallback: legacy percentage-based (for transition)
+        slot_pct = get_setting_float(f"{venue}_slot_pct", 15.0)
+        raw = equity * (slot_pct / 100)
 
     floored = max(raw, min_notional * 1.5)
     _day_cache[venue] = floored
@@ -136,8 +234,8 @@ def compute_slot_size(
 
 
 def max_effective_slots(venue: str, equity: float, slot_size: float) -> int:
-    """Return how many slots equity can support. Never more than configured max."""
-    configured = get_setting_int("max_slots", 1)
+    """Return how many slots equity can support. Never more than configured max (Amendment 004: max_concurrent_positions)."""
+    configured = get_setting_int("max_concurrent_positions", get_setting_int("max_slots", 9))
     if slot_size <= 0 or equity <= 0:
         return 0
     affordable = int(equity / slot_size)
