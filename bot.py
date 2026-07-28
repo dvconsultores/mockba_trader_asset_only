@@ -50,7 +50,7 @@ def validate_startup() -> bool:
 
     pairs = get_active_pairs()
     if not pairs:
-        logger.warning("[STARTUP] no active pairs configured")
+        logger.info("[STARTUP] no active pairs configured — add assets via Telegram or Mini App")
         return False
 
     # Per-asset validation (Amendment 004)
@@ -168,9 +168,16 @@ def run():
     logger.info(f"[STARTUP] dry_run={dry}")
 
     if not validate_startup():
-        logger.warning("[STARTUP] validation failed — trading disabled")
+        # Determine WHY validation returned False — not always a failure
+        pairs = get_active_pairs()
+        trading_on = get_setting_bool("trading_enabled", True)
+        if not pairs:
+            logger.info("[STARTUP] no active pairs configured — bot will wait for configuration")
+        elif not trading_on:
+            logger.info("[STARTUP] trading is disabled — enable via Telegram or Mini App to start")
+        else:
+            logger.warning("[STARTUP] settings validation found issues — trading disabled until resolved")
         upsert_setting("trading_enabled", "0")
-        # Don't exit — user may fix config via Telegram and validation re-runs
 
     binance = BinanceSpot()
     orderly = OrderlyFutures()
