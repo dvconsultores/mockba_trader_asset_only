@@ -268,8 +268,8 @@ def run():
             _venue_failures: dict[str, int] = {}
 
             # ── Read per-venue mode (False / Signal / Automatic) ──
-            dex_mode = (get_setting("auto_trade_orderly") or "False").strip()
-            cex_mode = (get_setting("auto_trade_binance") or "False").strip()
+            dex_mode = _normalize_venue_mode(get_setting("auto_trade_orderly"))
+            cex_mode = _normalize_venue_mode(get_setting("auto_trade_binance"))
 
             for asset, venue, capital in pairs:
                 try:
@@ -378,6 +378,18 @@ def _get_obi_orderly(asset: str) -> float | None:
 def _get_live_price_orderly(asset: str) -> float | None:
     """Orderly public ticker is restricted — use Binance as proxy."""
     return _get_live_price_binance(asset)
+
+
+def _normalize_venue_mode(raw: str | None) -> str:
+    """Normalize legacy values (true/false) to canonical mode names."""
+    if not raw:
+        return "False"
+    v = raw.strip().lower()
+    if v in ("true", "automatic"):
+        return "Automatic"
+    if v in ("signal",):
+        return "Signal"
+    return "False"
 
 
 def _notify_signal(asset: str, exchange_label: str, regime: str, direction: str):

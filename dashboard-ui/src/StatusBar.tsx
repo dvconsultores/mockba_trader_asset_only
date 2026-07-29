@@ -15,35 +15,48 @@ function fmtUptime(s: number): string {
   return `${h}h ${m}m ${sec}s`
 }
 
+function normalizeMode(mode: string): string {
+  // Normalize legacy "true"/"false" and case variants to canonical names
+  const v = (mode || '').trim().toLowerCase()
+  if (v === 'true' || v === 'automatic') return 'Automatic'
+  if (v === 'signal') return 'Signal'
+  return 'False'
+}
+
 function modeLabel(mode: string): string {
-  if (mode === 'Automatic') return 'AUTO'
-  if (mode === 'Signal') return 'SIGNAL'
+  const m = normalizeMode(mode)
+  if (m === 'Automatic') return 'AUTO'
+  if (m === 'Signal') return 'SIGNAL'
   return 'OFF'
 }
 
 function modeClass(mode: string): string {
-  if (mode === 'Automatic') return 'text-green-400'
-  if (mode === 'Signal') return 'text-yellow-400'
+  const m = normalizeMode(mode)
+  if (m === 'Automatic') return 'text-green-400'
+  if (m === 'Signal') return 'text-yellow-400'
   return 'text-[#4a4060]'
 }
 
 function nextMode(current: string): string {
-  if (current === 'False' || current === 'false' || !current) return 'Signal'
-  if (current === 'Signal') return 'Automatic'
+  const m = normalizeMode(current)
+  if (m === 'False') return 'Signal'
+  if (m === 'Signal') return 'Automatic'
   return 'False'
 }
 
 function buttonStyle(mode: string): string {
-  if (mode === 'Automatic')
+  const m = normalizeMode(mode)
+  if (m === 'Automatic')
     return 'bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20'
-  if (mode === 'Signal')
+  if (m === 'Signal')
     return 'bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/20'
   return 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20'
 }
 
 function buttonLabel(mode: string): string {
-  if (mode === 'Automatic') return '⏹ Stop'
-  if (mode === 'Signal') return '⏩ Auto'
+  const m = normalizeMode(mode)
+  if (m === 'Automatic') return '⏹ Stop'
+  if (m === 'Signal') return '⏩ Auto'
   return '▶ Start (Signal)'
 }
 
