@@ -88,8 +88,9 @@ def _close(a,v,s,ep,xp,sp,q,fr,pid,si,rsn):
 
 def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live_price: float, signal_only: bool = False) -> Optional[str]:
     venue="binance"
-    if regime=="TREND_DOWN": _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped","regime=TREND_DOWN"); return None
-    if regime not in ("RANGE","TREND_UP"): _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped",f"regime={regime}"); return None
+    if not signal_only:
+        if regime=="TREND_DOWN": _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped","regime=TREND_DOWN"); return None
+        if regime not in ("RANGE","TREND_UP"): _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped",f"regime={regime}"); return None
 
     if not signal_only:
         equity=exchange.get_equity()
@@ -122,7 +123,7 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
     record_observation(asset,venue,0.05,1000,obi,ext)
     tbl=bool(tox.get("tox_enforced",0))
 
-    direction="long" if dip else ("short" if pump else None)
+    direction="long" if dip else None
     if direction is None:
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","below_threshold"); return None
     if tbl:

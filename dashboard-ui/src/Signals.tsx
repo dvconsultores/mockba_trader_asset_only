@@ -4,19 +4,41 @@ import { convertTimestampToCaracas } from './timezone'
 
 interface Signal {
   id: number
-  timestamp: string
-  exchange: string
+  ts: number
   asset: string
+  venue: string
   regime: string
-  obi: number
-  pattern_type: string
-  approved: number
-  side: string
-  entry_price: number
-  ml_score: number | null
-  ml_decision: string | null
-  trade_outcome: string | null
-  rejection_reasons: string[] | null
+  direction: string | null
+  price: number
+  extreme_pct: number | null
+  threshold_pct: number | null
+  atr_pct: number | null
+  obi: number | null
+  action: string
+  reason: string
+}
+
+function formatVenue(venue: string): string {
+  return venue === 'binance' ? 'CEX' : venue === 'orderly' ? 'DEX' : venue.toUpperCase()
+}
+
+function formatSide(direction: string | null): string {
+  if (!direction) return '—'
+  return direction === 'long' ? 'BUY' : direction === 'short' ? 'SELL' : direction.toUpperCase()
+}
+
+function sideColor(direction: string | null): string {
+  if (!direction) return 'text-[#4a4060]'
+  return direction === 'long' ? 'text-[#D0CFCC]' : 'text-red-400'
+}
+
+function actionBadge(action: string): { text: string; color: string } {
+  switch (action) {
+    case 'entered': return { text: 'ENTERED', color: 'text-[#D0CFCC]' }
+    case 'signaled': return { text: 'SIGNAL', color: 'text-cyan-400' }
+    case 'skipped': return { text: 'SKIPPED', color: 'text-[#6a6070]' }
+    default: return { text: action.toUpperCase(), color: 'text-[#4a4060]' }
+  }
 }
 
 export default function Signals() {
@@ -41,23 +63,11 @@ export default function Signals() {
   const filtered = (filter
     ? signals.filter(s =>
         s.asset?.toLowerCase().includes(filter.toLowerCase()) ||
-        s.pattern_type?.toLowerCase().includes(filter.toLowerCase()) ||
+        s.action?.toLowerCase().includes(filter.toLowerCase()) ||
         String(s.id).includes(filter)
       )
     : signals
   ).slice().sort((a, b) => b.id - a.id)
-
-  function mlColor(score: number | null, decision: string | null): string {
-    if (score === null) return 'text-[#4a4060]'
-    if (decision === 'approved') return 'text-[#D0CFCC]'
-    return 'text-red-400'
-  }
-
-  function outcomeBadge(outcome: string | null) {
-    if (!outcome) return <span className="text-[#4a4060]">—</span>
-    const color = outcome === 'win' ? 'text-[#D0CFCC]' : 'text-red-400'
-    return <span className={color}>{outcome.toUpperCase()}</span>
-  }
 
   return (
     <div className="h-full flex flex-col">
@@ -84,58 +94,53 @@ export default function Signals() {
       </div>
 
       <div className="flex-1 overflow-auto">
-        <div className="min-w-[600px] sm:min-w-0">
+        <div className="min-w-[550px] sm:min-w-0">
         <table className="w-full text-[10px] sm:text-xs font-mono border-collapse">
           <thead className="sticky top-0 bg-[#1a1528] text-[#4a4060]">
             <tr>
               <th className="px-2 py-1 text-left">TIME</th>
               <th className="px-2 py-1 text-left">EX</th>
+              <th className="px-2 py-1 text-left">ASSET</th>
               <th className="px-2 py-1 text-left">SIDE</th>
               <th className="px-2 py-1 text-left">REGIME</th>
               <th className="px-2 py-1 text-left">PATTERN</th>
+              <th className="px-2 py-1 text-right">PRICE</th>
               <th className="px-2 py-1 text-right">OBI</th>
-              <th className="px-2 py-1 text-right">ML SCORE</th>
-              <th className="px-2 py-1 text-center">ML</th>
-              <th className="px-2 py-1 text-center">OK?</th>
-              <th className="px-2 py-1 text-center">OUTCOME</th>
             </tr>
           </thead>
           <tbody>
-            {filtered.map(s => (
+            {filtered.map(s => {
+              const ab = actionBadge(s.action)
+              const entered = s.action === 'entered'
+              return (
               <tr
                 key={s.id}
                 className={`border-b border-[#1e1830] hover:bg-[#1e1830] ${
-                  s.approved ? 'text-[#D0CFCC]' : 'text-[#6a6070]'
+                  entered ? 'text-[#D0CFCC]' : 'text-[#6a6070]'
                 }`}
               >
                 <td className="px-2 py-0.5 whitespace-nowrap text-[#4a4060]">
-                  {convertTimestampToCaracas(s.timestamp) || '—'}
+                  {s.ts ? convertTimestampToCaracas(new Date(s.ts * 1000).toISOString().replace('T', ' ').slice(0, 19)) : '—'}
                 </td>
-                <td className="px-2 py-0.5">{s.exchange?.toUpperCase()}</td>
-                <td className={`px-2 py-0.5 ${s.side === 'BUY' ? 'text-[#D0CFCC]' : 'text-red-400'}`}>
-                  {s.side || '—'}
+                <td className="px-2 py-0.5 font-bold">
+                  {formatVenue(s.venue)}
+                </td>
+                <td className="px-2 py-0.5">{s.asset}</td>
+                <td className={`px-2 py-0.5 ${sideColor(s.direction)}`}>
+                  {formatSide(s.direction)}
                 </td>
                 <td className="px-2 py-0.5 text-cyan-500">{s.regime}</td>
-                <td className="px-2 py-0.5 max-w-xs truncate text-[#6a6070]">
-                  {s.pattern_type || '—'}
+                <td className={`px-2 py-0.5 max-w-xs truncate ${ab.color}`}>
+                  {ab.text}
                 </td>
                 <td className="px-2 py-0.5 text-right text-[#6a6070]">
-                  {s.obi?.toFixed(2)}
+                  {s.price?.toFixed(4)}
                 </td>
-                <td className={`px-2 py-0.5 text-right font-bold ${mlColor(s.ml_score, s.ml_decision)}`}>
-                  {s.ml_score != null ? s.ml_score.toFixed(3) : '—'}
-                </td>
-                <td className="px-2 py-0.5 text-center">
-                  {s.ml_decision === 'approved' ? '✅' : s.ml_decision === 'rejected' ? '❌' : '—'}
-                </td>
-                <td className="px-2 py-0.5 text-center">
-                  {s.approved ? '✅' : '❌'}
-                </td>
-                <td className="px-2 py-0.5 text-center font-bold">
-                  {outcomeBadge(s.trade_outcome)}
+                <td className="px-2 py-0.5 text-right text-[#6a6070]">
+                  {s.obi != null ? s.obi.toFixed(2) : '—'}
                 </td>
               </tr>
-            ))}
+            )})}
           </tbody>
         </table>
         </div>

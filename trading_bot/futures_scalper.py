@@ -106,10 +106,10 @@ def _close(a,v,s,ep,xp,sp,q,fr,pid,si,rsn):
 def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, live_price: float, signal_only: bool = False) -> Optional[str]:
     venue="orderly"
 
-    # Direction gate by regime
+    # Direction gate by regime (skip early return for signal-only mode)
     long_ok=regime in ("RANGE","TREND_UP")
     short_ok=regime in ("RANGE","TREND_DOWN")
-    if not long_ok and not short_ok:
+    if not signal_only and not long_ok and not short_ok:
         _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped",f"regime={regime} blocks all directions"); return None
 
     if not signal_only:
