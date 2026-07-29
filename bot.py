@@ -212,8 +212,18 @@ def run():
     _last_validation = time.time()
     VALIDATION_INTERVAL = 300  # re-validate every 5 minutes
 
+    logger.info("[LOOP] entering main loop")
+    _last_mode_log = 0.0
+
     while True:
         try:
+            # ── Periodic mode log (every 5 min) ─────────────────
+            if time.time() - _last_mode_log > 300:
+                dex_m = _normalize_venue_mode(get_setting("auto_trade_orderly"))
+                cex_m = _normalize_venue_mode(get_setting("auto_trade_binance"))
+                logger.info(f"[MODE] DEX={dex_m} CEX={cex_m} pairs={len(get_active_pairs())}")
+                _last_mode_log = time.time()
+
             # Refresh settings
             current = {k: get_setting(k) or "" for k in [
                 "tp_min_pct", "sl_min_pct", "dip_min_pct", "pump_min_pct",
