@@ -308,7 +308,7 @@ def _show_group_keys(cid, group):
 def _dispatch_callback(call, cid):
     """Route callback data to the appropriate handler. Extracted for clean error boundaries."""
     immediate_remove = False
-    if call.data.startswith("exec_sig:") or call.data.startswith("exec_sig_dex:") or call.data.startswith("exec_sig_cex:"):
+    if call.data.startswith("exec_sig"):
         immediate_remove = True
     if call.data.startswith("asset_toggle:") or call.data.startswith("asset_remove:") or call.data.startswith("asset_venuetoggle:") or call.data.startswith("bot_toggle:"):
         immediate_remove = True
@@ -319,7 +319,17 @@ def _dispatch_callback(call, cid):
         except Exception:
             pass
 
-    if call.data.startswith("exec_sig_dex:"):
+    if call.data == "exec_sig_dex_pick":
+        pick_asset_for_signal(call.message, "dex")
+    elif call.data == "exec_sig_cex_pick":
+        pick_asset_for_signal(call.message, "cex")
+    elif call.data.startswith("exec_sig_dex_asset:"):
+        asset = call.data.split(":", 1)[1]
+        execute_signal(call.message, asset=asset, exchange="dex")
+    elif call.data.startswith("exec_sig_cex_asset:"):
+        asset = call.data.split(":", 1)[1]
+        execute_signal(call.message, asset=asset, exchange="cex")
+    elif call.data.startswith("exec_sig_dex:"):
         asset = call.data.split(":", 1)[1]
         execute_signal(call.message, asset=asset, exchange="dex")
     elif call.data.startswith("exec_sig_cex:"):
@@ -455,18 +465,34 @@ def pick_exchange_for_signal(m):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     configs = get_all_asset_configs()
-    symbols = [c["symbol"] for c in configs]
-    asset = symbols[0] if symbols else None
-    if not asset:
+    if not configs:
         bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
         return
 
     markup = InlineKeyboardMarkup()
     markup.add(
-        InlineKeyboardButton("🌐 DEX (Orderly Futures)", callback_data=f"exec_sig_dex:{asset}"),
-        InlineKeyboardButton("💱 CEX (Binance Spot)", callback_data=f"exec_sig_cex:{asset}")
+        InlineKeyboardButton("🌐 DEX (Orderly Futures)", callback_data="exec_sig_dex_pick"),
+        InlineKeyboardButton("💱 CEX (Binance Spot)", callback_data="exec_sig_cex_pick")
     )
-    bot.send_message(cid, translate(f"Select exchange for {asset}:", cid), reply_markup=markup)
+    bot.send_message(cid, translate("Select exchange:", cid), reply_markup=markup)
+
+
+def pick_asset_for_signal(m, exchange):
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    configs = get_all_asset_configs()
+    if not configs:
+        bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
+        return
+
+    exchange_label = "DEX" if exchange == "dex" else "CEX"
+    markup = InlineKeyboardMarkup()
+    for c in configs:
+        sym = c["symbol"]
+        markup.add(InlineKeyboardButton(sym, callback_data=f"exec_sig_{exchange}_asset:{sym}"))
+    bot.send_message(cid, translate(f"Select asset for {exchange_label} signal:", cid), reply_markup=markup)
 
 
 def execute_signal(m, asset=None, exchange=None):
@@ -482,27 +508,37 @@ def execute_signal(m, asset=None, exchange=None):
             bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
             return
 
-    exchange_label = "DEX" if exchange == "dex" else "CEX" if exchange == "cex" else ""
-    exchange_suffix = f" ({exchange_label})" if exchange_label else ""
+    if exchange is None:
+        exchange = "cex"
 
-    bot.send_message(cid, translate(f"Processing signal for {asset}{exchange_suffix} ...", cid))
+    exchange_label = "DEX" if exchange == "dex" else "CEX"
+    venue = "orderly" if exchange == "dex" else "binance"
+
+    bot.send_message(cid, translate(f"Processing signal for {asset} ({exchange_label}) ...", cid))
     time.sleep(1)
     try:
-        # Process signal via new scalper
-        from trading_bot.spot_scalper import scalp_cycle as spot_cycle
-        from trading_bot.executor import BinanceSpot
         from trade.regime import detect_regime
-        exchange_obj = BinanceSpot()
-        regime = detect_regime(asset, "binance")
-        obi = 1.0  # placeholder — full signal processing needs OB fetch
         import requests
+        regime = detect_regime(asset, venue)
+        obi = 1.0  # placeholder — full signal processing needs OB fetch
         try:
             r = requests.get(f"https://api.binance.com/api/v3/ticker/price?symbol={asset}USDT", timeout=5)
             price = float(r.json()["price"])
         except Exception:
             price = 0.0
-        action = spot_cycle(asset, exchange_obj, regime, obi, price)
-        result = f"Asset: {asset}\nRegime: {regime}\nAction: {action or 'no signal'}"
+
+        if exchange == "dex":
+            from trading_bot.futures_scalper import scalp_cycle as futures_cycle
+            from trading_bot.executor import OrderlyFutures
+            exchange_obj = OrderlyFutures()
+            action = futures_cycle(asset, exchange_obj, regime, obi, price)
+        else:
+            from trading_bot.spot_scalper import scalp_cycle as spot_cycle
+            from trading_bot.executor import BinanceSpot
+            exchange_obj = BinanceSpot()
+            action = spot_cycle(asset, exchange_obj, regime, obi, price)
+
+        result = f"Asset: {asset}\nExchange: {exchange_label}\nRegime: {regime}\nAction: {action or 'no signal'}"
     except Exception as e:
         result = f"Error: {str(e)}"
 
