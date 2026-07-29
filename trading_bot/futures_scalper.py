@@ -112,11 +112,12 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, l
     if not long_ok and not short_ok:
         _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped",f"regime={regime} blocks all directions"); return None
 
-    equity=exchange.get_equity()
-    blocked,reason=is_entry_blocked(venue,equity)
-    if blocked: _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped",reason); return None
-    if len(load_all_positions(asset=asset,venue=venue))>=get_setting_int("max_slots",1):
-        _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped","max_slots"); return None
+    if not signal_only:
+        equity=exchange.get_equity()
+        blocked,reason=is_entry_blocked(venue,equity)
+        if blocked: _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped",reason); return None
+        if len(load_all_positions(asset=asset,venue=venue))>=get_setting_int("max_slots",1):
+            _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped","max_slots"); return None
 
     _update_price_memory(asset,live_price)
 
@@ -151,6 +152,11 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, l
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","cooldown"); return None
     if not _spacing_ok(asset,live_price,sp):
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","spacing"); return None
+
+    if signal_only:
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%")
+        _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
+        return "buy" if direction=="long" else "sell"
 
     info=exchange.get_symbol_info(asset)
     if info is None: return None

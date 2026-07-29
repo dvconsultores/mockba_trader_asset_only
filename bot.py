@@ -293,6 +293,11 @@ def run():
                     if venue_mode == "False":
                         continue
 
+                    # ── Automatic mode requires capital ──────────
+                    if venue_mode == "Automatic" and capital <= 0:
+                        logger.warning(f"[CONFIG] {venue}:{asset} automatic mode but capital={capital} — skipping")
+                        continue
+
                     ex = exchange_map.get(venue)
                     if ex is None:
                         continue
@@ -305,14 +310,17 @@ def run():
                         logger.error(f"[ERROR] {venue}:{asset} equity query failed")
                         continue
 
-                    # ── Per-pair kill switch ──────────────────────
-                    blocked, reason = is_entry_blocked_per_pair(asset, venue, equity)
-                    if len(all_open) >= max_positions:
-                        blocked = True
-                        reason = f"max_concurrent_positions={max_positions} reached"
-                    regime = detect_regime(asset, venue)
-
                     signal_only = (venue_mode == "Signal")
+
+                    # ── Per-pair kill switch (skip for signal-only) ──
+                    blocked = False
+                    reason = ""
+                    if not signal_only:
+                        blocked, reason = is_entry_blocked_per_pair(asset, venue, equity)
+                        if len(all_open) >= max_positions:
+                            blocked = True
+                            reason = f"max_concurrent_positions={max_positions} reached"
+                    regime = detect_regime(asset, venue)
 
                     # ── Manage exits FIRST ────────────────────────
                     if venue == "binance":

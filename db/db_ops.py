@@ -181,7 +181,7 @@ def delete_asset_config(symbol: str):
 
 def get_active_pairs() -> list[tuple[str, str, float]]:
     """Return (asset, venue, capital) tuples for all active pairs.
-    Active means active_<venue>=true AND capital_<venue> > 0.
+    Active means active_<venue>=true. Capital may be 0 for signal-only pairs.
     """
     pairs: list[tuple[str, str, float]] = []
     with get_db_connection() as conn:
@@ -190,9 +190,9 @@ def get_active_pairs() -> list[tuple[str, str, float]]:
             "FROM asset_configs ORDER BY symbol"
         ).fetchall()
     for row in rows:
-        if row["active_dex"] and row["capital_dex"] > 0:
+        if row["active_dex"]:
             pairs.append((row["symbol"], "orderly", float(row["capital_dex"])))
-        if row["active_cex"] and row["capital_cex"] > 0:
+        if row["active_cex"]:
             pairs.append((row["symbol"], "binance", float(row["capital_cex"])))
     return pairs
 
