@@ -178,6 +178,11 @@ def run():
         else:
             logger.warning("[STARTUP] settings validation found issues — trading disabled until resolved")
         upsert_setting("trading_enabled", "0")
+    else:
+        # Validation passed — ensure trading_enabled is not stuck at 0 from a previous run
+        if not get_setting_bool("trading_enabled", True):
+            logger.info("[STARTUP] re-enabling trading after validation passed")
+            upsert_setting("trading_enabled", "1")
 
     binance = BinanceSpot()
     orderly = OrderlyFutures()
