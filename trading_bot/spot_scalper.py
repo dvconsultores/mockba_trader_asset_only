@@ -133,9 +133,11 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","spacing"); return None
 
     if signal_only:
+        tp_price = live_price * (1 + te/100) if direction == "long" else live_price * (1 - te/100)
+        sl_price = live_price * (1 - se/100) if direction == "long" else live_price * (1 + se/100)
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%")
         _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
-        return "buy" if direction=="long" else "sell"
+        return {"direction": "buy" if direction=="long" else "sell", "tp": tp_price, "sl": sl_price}
 
     info=exchange.get_symbol_info(asset)
     if info is None: return None
@@ -143,11 +145,6 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
     qty=slot/live_price; qty=qty-(qty%info.base_tick) if info.base_tick>0 else qty
     if qty<info.min_qty or (qty*live_price)<info.min_notional:
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","qty too small"); return None
-
-    if signal_only:
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%")
-        _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
-        return "buy" if direction=="long" else "sell"
 
     pid=str(uuid.uuid4())
     fill=exchange.place_entry(asset,direction,qty,live_price,te,pid,se)

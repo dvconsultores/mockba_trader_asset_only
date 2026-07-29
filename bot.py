@@ -331,7 +331,7 @@ def run():
                             if obi is not None and price is not None:
                                 result = spot_cycle(asset, binance, regime, obi, price, signal_only=signal_only)
                                 if signal_only and result:
-                                    _notify_signal(asset, "CEX", regime, result)
+                                    _notify_signal(asset, "CEX", regime, result, price)
                     else:
                         futures_manage(asset, orderly, regime)
                         if not blocked and regime != "UNKNOWN":
@@ -340,7 +340,7 @@ def run():
                             if obi is not None and price is not None:
                                 result = futures_cycle(asset, orderly, regime, obi, price, signal_only=signal_only)
                                 if signal_only and result:
-                                    _notify_signal(asset, "DEX", regime, result)
+                                    _notify_signal(asset, "DEX", regime, result, price)
 
                 except Exception as e:
                     logger.error(f"[ERROR] {venue}:{asset} cycle failed: {e}")
@@ -415,12 +415,30 @@ def _normalize_venue_mode(raw: str | None) -> str:
     return "False"
 
 
-def _notify_signal(asset: str, exchange_label: str, regime: str, direction: str):
+def _notify_signal(asset: str, exchange_label: str, regime: str, result: dict, price: float):
     """Send a Telegram notification when a signal fires in Signal mode."""
     try:
         from trading_bot.send_bot_message import send_message
+        direction = result["direction"]
+        tp = result["tp"]
+        sl = result["sl"]
         emoji = "🟢" if direction == "buy" else "🔴"
-        msg = f"{emoji} Signal: {asset} ({exchange_label})\nRegime: {regime}\nDirection: {direction.upper()}"
+        if exchange_label == "CEX":
+            action = "BUY" if direction == "buy" else "SELL"
+            close_action = "SELL" if direction == "buy" else "BUY"
+            msg = (
+                f"{emoji} {asset} ({exchange_label}) — {action} at {price:.4f}\n"
+                f"{close_action} at {tp:.4f}  |  SL at {sl:.4f}\n"
+                f"Regime: {regime}"
+            )
+        else:
+            action = "LONG entry" if direction == "buy" else "SHORT entry"
+            close_action = "close" if direction == "buy" else "close"
+            msg = (
+                f"{emoji} {asset} ({exchange_label}) — {action} at {price:.4f}\n"
+                f"Close at {tp:.4f}  |  SL at {sl:.4f}\n"
+                f"Regime: {regime}"
+            )
         send_message(msg)
     except Exception as e:
         logger.warning(f"[SIGNAL] failed to send notification: {e}")
