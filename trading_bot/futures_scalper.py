@@ -103,7 +103,7 @@ def _close(a,v,s,ep,xp,sp,q,fr,pid,si,rsn):
     record_closed_trade(asset=a,venue=v,side=s,entry_price=ep,exit_price=xp,signal_price=sp,qty=q,fee_entry=fee_ep,fee_exit=fee_xp,opened_at=0,closed_at=time.time(),exit_reason=rsn)
     delete_position(a,v,pid)
 
-def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, live_price: float) -> Optional[str]:
+def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, live_price: float, signal_only: bool = False) -> Optional[str]:
     venue="orderly"
 
     # Direction gate by regime
@@ -158,6 +158,11 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, l
     qty=slot/live_price; qty=qty-(qty%info.base_tick) if info.base_tick>0 else qty
     if qty<info.min_qty or (qty*live_price)<info.min_notional:
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","qty too small"); return None
+
+    if signal_only:
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%")
+        _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
+        return "buy" if direction=="long" else "sell"
 
     leverage=min(get_setting_int("leverage",3),get_setting_int("max_leverage",3))
     pid=str(uuid.uuid4())

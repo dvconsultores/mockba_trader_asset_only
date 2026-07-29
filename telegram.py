@@ -310,7 +310,7 @@ def _dispatch_callback(call, cid):
     immediate_remove = False
     if call.data.startswith("exec_sig"):
         immediate_remove = True
-    if call.data.startswith("asset_toggle:") or call.data.startswith("asset_remove:") or call.data.startswith("asset_venuetoggle:") or call.data.startswith("bot_toggle:"):
+    if call.data.startswith("asset_toggle:") or call.data.startswith("asset_remove:") or call.data.startswith("asset_venuetoggle:"):
         immediate_remove = True
 
     if immediate_remove:
@@ -351,10 +351,6 @@ def _dispatch_callback(call, cid):
         symbol = call.data.split(":", 1)[1]
         handle_asset_remove(cid, symbol)
         manage_assets(call.message)
-    elif call.data.startswith("bot_toggle:"):
-        _, exchange, mode = call.data.split(":")
-        handle_bot_toggle(cid, exchange, mode)
-        start_stop_menu(call.message)
     elif call.data.startswith("ExplainGroup:"):
         group = call.data.split(":", 1)[1]
         _show_group_keys(cid, group)
@@ -369,7 +365,6 @@ def _dispatch_callback(call, cid):
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
             'ManageAssets': manage_assets,
-            'StartStop': start_stop_menu,
             'ExplainPrompt': explain_prompt,
             'ProposeStart': propose_start,
         }
@@ -596,33 +591,6 @@ def manage_assets(m):
     bot.send_message(cid, translate("\n".join(summary_lines), cid), reply_markup=markup)
 
 
-def start_stop_menu(m):
-    """Show current bot mode and start/stop toggles."""
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-
-    dex_mode = "true" if get_setting_bool("auto_trade_orderly", False) else "False"
-    cex_mode = "true" if get_setting_bool("auto_trade_binance", False) else "False"
-
-    dex_label = "🟢 DEX: ON" if dex_mode != "False" else "🔴 DEX: OFF"
-    cex_label = "🟢 CEX: ON" if cex_mode != "False" else "🔴 CEX: OFF"
-
-    markup = InlineKeyboardMarkup()
-    markup.row(InlineKeyboardButton(
-        f"{'⏹ Stop' if dex_mode != 'False' else '▶️ Start'} DEX",
-        callback_data=f"bot_toggle:dex:{'False' if dex_mode != 'False' else 'Automatic'}"
-    ))
-    markup.row(InlineKeyboardButton(
-        f"{'⏹ Stop' if cex_mode != 'False' else '▶️ Start'} CEX",
-        callback_data=f"bot_toggle:cex:{'False' if cex_mode != 'False' else 'Automatic'}"
-    ))
-    markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="List"))
-
-    msg = translate(f"▶️ Bot Control\n\n{dex_label}\n{cex_label}", cid)
-    bot.send_message(cid, msg, reply_markup=markup)
-
-
 def handle_asset_add_prompt(m):
     """Prompt user to send the asset name to add."""
     if m.chat.type != 'private': return
@@ -727,16 +695,6 @@ def handle_asset_remove(cid: int, symbol: str):
     delete_asset_config(symbol)
     configs = get_all_asset_configs()
     bot.send_message(cid, translate(f"✅ Asset '{symbol}' removed. {len(configs)} remaining.", cid))
-
-
-def handle_bot_toggle(cid: int, exchange: str, mode: str):
-    """Toggle auto_trade for an exchange (legacy global mode)."""
-    key = "auto_trade_orderly" if exchange == "dex" else "auto_trade_binance"
-    upsert_setting(key, mode)
-    status = "ON" if mode != "False" else "OFF"
-    ex_label = "DEX" if exchange == "dex" else "CEX"
-    bot.send_message(cid, translate(f"✅ {ex_label} is now {status} (mode: {mode})", cid))
-
 
 
 # Start polling

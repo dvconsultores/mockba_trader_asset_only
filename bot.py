@@ -267,8 +267,17 @@ def run():
             exchange_map = {"binance": binance, "orderly": orderly}
             _venue_failures: dict[str, int] = {}
 
+            # ── Read per-venue mode (False / Signal / Automatic) ──
+            dex_mode = (get_setting("auto_trade_orderly") or "False").strip()
+            cex_mode = (get_setting("auto_trade_binance") or "False").strip()
+
             for asset, venue, capital in pairs:
                 try:
+                    # ── Skip if venue mode is False ──────────────
+                    venue_mode = dex_mode if venue == "orderly" else cex_mode
+                    if venue_mode == "False":
+                        continue
+
                     ex = exchange_map.get(venue)
                     if ex is None:
                         continue
@@ -288,6 +297,8 @@ def run():
                         reason = f"max_concurrent_positions={max_positions} reached"
                     regime = detect_regime(asset, venue)
 
+                    signal_only = (venue_mode == "Signal")
+
                     # ── Manage exits FIRST ────────────────────────
                     if venue == "binance":
                         spot_manage(asset, binance)
@@ -295,14 +306,18 @@ def run():
                             obi = _get_obi_binance(asset)
                             price = _get_live_price_binance(asset)
                             if obi is not None and price is not None:
-                                spot_cycle(asset, binance, regime, obi, price)
+                                result = spot_cycle(asset, binance, regime, obi, price, signal_only=signal_only)
+                                if signal_only and result:
+                                    _notify_signal(asset, "CEX", regime, result)
                     else:
                         futures_manage(asset, orderly, regime)
                         if not blocked and regime != "UNKNOWN":
                             obi = _get_obi_orderly(asset)
                             price = _get_live_price_orderly(asset)
                             if obi is not None and price is not None:
-                                futures_cycle(asset, orderly, regime, obi, price)
+                                result = futures_cycle(asset, orderly, regime, obi, price, signal_only=signal_only)
+                                if signal_only and result:
+                                    _notify_signal(asset, "DEX", regime, result)
 
                 except Exception as e:
                     logger.error(f"[ERROR] {venue}:{asset} cycle failed: {e}")
@@ -363,6 +378,17 @@ def _get_obi_orderly(asset: str) -> float | None:
 def _get_live_price_orderly(asset: str) -> float | None:
     """Orderly public ticker is restricted — use Binance as proxy."""
     return _get_live_price_binance(asset)
+
+
+def _notify_signal(asset: str, exchange_label: str, regime: str, direction: str):
+    """Send a Telegram notification when a signal fires in Signal mode."""
+    try:
+        from trading_bot.send_bot_message import send_message
+        emoji = "🟢" if direction == "buy" else "🔴"
+        msg = f"{emoji} Signal: {asset} ({exchange_label})\nRegime: {regime}\nDirection: {direction.upper()}"
+        send_message(msg)
+    except Exception as e:
+        logger.warning(f"[SIGNAL] failed to send notification: {e}")
 
 
 if __name__ == "__main__":

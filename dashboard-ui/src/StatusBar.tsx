@@ -16,12 +16,35 @@ function fmtUptime(s: number): string {
 }
 
 function modeLabel(mode: string): string {
-  if (mode === 'false' || mode === 'False') return 'STOPPED'
-  return 'RUNNING'
+  if (mode === 'Automatic') return 'AUTO'
+  if (mode === 'Signal') return 'SIGNAL'
+  return 'OFF'
 }
 
-function isRunning(mode: string): boolean {
-  return mode !== 'false' && mode !== 'False'
+function modeClass(mode: string): string {
+  if (mode === 'Automatic') return 'text-green-400'
+  if (mode === 'Signal') return 'text-yellow-400'
+  return 'text-[#4a4060]'
+}
+
+function nextMode(current: string): string {
+  if (current === 'False' || current === 'false' || !current) return 'Signal'
+  if (current === 'Signal') return 'Automatic'
+  return 'False'
+}
+
+function buttonStyle(mode: string): string {
+  if (mode === 'Automatic')
+    return 'bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20'
+  if (mode === 'Signal')
+    return 'bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 hover:bg-yellow-500/20'
+  return 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20'
+}
+
+function buttonLabel(mode: string): string {
+  if (mode === 'Automatic') return '⏹ Stop'
+  if (mode === 'Signal') return '⏩ Auto'
+  return '▶ Start (Signal)'
 }
 
 export default function StatusBar({ status: initialStatus }: { status: BotStatus | null }) {
@@ -62,7 +85,7 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
   const toggleExchange = useCallback(async (exchange: 'dex' | 'cex') => {
     if (!status) return
     const currentMode = exchange === 'dex' ? status.dex_mode : status.cex_mode
-    const newMode = isRunning(currentMode) ? 'False' : 'Automatic'
+    const newMode = nextMode(currentMode)
     const key = exchange
 
     setTransitioning(prev => new Set(prev).add(key))
@@ -92,7 +115,6 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
     return <div className="p-4 text-[#4a4060] animate-pulse">Loading status...</div>
   }
 
-  const isRunning = (mode: string) => mode !== 'False'
   const isTransitioning = (exchange: string) => transitioning.has(exchange)
 
   return (
@@ -119,53 +141,45 @@ export default function StatusBar({ status: initialStatus }: { status: BotStatus
         </div>
 
         {/* DEX Mode */}
-        <div className={`flex flex-col border p-3 ${isRunning(status.dex_mode) ? 'border-[#D0CFCC]/20 bg-[#D0CFCC]/3' : 'border-[#2a2240] bg-[#1a1528]'}`}>
-          <div className="text-[#4a4060] text-[10px]">DEX MODE (Orderly Futures)</div>
-          <div className={`text-lg font-bold ${isRunning(status.dex_mode) ? 'text-[#D0CFCC]' : 'text-[#4a4060]'}`}>
+        <div className="flex flex-col border p-3 border-[#2a2240] bg-[#1a1528]">
+          <div className="text-[#4a4060] text-[10px]">DEX (Orderly Futures)</div>
+          <div className={`text-lg font-bold ${modeClass(status.dex_mode)}`}>
             {modeLabel(status.dex_mode)}
           </div>
           {editable && (
             <button
               onClick={() => toggleExchange('dex')}
               disabled={isTransitioning('dex')}
-              className={`mt-auto w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${
-                isRunning(status.dex_mode)
-                  ? 'bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20'
-                  : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20'
-              }`}
+              className={`mt-auto w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${buttonStyle(status.dex_mode)}`}
             >
               {isTransitioning('dex') ? (
                 <Loader2 size={12} className="animate-spin" />
               ) : (
                 <Power size={12} />
               )}
-              {isRunning(status.dex_mode) ? 'Stop DEX' : 'Start DEX'}
+              {buttonLabel(status.dex_mode)}
             </button>
           )}
         </div>
 
         {/* CEX Mode */}
-        <div className={`flex flex-col border p-3 ${isRunning(status.cex_mode) ? 'border-[#D0CFCC]/20 bg-[#D0CFCC]/3' : 'border-[#2a2240] bg-[#1a1528]'}`}>
-          <div className="text-[#4a4060] text-[10px]">CEX MODE (Binance Spot)</div>
-          <div className={`text-lg font-bold ${isRunning(status.cex_mode) ? 'text-[#D0CFCC]' : 'text-[#4a4060]'}`}>
+        <div className="flex flex-col border p-3 border-[#2a2240] bg-[#1a1528]">
+          <div className="text-[#4a4060] text-[10px]">CEX (Binance Spot)</div>
+          <div className={`text-lg font-bold ${modeClass(status.cex_mode)}`}>
             {modeLabel(status.cex_mode)}
           </div>
           {editable && (
             <button
               onClick={() => toggleExchange('cex')}
               disabled={isTransitioning('cex')}
-              className={`mt-auto w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${
-                isRunning(status.cex_mode)
-                  ? 'bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20'
-                  : 'bg-green-500/10 border border-green-500/30 text-green-400 hover:bg-green-500/20'
-              }`}
+              className={`mt-auto w-full flex items-center justify-center gap-1.5 px-2 py-1.5 rounded text-[10px] font-medium transition-colors disabled:opacity-50 ${buttonStyle(status.cex_mode)}`}
             >
               {isTransitioning('cex') ? (
                 <Loader2 size={12} className="animate-spin" />
               ) : (
                 <Power size={12} />
               )}
-              {isRunning(status.cex_mode) ? 'Stop CEX' : 'Start CEX'}
+              {buttonLabel(status.cex_mode)}
             </button>
           )}
         </div>

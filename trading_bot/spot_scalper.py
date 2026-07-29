@@ -86,7 +86,7 @@ def _close(a,v,s,ep,xp,sp,q,fr,pid,si,rsn):
     record_closed_trade(asset=a,venue=v,side=s,entry_price=ep,exit_price=xp,signal_price=sp,qty=q,fee_entry=fee_ep,fee_exit=fee_xp,opened_at=0,closed_at=time.time(),exit_reason=rsn)
     delete_position(a,v,pid)
 
-def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live_price: float) -> Optional[str]:
+def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live_price: float, signal_only: bool = False) -> Optional[str]:
     venue="binance"
     if regime=="TREND_DOWN": _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped","regime=TREND_DOWN"); return None
     if regime not in ("RANGE","TREND_UP"): _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped",f"regime={regime}"); return None
@@ -137,6 +137,11 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
     qty=slot/live_price; qty=qty-(qty%info.base_tick) if info.base_tick>0 else qty
     if qty<info.min_qty or (qty*live_price)<info.min_notional:
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","qty too small"); return None
+
+    if signal_only:
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%")
+        _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
+        return "buy" if direction=="long" else "sell"
 
     pid=str(uuid.uuid4())
     fill=exchange.place_entry(asset,direction,qty,live_price,te,pid,se)
