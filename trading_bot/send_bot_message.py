@@ -64,3 +64,11 @@ def send_bot_message(chat_id: int, message: str):
 
     except Exception as e:
         return f"❌ Unexpected error: {str(e)}"
+
+
+def send_message(message: str) -> str:
+    """Convenience wrapper: sends to the configured TELEGRAM_CHAT_ID."""
+    chat_id = int(os.getenv("TELEGRAM_CHAT_ID", "0"))
+    if chat_id == 0:
+        return "❌ TELEGRAM_CHAT_ID not configured"
+    return send_bot_message(chat_id, message)
