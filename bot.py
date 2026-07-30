@@ -395,6 +395,21 @@ def _normalize_venue_mode(raw: str | None) -> str:
     if v in ("signal",):
         return "Signal"
     return "False"
+def _price_decimals(price: float) -> int:
+    """Return enough decimal places to show meaningful price differences."""
+    if price <= 0:
+        return 4
+    import math
+    magnitude = int(math.log10(price))
+    if magnitude >= 2:    # $100+
+        return max(2, 6 - magnitude)
+    if magnitude >= 0:    # $1–$99
+        return 4
+    if magnitude >= -2:   # $0.01–$0.99
+        return 5
+    if magnitude >= -4:   # $0.0001–$0.0099
+        return 7
+    return 8              # sub-penny tokens
 
 
 def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, price: float, signal_only: bool = False):
@@ -408,12 +423,13 @@ def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, pr
         sl_pct = result.get("sl_pct", 0)
         mode = "🔍 SIGNAL" if signal_only else "💰 TRADE"
         emoji = "🟢" if direction == "buy" else "🔴"
+        d = _price_decimals(price)
         if exchange_label == "CEX":
             action = "BUY" if direction == "buy" else "SELL"
             close_action = "SELL" if direction == "buy" else "BUY"
             msg = (
-                f"{emoji} {asset} ({exchange_label}) — {action} at {price:.4f}  [{mode}]\n"
-                f"{close_action} at {tp:.4f}  (+{tp_pct:.2f}%)  |  SL at {sl:.4f}  (-{sl_pct:.2f}%)\n"
+                f"{emoji} {asset} ({exchange_label}) — {action} at {price:.{d}f}  [{mode}]\n"
+                f"{close_action} at {tp:.{d}f}  (+{tp_pct:.2f}%)  |  SL at {sl:.{d}f}  (-{sl_pct:.2f}%)\n"
                 f"Regime: {regime}"
             )
         else:
@@ -421,8 +437,8 @@ def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, pr
             tp_sign = "+" if direction == "buy" else "-"
             sl_sign = "-" if direction == "buy" else "+"
             msg = (
-                f"{emoji} {asset} ({exchange_label}) — {action} at {price:.4f}  [{mode}]\n"
-                f"Close at {tp:.4f}  ({tp_sign}{tp_pct:.2f}%)  |  SL at {sl:.4f}  ({sl_sign}{sl_pct:.2f}%)\n"
+                f"{emoji} {asset} ({exchange_label}) — {action} at {price:.{d}f}  [{mode}]\n"
+                f"Close at {tp:.{d}f}  ({tp_sign}{tp_pct:.2f}%)  |  SL at {sl:.{d}f}  ({sl_sign}{sl_pct:.2f}%)\n"
                 f"Regime: {regime}"
             )
         send_message(msg)
