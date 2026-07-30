@@ -327,6 +327,23 @@ async def api_settings_validate(request: Request):
         return {"ok": False, "error": str(e)}
 
 
+@app.get("/api/settings/analyze")
+def api_settings_analyze():
+    """Run full cross-validation on all settings. Returns {key: {level, message, suggested}}."""
+    try:
+        from trade.settings_rules import validate_all
+        results = validate_all()
+        verdicts = {}
+        for key, v in results.items():
+            entry = {"level": v.level, "message": v.message}
+            if v.suggested_value is not None:
+                entry["suggested"] = str(v.suggested_value)
+            verdicts[key] = entry
+        return {"ok": True, "verdicts": verdicts}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def _validate_setting(key: str, value: str) -> dict:
     """Standalone validator mirroring trade/settings_rules.py — no imports needed."""
     # Hard bounds for known settings

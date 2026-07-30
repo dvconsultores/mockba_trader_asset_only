@@ -4,6 +4,7 @@
 export interface Verdict {
   level: "ok" | "warn" | "error"
   message: string
+  suggested?: string  // suggested value to fix the issue
 }
 
 interface Spec {
@@ -92,15 +93,18 @@ export function validateSetting(key: string, value: string, all: Record<string, 
   const slotPct = parseFloat(all.dex_slot_pct || "15")
 
   if (key === "tp_min_pct" && typeof v === "number" && v <= sl)
-    return { level: "error", message: `tp_min_pct (${v}) must exceed sl_min_pct (${sl})` }
+    return { level: "error", message: `TP (${v}%) must exceed SL (${sl}%) — risk > reward`, suggested: (sl + 0.3).toFixed(1) }
   if (key === "sl_min_pct" && typeof v === "number" && tp <= v)
-    return { level: "error", message: `sl_min_pct (${v}) must be below tp_min_pct (${tp})` }
+    return { level: "error", message: `SL (${v}%) must be below TP (${tp}%)`, suggested: (tp - 0.3).toFixed(1) }
   if (key === "leverage" && typeof v === "number" && v > maxLev)
-    return { level: "error", message: `leverage (${v}x) exceeds max_leverage (${maxLev}x)` }
+    return { level: "error", message: `Leverage (${v}x) exceeds max (${maxLev}x)`, suggested: String(maxLev) }
   if (key === "max_slots" && typeof v === "number" && v * slotPct > 100)
     return { level: "error", message: `${v} slots × ${slotPct}% = ${v * slotPct}% of equity` }
-  if ((key === "tp_min_pct" || key === "assumed_slippage_pct" || key === "min_net_edge_pct") && tp - fee - slip < minEdge)
-    return { level: "error", message: `Net edge ${(tp - fee - slip).toFixed(2)}% below minimum ${minEdge}%` }
+  if ((key === "tp_min_pct" || key === "assumed_slippage_pct" || key === "min_net_edge_pct") && tp - fee - slip < minEdge) {
+    const net = tp - fee - slip
+    const sugTP = (minEdge + fee + slip + 0.05).toFixed(1)
+    return { level: "error", message: `Net edge ${net.toFixed(2)}% below min ${minEdge}% (TP ${tp}% − fee ${fee}% − slip ${slip}%)`, suggested: sugTP }
+  }
 
   return { level: "ok", message: "" }
 }
