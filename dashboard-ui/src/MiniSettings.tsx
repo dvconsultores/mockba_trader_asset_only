@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
 import { Settings2, Save, Check, AlertCircle, Star, ChevronDown, X } from 'lucide-react'
-import { validateAll, type Verdict } from './validation'
 
 interface SettingsData { [key: string]: string }
 
@@ -168,47 +167,29 @@ const SELECTS: SelectDef[] = []
 
 type ComboOption = { label: string; value: string; recommended?: boolean }
 
-function NumberField({ value, suffix, disabled, step, min, max, error, verdict, onChange }: { value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string; error?: boolean; verdict?: Verdict; onChange: (v: string) => void }) {
+function NumberField({ value, suffix, disabled, step, min, max, error, onChange }: { value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string; error?: boolean; onChange: (v: string) => void }) {
   const [draft, setDraft] = useState(value)
-  const vLevel = verdict?.level
 
   useEffect(() => {
     setDraft(value)
   }, [value])
 
   return (
-    <div className="w-full">
-      <div className="flex items-center gap-2 w-full">
-        <input
-          type="number"
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onBlur={() => { if (draft !== value) onChange(draft) }}
-          onKeyUp={e => { if (e.key === 'Enter' && draft !== value) onChange(draft) }}
-          disabled={disabled}
-          step={step ?? 'any'}
-          min={min}
-          max={max}
-          title={verdict?.message || ''}
-          className={`flex-1 min-w-0 px-3 py-2.5 text-sm text-left bg-[#171421] border rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] disabled:opacity-50 transition-colors
-            ${vLevel === 'error' ? 'border-red-500' : vLevel === 'warn' ? 'border-amber-500' : error ? 'border-red-500' : 'border-[#2a2240]'}`}
-        />
-        {suffix && <span className="text-xs text-[#7a7090] w-5 text-right shrink-0">{suffix}</span>}
-      </div>
-      {verdict && verdict.level !== 'ok' && (
-        <div className={`mt-1 text-[10px] leading-tight px-1 ${verdict.level === 'error' ? 'text-red-400' : 'text-amber-400'}`}>
-          ⚠ {verdict.message}
-          {verdict.suggested && (
-            <button
-              type="button"
-              onClick={() => onChange(verdict.suggested!)}
-              className="ml-1.5 underline hover:text-[#D0CFCC] transition-colors"
-            >
-              Fix → {verdict.suggested}
-            </button>
-          )}
-        </div>
-      )}
+    <div className="flex items-center gap-2 w-full">
+      <input
+        type="number"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== value) onChange(draft) }}
+        onKeyUp={e => { if (e.key === 'Enter' && draft !== value) onChange(draft) }}
+        disabled={disabled}
+        step={step ?? 'any'}
+        min={min}
+        max={max}
+        className={`flex-1 min-w-0 px-3 py-2.5 text-sm text-left bg-[#171421] border rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] disabled:opacity-50 transition-colors
+          ${error ? 'border-red-500' : 'border-[#2a2240]'}`}
+      />
+      {suffix && <span className="text-xs text-[#7a7090] w-5 text-right shrink-0">{suffix}</span>}
     </div>
   )
 }
@@ -336,9 +317,6 @@ function MiniSettingsComponent() {
   // Use a fixed default for preset recommendations (no longer derived from legacy slot_pct).
   const capital = 1000 // reference capital for preset recommendations
 
-  // Inline validation (Amendment 002 — pure TS, no network)
-  const verdicts = React.useMemo(() => validateAll(settings), [settings])
-
   useEffect(() => {
     fetch('/api/miniapp')
       .then(r => r.json())
@@ -444,39 +422,11 @@ function MiniSettingsComponent() {
         </span>
       </div>
 
-      {/* ── Validation Alerts Banner ── */}
-      {Object.entries(verdicts).filter(([_, v]) => v.level !== 'ok').length > 0 && (
-        <div className="mb-4 rounded-xl border border-red-500/30 bg-red-500/5 p-3">
-          <div className="text-xs font-semibold text-red-400 mb-2">⚠ Configuration Issues</div>
-          {Object.entries(verdicts)
-            .filter(([_, v]) => v.level !== 'ok')
-            .map(([key, v]) => (
-              <div key={key} className={`text-[10px] leading-relaxed flex items-start gap-1.5 ${v.level === 'error' ? 'text-red-400' : 'text-amber-400'}`}>
-                <span className="shrink-0 mt-0.5">{v.level === 'error' ? '❌' : '⚠️'}</span>
-                <span>
-                  <span className="font-mono text-[#D0CFCC]">{key}</span>: {v.message}
-                  {v.suggested && (
-                    <button
-                      type="button"
-                      onClick={() => selectAndSave(key, v.suggested!)}
-                      className="ml-1.5 underline hover:text-[#D0CFCC] transition-colors"
-                    >
-                      Set to {v.suggested}
-                    </button>
-                  )}
-                </span>
-              </div>
-            ))}
-        </div>
-      )}
-
       {/* ── Grid Scalper & Risk ── */}
       <Section title="Grid Scalper & Risk">
         {PRESETS.map(p => {
           const val = settings[p.key] ?? ''
           const rec = p.rec(capital)
-          const v = verdicts[p.key]
-          const showVerdict = v && v.level !== 'ok'
           return (
             <SettingRow key={p.key} label={p.label} hint={p.hint} statusKey={p.key} recommended={rec + (p.suffix || '')}>
               <ComboList
@@ -486,20 +436,6 @@ function MiniSettingsComponent() {
                 onChange={v => selectAndSave(p.key, v)}
                 disabled={!editable}
               />
-              {showVerdict && (
-                <div className={`mt-1.5 text-[10px] leading-tight px-1 ${v.level === 'error' ? 'text-red-400' : 'text-amber-400'}`}>
-                  ⚠ {v.message}
-                  {v.suggested && (
-                    <button
-                      type="button"
-                      onClick={() => selectAndSave(p.key, v.suggested!)}
-                      className="ml-1.5 underline hover:text-[#D0CFCC] transition-colors"
-                    >
-                      Fix → {v.suggested}{p.suffix || ''}
-                    </button>
-                  )}
-                </div>
-              )}
             </SettingRow>
           )
         })}
@@ -519,7 +455,6 @@ function MiniSettingsComponent() {
                 value={val}
                 suffix={f.suffix}
                 step={f.step}
-                verdict={verdicts[f.key]}
                 min={f.min}
                 max={f.max}
                 disabled={!editable}
