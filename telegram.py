@@ -111,6 +111,49 @@ def send_text_message_chunked(chat_id, message, max_len=TELEGRAM_MAX_MESSAGE_LEN
         bot.send_message(chat_id, current_chunk)
 
 
+# === Reset to Defaults ===
+
+RECOMMENDED_DEFAULTS = {
+    'tp_min_pct': '0.8', 'sl_min_pct': '0.5',
+    'dip_min_pct': '0.15', 'pump_min_pct': '0.15',
+    'tp_k': '1.0', 'sl_k': '0.6',
+    'dip_k': '0.5', 'pump_k': '0.5',
+    'cooldown_sec': '60', 'min_entry_spacing_pct': '0.3',
+    'leverage': '3', 'max_leverage': '3',
+    'daily_loss_limit_pct': '5', 'max_consecutive_losses': '4',
+    'daily_loss_limit': '0',
+    'adaptive_enabled': 'true', 'trading_enabled': '1',
+    'max_hold_minutes_spot': '120', 'max_hold_minutes_futures': '240',
+    'atr_period': '14', 'atr_interval': '5m', 'candle_cache_sec': '60',
+    'dex_round_trip_fee_pct': '0.06', 'cex_round_trip_fee_pct': '0.20',
+    'assumed_slippage_pct': '0.03', 'min_net_edge_pct': '0.30',
+    'regime_cache_sec': '300', 'slope_threshold': '0.0012',
+    'max_active_pairs': '6', 'max_concurrent_positions': '9',
+    'global_daily_loss_limit': '0', 'global_daily_loss_limit_pct': '0',
+    'tox_window': '120', 'velocity_window': '3',
+    'tox_velocity_enforce': 'false', 'tox_spread_enforce': 'false',
+    'tox_depth_enforce': 'false', 'tox_obi_enforce': 'false',
+    'max_extreme_velocity_pct': '0.25',
+    'spread_z_max': '2.5', 'depth_ratio_min': '0.5', 'obi_z_max': '2.5',
+}
+
+def reset_to_defaults(message):
+    """Reset all settings to recommended defaults."""
+    cid = message.chat.id
+    try:
+        from db.db_ops import get_db_connection
+        with get_db_connection() as conn:
+            for key, value in RECOMMENDED_DEFAULTS.items():
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, value)
+                )
+            conn.commit()
+        bot.send_message(cid, f"✅ {len(RECOMMENDED_DEFAULTS)} settings reset to recommended defaults.\n\nKey values:\nTP={RECOMMENDED_DEFAULTS['tp_min_pct']}%  SL={RECOMMENDED_DEFAULTS['sl_min_pct']}%  Lev={RECOMMENDED_DEFAULTS['leverage']}x\nAdaptive={'ON' if RECOMMENDED_DEFAULTS['adaptive_enabled']=='true' else 'OFF'}")
+    except Exception as e:
+        bot.send_message(cid, f"❌ Error: {str(e)[:200]}")
+
+
 # === Message Handlers ===
 
 @bot.message_handler(commands=['start'])
@@ -145,6 +188,7 @@ def command_list(m):
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
     markup.row(InlineKeyboardButton(translate("📖 Explain Settings", cid), callback_data="ExplainAll"))
     markup.row(InlineKeyboardButton(translate("🤖 Propose Changes", cid), callback_data="ProposeStart"))
+    markup.row(InlineKeyboardButton(translate("🔄 Reset to Defaults", cid), callback_data="ResetDefaults"))
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
 
 
@@ -238,16 +282,59 @@ def _send_proposals(cid):
     try:
         from research.settings_llm import propose
         import sqlite3, os as _os, json as _json
-        # Build context summary from DB
+        # Build rich performance context from DB
         db_path = _os.path.join(_os.path.dirname(__file__), "data", "trading.db")
         conn = sqlite3.connect(db_path); conn.row_factory = sqlite3.Row
+
         sig_count = conn.execute("SELECT COUNT(*) as c FROM signals").fetchone()["c"]
+        signaled_count = conn.execute("SELECT COUNT(*) as c FROM signals WHERE action='signaled'").fetchone()["c"]
+        entered_count = conn.execute("SELECT COUNT(*) as c FROM signals WHERE action='entered'").fetchone()["c"]
         trade_count = conn.execute("SELECT COUNT(*) as c FROM closed_trades").fetchone()["c"]
-        recent_pnl = conn.execute("SELECT COALESCE(SUM(pnl_net),0) as p FROM closed_trades").fetchone()["p"]
+        wins = conn.execute("SELECT COUNT(*) as c FROM closed_trades WHERE pnl_net > 0").fetchone()["c"]
+        losses = conn.execute("SELECT COUNT(*) as c FROM closed_trades WHERE pnl_net <= 0").fetchone()["c"]
+        total_pnl = conn.execute("SELECT COALESCE(SUM(pnl_net),0) as p FROM closed_trades").fetchone()["p"]
+        avg_pnl = conn.execute("SELECT COALESCE(AVG(pnl_net),0) as p FROM closed_trades").fetchone()["p"]
+
+        # Win rate by regime
+        regime_stats = []
+        for row in conn.execute("SELECT regime, COUNT(*) as cnt, SUM(CASE WHEN pnl_net>0 THEN 1 ELSE 0 END) as w FROM closed_trades GROUP BY regime").fetchall():
+            wr = row["w"]/row["cnt"]*100 if row["cnt"] > 0 else 0
+            regime_stats.append(f"{row['regime']}: {row['cnt']} trades, {wr:.0f}% WR")
+
+        # Win rate by venue
+        venue_stats = []
+        for row in conn.execute("SELECT venue, COUNT(*) as cnt, SUM(CASE WHEN pnl_net>0 THEN 1 ELSE 0 END) as w FROM closed_trades GROUP BY venue").fetchall():
+            wr = row["w"]/row["cnt"]*100 if row["cnt"] > 0 else 0
+            venue_stats.append(f"{row['venue']}: {row['cnt']} trades, {wr:.0f}% WR")
+
+        # Recent PnL (last 7 days)
+        recent_pnl = conn.execute("SELECT COALESCE(SUM(pnl_net),0) as p FROM closed_trades WHERE closed_at > unixepoch('now', '-7 days')").fetchone()["p"]
+
+        # Current validation issues
+        from trade.settings_rules import validate_all
+        val_results = validate_all()
+        val_issues = [f"{k}: {v.message}" for k, v in val_results.items() if v.level in ("error", "warn")]
+
         conn.close()
-        ctx = f"Signals: {sig_count}, Trades: {trade_count}, Total PnL: ${recent_pnl:.2f}"
-        if sig_count == 0:
-            ctx += "\nNo measured data available — dry-run has not run."
+
+        wr = wins/trade_count*100 if trade_count > 0 else 0
+        ctx_lines = [
+            f"Trades: {trade_count} total ({wins}W/{losses}L, {wr:.0f}% WR)",
+            f"Avg PnL per trade: ${avg_pnl:.2f}, Total PnL: ${total_pnl:.2f}",
+            f"Recent 7d PnL: ${recent_pnl:.2f}",
+            f"Signals: {sig_count} total ({signaled_count} signaled, {entered_count} entered)",
+            f"Conversion rate: {entered_count/signaled_count*100:.0f}%" if signaled_count > 0 else "Conversion rate: N/A",
+        ]
+        if regime_stats:
+            ctx_lines.append("By regime: " + " | ".join(regime_stats))
+        if venue_stats:
+            ctx_lines.append("By venue: " + " | ".join(venue_stats))
+        if val_issues:
+            ctx_lines.append("Validation issues: " + "; ".join(val_issues[:5]))
+
+        ctx = "\n".join(ctx_lines)
+        if sig_count == 0 and trade_count == 0:
+            ctx += "\nNo measured data available — bot has not traded yet."
         proposals = propose(ctx)
         if not proposals:
             bot.send_message(cid, translate("No proposals generated — configuration looks valid.", cid))
@@ -359,6 +446,8 @@ def _dispatch_callback(call, cid):
         _send_explain(cid, key)
     elif call.data == "ExplainAll":
         _send_explain_all(cid)
+    elif call.data == "ResetDefaults":
+        reset_to_defaults(call.message)
     else:
         options = {
             'List': command_list,

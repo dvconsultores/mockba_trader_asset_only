@@ -35,7 +35,7 @@ from trading_bot.futures_scalper import manage_open_positions as futures_manage,
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def validate_startup() -> bool:
-    """Run all startup checks via settings_rules. Returns True if trading can proceed."""
+    """Run all startup checks via settings_rules. Logs issues, never blocks — trader is responsible."""
     from trade.settings_rules import validate_all, SettingsContext, validate_all_assets
     results = validate_all()
     errors = [f"{k}: {v.message}" for k, v in results.items() if v.level == "error"]
@@ -43,15 +43,12 @@ def validate_startup() -> bool:
 
     for w in warns:
         logger.warning(f"[STARTUP] {w}")
-    if errors:
-        for e in errors:
-            logger.warning(f"[STARTUP] {e}")
-        return False
+    for e in errors:
+        logger.warning(f"[STARTUP] {e}")
 
     pairs = get_active_pairs()
     if not pairs:
         logger.info("[STARTUP] no active pairs configured — add assets via Telegram or Mini App")
-        return False
 
     # Per-asset validation (Amendment 004)
     try:
@@ -61,24 +58,20 @@ def validate_startup() -> bool:
         for symbol, verdicts in asset_results.items():
             if symbol == "__overallocation__":
                 for v in verdicts:
-                    if v.level == "error":
-                        logger.warning(f"[STARTUP] overallocation: {v.message}")
-                        return False
-                    else:
-                        logger.warning(f"[STARTUP] overallocation warn: {v.message}")
+                    logger.warning(f"[STARTUP] overallocation: {v.message}")
             else:
                 for v in verdicts:
-                    if v.level == "error":
+                    if v.level in ("error", "warn"):
                         logger.warning(f"[STARTUP] {symbol}: {v.message}")
     except Exception as e:
         logger.error(f"[STARTUP] per-asset validation failed: {e}")
-        return False
 
     tp = get_setting_float("tp_min_pct", 0.8); sl = get_setting_float("sl_min_pct", 0.5)
-    fee_key = "dex_round_trip_fee_pct"  # DEX is the stricter venue
+    fee_key = "dex_round_trip_fee_pct"
     fee = get_setting_float(fee_key, 0.06); slip = get_setting_float("assumed_slippage_pct", 0.03)
     net = tp - fee - slip
-    logger.info(f"[STARTUP] validation OK — tp={tp} sl={sl} net_edge={net:.2f}% active_pairs={len(pairs)}")
+    status = "WARN" if errors else "OK"
+    logger.info(f"[STARTUP] validation {status} — tp={tp} sl={sl} net_edge={net:.2f}% active_pairs={len(pairs)}")
     return True
 
 
@@ -167,22 +160,13 @@ def run():
     dry = get_setting_bool("dry_run", True)
     logger.info(f"[STARTUP] dry_run={dry}")
 
-    if not validate_startup():
-        # Determine WHY validation returned False — not always a failure
-        pairs = get_active_pairs()
-        trading_on = get_setting_bool("trading_enabled", True)
-        if not pairs:
-            logger.info("[STARTUP] no active pairs configured — bot will wait for configuration")
-        elif not trading_on:
-            logger.info("[STARTUP] trading is disabled — enable via Telegram or Mini App to start")
-        else:
-            logger.warning("[STARTUP] settings validation found issues — trading disabled until resolved")
-        upsert_setting("trading_enabled", "0")
-    else:
-        # Validation passed — ensure trading_enabled is not stuck at 0 from a previous run
-        if not get_setting_bool("trading_enabled", True):
-            logger.info("[STARTUP] re-enabling trading after validation passed")
-            upsert_setting("trading_enabled", "1")
+    # Run validation for logging only — never blocks (trader is responsible)
+    validate_startup()
+
+    # Ensure trading is enabled (recover from previous kill-switch state)
+    if not get_setting_bool("trading_enabled", True):
+        logger.info("[STARTUP] re-enabling trading")
+        upsert_setting("trading_enabled", "1")
 
     binance = BinanceSpot()
     orderly = OrderlyFutures()
@@ -247,17 +231,15 @@ def run():
                     logger.info(f"[CONFIG] {k}: {old} → {v}")
             _last_settings = current
 
+            # Periodic re-validation (log only — never blocks)
+            if time.time() - _last_validation > VALIDATION_INTERVAL:
+                validate_startup()
+                _last_validation = time.time()
+
             trading_enabled = get_setting_bool("trading_enabled", True)
             if not trading_enabled:
                 time.sleep(30)
                 continue
-
-            # Periodic re-validation
-            if time.time() - _last_validation > VALIDATION_INTERVAL:
-                if not validate_startup():
-                    logger.warning("[VALIDATION] failed — halting new entries")
-                    upsert_setting("trading_enabled", "0")
-                _last_validation = time.time()
 
             # ── Multi-asset iteration (Amendment 004) ──────────────────
             pairs = get_active_pairs()
