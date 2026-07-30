@@ -386,6 +386,57 @@ def _validate_setting(key: str, value: str) -> dict:
     return {"level": "ok", "message": ""}
 
 
+def _send_validation_alert(changed_key: str, changed_value: str, alerts: list[dict]):
+    """Send a Telegram notification when validation finds issues after a setting change."""
+    try:
+        errors = [a for a in alerts if a["level"] == "error"]
+        warns = [a for a in alerts if a["level"] == "warn"]
+
+        if not errors and not warns:
+            return
+
+        lines = [f"⚠️ Setting changed: {changed_key} → {changed_value}"]
+        lines.append("")
+
+        if errors:
+            lines.append("❌ Errors (trading blocked):")
+            for e in errors:
+                line = f"  • {e['key']}: {e['message']}"
+                if e.get("suggested"):
+                    line += f"  → try {e['suggested']}"
+                lines.append(line)
+
+        if warns:
+            lines.append("")
+            lines.append("⚠️ Warnings:")
+            for w in warns:
+                line = f"  • {w['key']}: {w['message']}"
+                if w.get("suggested"):
+                    line += f"  → try {w['suggested']}"
+                lines.append(line)
+
+        msg = "\n".join(lines)
+        _send_telegram(msg)
+    except Exception:
+        pass  # best-effort notification
+
+
+def _send_telegram(message: str):
+    """Send a message to the configured Telegram chat."""
+    try:
+        import requests as req
+        if not BOT_TOKEN or AUTHORIZED_CHAT_ID == 0:
+            return
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        req.post(url, json={
+            "chat_id": AUTHORIZED_CHAT_ID,
+            "text": message[:4000],
+            "parse_mode": "HTML",
+        }, timeout=5)
+    except Exception:
+        pass
+
+
 # ── Telegram Mini App: Auth ─────────────────────────────────────
 BOT_TOKEN = os.getenv("API_TOKEN", os.getenv("BOT_TOKEN", ""))
 AUTHORIZED_CHAT_ID = int(os.getenv("TELEGRAM_CHAT_ID", "556159355"))
@@ -540,7 +591,28 @@ async def api_miniapp_update(request: Request):
         )
         db.commit()
         db.close()
-        return {"ok": True, "key": key, "value": value}
+
+        # ── Post-save validation ──────────────────────────────
+        alerts = []
+        try:
+            from trade.settings_rules import validate_all
+            results = validate_all()
+            for k, v in results.items():
+                if v.level in ("error", "warn"):
+                    alerts.append({
+                        "key": k,
+                        "level": v.level,
+                        "message": v.message,
+                        "suggested": str(v.suggested_value) if v.suggested_value is not None else None,
+                    })
+        except Exception:
+            pass  # validation is best-effort
+
+        # ── Send Telegram alert for critical issues ───────────
+        if alerts:
+            _send_validation_alert(key, value, alerts)
+
+        return {"ok": True, "key": key, "value": value, "alerts": alerts}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
