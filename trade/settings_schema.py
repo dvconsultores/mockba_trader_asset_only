@@ -65,9 +65,9 @@ ALL: list[SettingSpec] = [
     # ── Risk ───────────────────────────────────────────────────────────────
     SettingSpec("daily_loss_limit", float, "risk", "$", 0, None, None, None,
                 "Absolute daily loss limit (0 = use percentage instead)"),
-    SettingSpec("daily_loss_limit_pct", float, "risk", "%", 0, 100, 1, 20,
+    SettingSpec("daily_loss_limit_pct", float, "risk", "%", 0, 100, 0, 20,
                 "Stop trading if daily PnL drops below this % of equity"),
-    SettingSpec("max_consecutive_losses", int, "risk", None, 0, 50, 2, 10,
+    SettingSpec("max_consecutive_losses", int, "risk", None, 0, 50, 0, 10,
                 "Stop trading after N consecutive losses (0 = off)"),
     # dex_slot_pct and cex_slot_pct removed (Amendment 004) — replaced by per-asset capital_dex/capital_cex in asset_configs table
     # max_concurrent_positions: replaces old max_slots, now global across all pairs
@@ -133,7 +133,7 @@ ALL: list[SettingSpec] = [
     # ── Multi-Asset (Amendment 004) ────────────────────────────────────────
     SettingSpec("global_daily_loss_limit", float, "risk", "$", 0, None, None, None,
                 "Stop ALL trading if total daily PnL across all pairs drops below this (0=off)"),
-    SettingSpec("global_daily_loss_limit_pct", float, "risk", "%", 0, 100, 1, 20,
+    SettingSpec("global_daily_loss_limit_pct", float, "risk", "%", 0, 100, 0, 20,
                 "Stop ALL trading if total daily PnL% drops below this (0=off)"),
     SettingSpec("max_active_pairs", int, "risk", "pairs", 1, 50, 2, 12,
                 "Maximum concurrently active (asset, venue) pairs (default 6)"),

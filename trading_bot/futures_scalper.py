@@ -159,7 +159,7 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, l
     if signal_only:
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%",tp=tp_price,sl=sl_price)
         _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
-        return {"direction": "buy" if direction=="long" else "sell", "tp": tp_price, "sl": sl_price}
+        return {"direction": "buy" if direction=="long" else "sell", "tp": tp_price, "sl": sl_price, "tp_pct": te, "sl_pct": se}
 
     info=exchange.get_symbol_info(asset)
     if info is None: return None
@@ -175,7 +175,7 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, l
     si=_log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"entered",f"{direction} {abs(ext):.2f}%",tp=tp_price,sl=sl_price)
     _save_open(asset,venue,direction,fill,live_price,te,se,pid,si)
     _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
-    return "buy" if direction=="long" else "sell"
+    return {"direction": "buy" if direction=="long" else "sell", "tp": tp_price, "sl": sl_price, "tp_pct": te, "sl_pct": se}
 
 def _save_open(a,v,s,fill,sp,tp,sl,pid,si):
     tpp=fill.fill_price*(1+tp/100) if s=="long" else fill.fill_price*(1-tp/100)
