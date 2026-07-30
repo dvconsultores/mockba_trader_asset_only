@@ -16,6 +16,8 @@ interface Signal {
   obi: number | null
   action: string
   reason: string
+  tp_price: number | null
+  sl_price: number | null
 }
 
 function formatVenue(venue: string): string {
@@ -94,7 +96,7 @@ export default function Signals() {
       </div>
 
       <div className="flex-1 overflow-auto">
-        <div className="min-w-[550px] sm:min-w-0">
+        <div className="min-w-[650px] sm:min-w-0">
         <table className="w-full text-[10px] sm:text-xs font-mono border-collapse">
           <thead className="sticky top-0 bg-[#1a1528] text-[#4a4060]">
             <tr>
@@ -105,6 +107,8 @@ export default function Signals() {
               <th className="px-2 py-1 text-left">REGIME</th>
               <th className="px-2 py-1 text-left">PATTERN</th>
               <th className="px-2 py-1 text-right">PRICE</th>
+              <th className="px-2 py-1 text-right">TP</th>
+              <th className="px-2 py-1 text-right">SL</th>
               <th className="px-2 py-1 text-right">OBI</th>
             </tr>
           </thead>
@@ -135,6 +139,12 @@ export default function Signals() {
                 </td>
                 <td className="px-2 py-0.5 text-right text-[#6a6070]">
                   {s.price?.toFixed(4)}
+                </td>
+                <td className="px-2 py-0.5 text-right text-[#D0CFCC]">
+                  {s.tp_price != null ? s.tp_price.toFixed(4) : '—'}
+                </td>
+                <td className="px-2 py-0.5 text-right text-red-400">
+                  {s.sl_price != null ? s.sl_price.toFixed(4) : '—'}
                 </td>
                 <td className="px-2 py-0.5 text-right text-[#6a6070]">
                   {s.obi != null ? s.obi.toFixed(2) : '—'}

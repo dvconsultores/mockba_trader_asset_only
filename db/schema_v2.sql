@@ -153,7 +153,9 @@ CREATE TABLE IF NOT EXISTS signals (
     tox_enforced     INTEGER NOT NULL DEFAULT 0,
     action           TEXT    NOT NULL,
     reason           TEXT    NOT NULL,
-    position_id      TEXT
+    position_id      TEXT,
+    tp_price         REAL,
+    sl_price         REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_signals_ts        ON signals(ts);

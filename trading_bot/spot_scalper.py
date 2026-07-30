@@ -124,19 +124,20 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
     tbl=bool(tox.get("tox_enforced",0))
 
     direction="long" if dip else None
+    # Compute TP/SL prices for logging (always available after direction is set)
+    tp_price = live_price * (1 + te/100) if direction == "long" else (live_price * (1 - te/100) if direction == "short" else 0.0)
+    sl_price = live_price * (1 - se/100) if direction == "long" else (live_price * (1 + se/100) if direction == "short" else 0.0)
     if direction is None:
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","below_threshold"); return None
     if tbl:
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","toxicity"); return None
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","toxicity",tp=tp_price,sl=sl_price); return None
     if not _cooldown_ok(asset,direction,cs):
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","cooldown"); return None
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","cooldown",tp=tp_price,sl=sl_price); return None
     if not _spacing_ok(asset,live_price,sp):
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","spacing"); return None
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","spacing",tp=tp_price,sl=sl_price); return None
 
     if signal_only:
-        tp_price = live_price * (1 + te/100) if direction == "long" else live_price * (1 - te/100)
-        sl_price = live_price * (1 - se/100) if direction == "long" else live_price * (1 + se/100)
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%")
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%",tp=tp_price,sl=sl_price)
         _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
         return {"direction": "buy" if direction=="long" else "sell", "tp": tp_price, "sl": sl_price}
 
@@ -145,12 +146,12 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
     slot=compute_slot_size(venue,equity,info.min_notional)
     qty=slot/live_price; qty=qty-(qty%info.base_tick) if info.base_tick>0 else qty
     if qty<info.min_qty or (qty*live_price)<info.min_notional:
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","qty too small"); return None
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","qty too small",tp=tp_price,sl=sl_price); return None
 
     pid=str(uuid.uuid4())
     fill=exchange.place_entry(asset,direction,qty,live_price,te,pid,se)
     if fill is None: return None
-    si=_log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"entered",f"{direction} {abs(ext):.2f}%")
+    si=_log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"entered",f"{direction} {abs(ext):.2f}%",tp=tp_price,sl=sl_price)
     _save_open(asset,venue,direction,fill,live_price,te,se,pid,si)
     _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
     return "buy" if direction=="long" else "sell"
@@ -160,11 +161,11 @@ def _save_open(a,v,s,fill,sp,tp,sl,pid,si):
     slp=fill.fill_price*(1-sl/100) if s=="long" else fill.fill_price*(1+sl/100)
     save_position({"id":pid,"asset":a,"venue":v,"side":s,"qty":fill.sellable_qty,"entry_price":fill.fill_price,"signal_price":sp,"tp_price":tpp,"sl_price":slp if sl>0 else None,"tp_order_id":fill.order_id,"sl_order_id":None,"opened_at":time.time(),"signal_id":si})
 
-def _log(a,v,r,d,p,ex,th,at,ob,vl,dr,tx,act,rsn):
+def _log(a,v,r,d,p,ex,th,at,ob,vl,dr,tx,act,rsn,tp=0.0,sl=0.0):
     try:
         with get_db_connection() as conn:
             cur=conn.cursor()
-            cur.execute("""INSERT INTO signals (ts,asset,venue,regime,direction,price,extreme_pct,threshold_pct,atr_pct,velocity_pct,obi,obi_z,spread_pct,spread_z,depth_top10,depth_ratio,tox_velocity,tox_spread,tox_depth,tox_obi,tox_any,tox_enforced,action,reason) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (time.time(),a,v,r,d,p,ex,th,at,vl,ob,tx.get("obi_z"),None,tx.get("spread_z"),None,dr,tx.get("tox_velocity"),tx.get("tox_spread"),tx.get("tox_depth"),tx.get("tox_obi"),tx.get("tox_any"),tx.get("tox_enforced",0),act,rsn))
+            cur.execute("""INSERT INTO signals (ts,asset,venue,regime,direction,price,extreme_pct,threshold_pct,atr_pct,velocity_pct,obi,obi_z,spread_pct,spread_z,depth_top10,depth_ratio,tox_velocity,tox_spread,tox_depth,tox_obi,tox_any,tox_enforced,action,reason,tp_price,sl_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (time.time(),a,v,r,d,p,ex,th,at,vl,ob,tx.get("obi_z"),None,tx.get("spread_z"),None,dr,tx.get("tox_velocity"),tx.get("tox_spread"),tx.get("tox_depth"),tx.get("tox_obi"),tx.get("tox_any"),tx.get("tox_enforced",0),act,rsn,tp,sl))
             conn.commit(); return cur.lastrowid
     except: return None
