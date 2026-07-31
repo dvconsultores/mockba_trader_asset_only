@@ -39,6 +39,21 @@ def _run_schema_v2(cur):
         cur.executescript(f.read())
 
 
+def _run_migrations(cur):
+    """Apply any pending migrations idempotently."""
+    migrations_dir = os.path.join(PROJECT_ROOT, "db", "migrations")
+    if not os.path.isdir(migrations_dir):
+        return
+    for fname in sorted(os.listdir(migrations_dir)):
+        if not fname.endswith(".sql"):
+            continue
+        try:
+            with open(os.path.join(migrations_dir, fname)) as f:
+                cur.executescript(f.read())
+        except Exception:
+            pass  # column already exists, etc.
+
+
 def initialize_database_tables():
     """Idempotent: creates legacy + v2 tables. Called by telegram.py on startup."""
     with get_db_connection() as conn:
@@ -52,6 +67,10 @@ def initialize_database_tables():
             )
         """)
         _run_schema_v2(cur)
+        conn.commit()
+    # Run migrations (separate connection to avoid schema change issues)
+    with get_db_connection() as conn:
+        _run_migrations(conn.cursor())
         conn.commit()
 
 
