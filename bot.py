@@ -314,6 +314,8 @@ def run():
                                 result = spot_cycle(asset, binance, regime, obi, price, signal_only=signal_only)
                                 if result:
                                     _notify_entry(asset, "CEX", regime, result, price, signal_only)
+                            else:
+                                logger.warning(f"[DATA] {asset} CEX: obi={obi} price={price} — skipping cycle")
                     else:
                         futures_manage(asset, orderly, regime)
                         if not blocked and regime != "UNKNOWN":
@@ -323,6 +325,8 @@ def run():
                                 result = futures_cycle(asset, orderly, regime, obi, price, signal_only=signal_only)
                                 if result:
                                     _notify_entry(asset, "DEX", regime, result, price, signal_only)
+                            else:
+                                logger.warning(f"[DATA] {asset} DEX: obi={obi} price={price} — skipping cycle")
 
                 except Exception as e:
                     logger.error(f"[ERROR] {venue}:{asset} cycle failed: {e}")
@@ -442,6 +446,7 @@ def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, pr
                 f"Regime: {regime}"
             )
         send_message(msg)
+        logger.info(f"[SIGNAL] {asset} {exchange_label} {direction} @ {price:.{d}f} tp={tp_pct:.2f}% sl={sl_pct:.2f}% regime={regime} mode={'signal' if signal_only else 'trade'}")
     except Exception as e:
         logger.warning(f"[SIGNAL] failed to send notification: {e}")
 
