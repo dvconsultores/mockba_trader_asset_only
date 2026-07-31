@@ -156,15 +156,15 @@ def detect_regime(asset: str, venue: str) -> str:
 
     slope_threshold = get_setting_float("slope_threshold", 0.0012)
 
-    # Derive exchange symbol
-    if venue == "binance":
-        symbol = f"{asset}USDT"
-    else:
-        symbol = f"PERP_{asset}_USDC"
+    # Derive exchange symbol.
+    # Orderly kline endpoint is unreliable — use Binance OHLCV as proxy
+    # (consistent with _get_obi_orderly / _get_live_price_orderly in bot.py).
+    fetch_venue = "binance" if venue == "orderly" else venue
+    symbol = f"{asset}USDT" if fetch_venue == "binance" else f"PERP_{asset}_USDC"
 
     try:
-        candles_1h = _fetch_ohlcv(venue, symbol, "1h", 30)
-        candles_4h = _fetch_ohlcv(venue, symbol, "4h", 30)
+        candles_1h = _fetch_ohlcv(fetch_venue, symbol, "1h", 30)
+        candles_4h = _fetch_ohlcv(fetch_venue, symbol, "4h", 30)
 
         if len(candles_1h) < 5 or len(candles_4h) < 5:
             regime = "UNKNOWN"
@@ -225,8 +225,11 @@ def get_atr_pct(asset: str, venue: str) -> float | None:
             return _compute_atr_pct(candles, period)
 
     symbol = f"{asset}USDT" if venue == "binance" else f"PERP_{asset}_USDC"
+    # Orderly kline endpoint is unreliable — use Binance OHLCV as proxy
+    fetch_venue = "binance" if venue == "orderly" else venue
+    symbol_atr = f"{asset}USDT" if fetch_venue == "binance" else f"PERP_{asset}_USDC"
     try:
-        candles = _fetch_ohlcv(venue, symbol, "5m", period + 5)
+        candles = _fetch_ohlcv(fetch_venue, symbol_atr, "5m", period + 5)
         _candle_cache[key] = (now, candles)
         if len(candles) >= period:
             return _compute_atr_pct(candles, period)
