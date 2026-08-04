@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import React, { useState, useEffect, useCallback, type ReactNode } from 'react'
 import { Save, Check, AlertCircle, Loader2, Ban } from 'lucide-react'
 import { TG, isTelegram } from './TelegramProvider'
 
@@ -53,20 +53,12 @@ function NumberField({ value, suffix, disabled, step, min, max, error, onChange 
   value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string;
   error?: boolean; onChange: (v: string) => void
 }) {
-  const [draft, setDraft] = useState(value)
-
-  useEffect(() => {
-    setDraft(value)
-  }, [value])
-
   return (
     <div className="flex items-center gap-2 w-full">
       <input
         type="number"
-        value={draft}
-        onChange={e => setDraft(e.target.value)}
-        onBlur={() => { if (draft !== value) onChange(draft) }}
-        onKeyUp={e => { if (e.key === 'Enter' && draft !== value) onChange(draft) }}
+        value={value}
+        onChange={e => onChange(e.target.value)}
         disabled={disabled}
         step={step ?? 'any'}
         min={min}
@@ -86,7 +78,8 @@ export default function CapitalManager() {
   const [saving, setSaving] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Set<string>>(new Set())
   const [editable, setEditable] = useState(isTelegram)
-  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  // Staged edits per settings key — nothing is saved until Save is tapped.
+  const [drafts, setDrafts] = useState<Record<string, string>>({})
 
   const authHeaders = useCallback((): Record<string, string> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -143,17 +136,13 @@ export default function CapitalManager() {
       await fetchAll()
       setSaving(prev => { const n = new Set(prev); n.delete(key); return n })
       setErrors(prev => { const n = new Set(prev); n.delete(key); return n })
+      setDrafts(prev => { const n = { ...prev }; delete n[key]; return n })
     } catch {
       setSaving(prev => { const n = new Set(prev); n.delete(key); return n })
       setErrors(prev => new Set(prev).add(key))
       setTimeout(() => setErrors(prev => { const n = new Set(prev); n.delete(key); return n }), 1500)
     }
   }, [authHeaders, fetchAll])
-
-  const debouncedSave = useCallback((key: string, value: string) => {
-    if (timers.current[key]) clearTimeout(timers.current[key])
-    timers.current[key] = setTimeout(() => saveSetting(key, value), 500)
-  }, [saveSetting])
 
   const toggleVenue = async (venue: string, current: string) => {
     const sk = `${venue}:toggle`
@@ -198,7 +187,7 @@ export default function CapitalManager() {
   const StatusIcon = ({ k }: { k: string }) => {
     if (saving.has(k)) return <Save size={14} className="text-yellow-500 animate-pulse" />
     if (errors.has(k)) return <AlertCircle size={14} className="text-red-500" />
-    return <span className="w-3.5 h-3.5" />
+    return <Check size={14} className="text-green-600" />
   }
 
   const Section = ({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) => (
@@ -224,6 +213,38 @@ export default function CapitalManager() {
     </div>
   )
 
+  // Editable row with an explicit Save button — no auto-save.
+  // `settingsKey` is the real DB settings key; it is used both for the status
+  // icon and for saving.
+  const EditableRow = ({ label, hint, settingsKey, value, suffix, step, min, max }: {
+    label: string; hint: string; settingsKey: string; value: string;
+    suffix?: string; step?: string; min?: string; max?: string
+  }) => (
+    <SettingRow label={label} hint={hint} statusKey={settingsKey}>
+      <div className="flex items-center gap-2">
+        <NumberField
+          value={drafts[settingsKey] ?? value}
+          suffix={suffix}
+          step={step}
+          min={min}
+          max={max}
+          disabled={!editable}
+          error={errors.has(settingsKey)}
+          onChange={v => setDrafts(prev => ({ ...prev, [settingsKey]: v }))}
+        />
+        {editable && (
+          <button
+            onClick={() => saveSetting(settingsKey, drafts[settingsKey] ?? value)}
+            disabled={saving.has(settingsKey)}
+            className="shrink-0 px-3 py-2.5 text-xs font-medium rounded-lg border border-[#2a2240] bg-[#2a2240] text-[#D0CFCC] hover:bg-[#3a3050] transition-colors disabled:opacity-40"
+          >
+            {saving.has(settingsKey) ? <Loader2 size={14} className="animate-spin" /> : 'Save'}
+          </button>
+        )}
+      </div>
+    </SettingRow>
+  )
+
   const ReadRow = ({ label, value, tone }: { label: string; value: string; tone?: string }) => (
     <div className="px-3 py-3 flex items-center justify-between gap-2">
       <span className="text-xs text-[#7a7090]">{label}</span>
@@ -247,12 +268,14 @@ export default function CapitalManager() {
         <div>
           <h1 className="text-base sm:text-lg font-bold text-[#D0CFCC]">💰 Capital</h1>
           <p className="text-xs text-[#7a7090] mt-0.5">
-            {editable ? 'Tap a value to change it — live equity always wins' : 'Read-only outside Telegram'}
+            {editable ? 'Edit a value and tap Save — live equity always wins' : 'Read-only outside Telegram'}
           </p>
         </div>
-        <span className={`text-[10px] px-2.5 py-1 rounded-full border ${editable ? 'text-[#D0CFCC] border-[#D0CFCC]/20 bg-[#D0CFCC]/10' : 'text-[#4a4060] border-[#2a2240] bg-[#1a1528]'}`}>
-          {editable ? '⚡ auto-save' : 'read-only'}
-        </span>
+        {!editable && (
+          <span className="text-[10px] px-2.5 py-1 rounded-full border text-[#4a4060] border-[#2a2240] bg-[#1a1528]">
+            read-only
+          </span>
+        )}
       </div>
 
       {/* Per-venue capital panels */}
@@ -277,15 +300,13 @@ export default function CapitalManager() {
               )
             }
           >
-            <SettingRow label="Declared Capital" hint="Operator-declared pool — live equity wins if they diverge" statusKey={`${v}:${DECLARED_KEY[v]}`}>
-              <NumberField
-                value={String(cap.declared_capital)}
-                suffix="$"
-                disabled={!editable}
-                error={errors.has(`${v}:${DECLARED_KEY[v]}`)}
-                onChange={val => debouncedSave(`${v}:${DECLARED_KEY[v]}`, val)}
-              />
-            </SettingRow>
+            <EditableRow
+              label="Declared Capital"
+              hint="Operator-declared pool — live equity wins if they diverge"
+              settingsKey={DECLARED_KEY[v]}
+              value={String(cap.declared_capital)}
+              suffix="$"
+            />
 
             <ReadRow label="Live equity" value={`$${cap.live_equity.toFixed(0)}`} />
 
@@ -295,31 +316,27 @@ export default function CapitalManager() {
               </div>
             )}
 
-            <SettingRow label="Slot %" hint="Size of a single position = this % × live equity" statusKey={`${v}:${SLOT_PCT_KEY[v]}`}>
-              <NumberField
-                value={String(cap.slot_pct)}
-                suffix="%"
-                step="0.5"
-                min="0.1"
-                max="100"
-                disabled={!editable}
-                error={errors.has(`${v}:${SLOT_PCT_KEY[v]}`)}
-                onChange={val => debouncedSave(`${v}:${SLOT_PCT_KEY[v]}`, val)}
-              />
-            </SettingRow>
+            <EditableRow
+              label="Slot %"
+              hint="Size of a single position = this % × live equity"
+              settingsKey={SLOT_PCT_KEY[v]}
+              value={String(cap.slot_pct)}
+              suffix="%"
+              step="0.5"
+              min="0.1"
+              max="100"
+            />
 
             <ReadRow label="Slot size" value={`$${cap.slot_size.toFixed(0)}`} />
 
-            <SettingRow label="Max Slots" hint="Max concurrent open positions on this venue" statusKey={`${v}:${MAX_SLOTS_KEY[v]}`}>
-              <NumberField
-                value={String(cap.max_slots)}
-                step="1"
-                min="1"
-                disabled={!editable}
-                error={errors.has(`${v}:${MAX_SLOTS_KEY[v]}`)}
-                onChange={val => debouncedSave(`${v}:${MAX_SLOTS_KEY[v]}`, val)}
-              />
-            </SettingRow>
+            <EditableRow
+              label="Max Slots"
+              hint="Max concurrent open positions on this venue"
+              settingsKey={MAX_SLOTS_KEY[v]}
+              value={String(cap.max_slots)}
+              step="1"
+              min="1"
+            />
 
             <ReadRow label="Deployed / Free" value={`$${cap.deployed.toFixed(0)} / $${cap.free.toFixed(0)}`} />
             <ReadRow label="Fee (round trip)" value={`${cap.fee_pct.toFixed(2)}%`} />

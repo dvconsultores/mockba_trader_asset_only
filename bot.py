@@ -72,7 +72,8 @@ def validate_startup() -> bool:
     fee = get_setting_float(fee_key, 0.06); slip = get_setting_float("assumed_slippage_pct", 0.03)
     net = tp - fee - slip
     status = "WARN" if errors else "OK"
-    logger.info(f"[STARTUP] validation {status} — tp={tp} sl={sl} net_edge={net:.2f}% active_pairs={len(pairs)}")
+    universe_count = len(get_tradeable_universe("binance")) + len(get_tradeable_universe("orderly"))
+    logger.info(f"[STARTUP] validation {status} — tp={tp} sl={sl} net_edge={net:.2f}% universe_assets={universe_count}")
     return True
 
 
