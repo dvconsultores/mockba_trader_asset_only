@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react'
-import { AlertCircle, Loader2, Ban, CheckCircle2 } from 'lucide-react'
+import React, { useState, useEffect, useCallback, useRef, type ReactNode } from 'react'
+import { Save, Check, AlertCircle, Loader2, Ban } from 'lucide-react'
 import { TG, isTelegram } from './TelegramProvider'
 
 interface VenueCapital {
@@ -43,14 +43,50 @@ interface UniverseData {
 const VENUE_LABEL: Record<string, string> = { binance: 'CEX — Binance spot', orderly: 'DEX — Orderly perps' }
 const VENUE_SHORT: Record<string, string> = { binance: 'CEX', orderly: 'DEX' }
 
+// settings keys per venue
+const DECLARED_KEY: Record<string, string> = { binance: 'capital_cex_usdt', orderly: 'capital_dex_usdc' }
+const SLOT_PCT_KEY: Record<string, string> = { binance: 'cex_slot_pct', orderly: 'dex_slot_pct' }
+const MAX_SLOTS_KEY: Record<string, string> = { binance: 'max_slots_cex', orderly: 'max_slots_dex' }
+
+// Standard-size number input — same style as the Settings view (MiniSettings).
+function NumberField({ value, suffix, disabled, step, min, max, error, onChange }: {
+  value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string;
+  error?: boolean; onChange: (v: string) => void
+}) {
+  const [draft, setDraft] = useState(value)
+
+  useEffect(() => {
+    setDraft(value)
+  }, [value])
+
+  return (
+    <div className="flex items-center gap-2 w-full">
+      <input
+        type="number"
+        value={draft}
+        onChange={e => setDraft(e.target.value)}
+        onBlur={() => { if (draft !== value) onChange(draft) }}
+        onKeyUp={e => { if (e.key === 'Enter' && draft !== value) onChange(draft) }}
+        disabled={disabled}
+        step={step ?? 'any'}
+        min={min}
+        max={max}
+        className={`flex-1 min-w-0 px-3 py-2.5 text-sm text-left bg-[#171421] border rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] disabled:opacity-50 transition-colors
+          ${error ? 'border-red-500' : 'border-[#2a2240]'}`}
+      />
+      {suffix && <span className="text-xs text-[#7a7090] w-5 text-right shrink-0">{suffix}</span>}
+    </div>
+  )
+}
+
 export default function CapitalManager() {
   const [capitals, setCapitals] = useState<VenueCapital[]>([])
   const [universes, setUniverses] = useState<Record<string, UniverseData>>({})
   const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
-  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [saving, setSaving] = useState<Set<string>>(new Set())
+  const [errors, setErrors] = useState<Set<string>>(new Set())
   const [editable, setEditable] = useState(isTelegram)
-  const [edit, setEdit] = useState<Record<string, Record<string, string>>>({})
+  const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   const authHeaders = useCallback((): Record<string, string> => {
     const headers: Record<string, string> = { 'Content-Type': 'application/json' }
@@ -70,9 +106,8 @@ export default function CapitalManager() {
       const dex = await uniDex.json()
       setCapitals(cap.venues || [])
       setUniverses({ binance: cex, orderly: dex })
-      setError(null)
-    } catch (e: any) {
-      setError(e.message || 'Failed to load capital')
+    } catch {
+      /* keep last data */
     } finally {
       setLoading(false)
     }
@@ -84,27 +119,20 @@ export default function CapitalManager() {
     return () => clearInterval(iv)
   }, [fetchAll])
 
-  // Check browser session for editability (same pattern as MiniSettings)
+  // Browser session probe for editability (same as MiniSettings)
   useEffect(() => {
     if (isTelegram) return
-    const check = async () => {
-      try {
-        const res = await fetch('/api/miniapp', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ key: '__ping__', value: '' }),
-        })
-        setEditable(res.ok)
-      } catch {
-        setEditable(false)
-      }
-    }
-    check()
+    fetch('/api/miniapp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: '__ping__', value: '' }),
+    })
+      .then(r => setEditable(r.ok))
+      .catch(() => setEditable(false))
   }, [])
 
-  const saveSetting = async (venue: string, key: string, value: string) => {
-    setActionLoading(`${venue}:${key}`)
-    setError(null)
+  const saveSetting = useCallback(async (key: string, value: string) => {
+    setSaving(prev => new Set(prev).add(key))
     try {
       const res = await fetch('/api/miniapp', {
         method: 'POST',
@@ -113,16 +141,23 @@ export default function CapitalManager() {
       })
       if (!res.ok) throw new Error(await res.text())
       await fetchAll()
-    } catch (e: any) {
-      setError(e.message || 'Failed to save')
-    } finally {
-      setActionLoading(null)
+      setSaving(prev => { const n = new Set(prev); n.delete(key); return n })
+      setErrors(prev => { const n = new Set(prev); n.delete(key); return n })
+    } catch {
+      setSaving(prev => { const n = new Set(prev); n.delete(key); return n })
+      setErrors(prev => new Set(prev).add(key))
+      setTimeout(() => setErrors(prev => { const n = new Set(prev); n.delete(key); return n }), 1500)
     }
-  }
+  }, [authHeaders, fetchAll])
+
+  const debouncedSave = useCallback((key: string, value: string) => {
+    if (timers.current[key]) clearTimeout(timers.current[key])
+    timers.current[key] = setTimeout(() => saveSetting(key, value), 500)
+  }, [saveSetting])
 
   const toggleVenue = async (venue: string, current: string) => {
-    setActionLoading(`${venue}:toggle`)
-    setError(null)
+    const sk = `${venue}:toggle`
+    setSaving(prev => new Set(prev).add(sk))
     const exchange = venue === 'binance' ? 'cex' : 'dex'
     const mode = current === 'False' ? 'Automatic' : 'False'
     try {
@@ -133,16 +168,17 @@ export default function CapitalManager() {
       })
       if (!res.ok) throw new Error(await res.text())
       await fetchAll()
-    } catch (e: any) {
-      setError(e.message || 'Failed to toggle venue')
+    } catch {
+      setErrors(prev => new Set(prev).add(`${venue}:toggle`))
+      setTimeout(() => setErrors(prev => { const n = new Set(prev); n.delete(`${venue}:toggle`); return n }), 1500)
     } finally {
-      setActionLoading(null)
+      setSaving(prev => { const n = new Set(prev); n.delete(sk); return n })
     }
   }
 
   const toggleBlacklist = async (venue: string, asset: string, current: number) => {
-    setActionLoading(`${venue}:${asset}`)
-    setError(null)
+    const sk = `${venue}:${asset}`
+    setSaving(prev => new Set(prev).add(sk))
     try {
       const res = await fetch(`/api/universe/${venue}/${encodeURIComponent(asset)}/blacklist`, {
         method: 'PUT',
@@ -151,15 +187,49 @@ export default function CapitalManager() {
       })
       if (!res.ok) throw new Error(await res.text())
       await fetchAll()
-    } catch (e: any) {
-      setError(e.message || 'Failed to update blacklist')
+    } catch {
+      setErrors(prev => new Set(prev).add(sk))
+      setTimeout(() => setErrors(prev => { const n = new Set(prev); n.delete(sk); return n }), 1500)
     } finally {
-      setActionLoading(null)
+      setSaving(prev => { const n = new Set(prev); n.delete(sk); return n })
     }
   }
 
-  const capByVenue = (v: string) => capitals.find(c => c.venue === v)
-  const uniByVenue = (v: string) => universes[v]
+  const StatusIcon = ({ k }: { k: string }) => {
+    if (saving.has(k)) return <Save size={14} className="text-yellow-500 animate-pulse" />
+    if (errors.has(k)) return <AlertCircle size={14} className="text-red-500" />
+    return <span className="w-3.5 h-3.5" />
+  }
+
+  const Section = ({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) => (
+    <div className="mb-4 rounded-xl border border-[#2a2240] bg-[#1a1528] overflow-hidden">
+      <div className="px-3 py-2 border-b border-[#2a2240] bg-[#171421]/40 flex items-center justify-between">
+        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-[#7a7090]">{title}</h2>
+        {right}
+      </div>
+      <div className="divide-y divide-[#2a2240]">{children}</div>
+    </div>
+  )
+
+  const SettingRow = ({ label, hint, statusKey, children }: { label: string; hint: string; statusKey: string; children: ReactNode }) => (
+    <div className="px-3 py-3 hover:bg-[#171421]/30 transition-colors">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-[#D0CFCC]">{label}</div>
+          <div className="text-[10px] text-[#7a7090] leading-tight">{hint}</div>
+        </div>
+        <div className="shrink-0 pt-0.5"><StatusIcon k={statusKey} /></div>
+      </div>
+      {children}
+    </div>
+  )
+
+  const ReadRow = ({ label, value, tone }: { label: string; value: string; tone?: string }) => (
+    <div className="px-3 py-3 flex items-center justify-between gap-2">
+      <span className="text-xs text-[#7a7090]">{label}</span>
+      <span className={`text-sm font-medium text-right ${tone ?? 'text-[#D0CFCC]'}`}>{value}</span>
+    </div>
+  )
 
   if (loading) {
     return (
@@ -177,231 +247,156 @@ export default function CapitalManager() {
         <div>
           <h1 className="text-base sm:text-lg font-bold text-[#D0CFCC]">💰 Capital</h1>
           <p className="text-xs text-[#7a7090] mt-0.5">
-            {editable ? 'Per-venue pools — live equity always wins' : 'Read-only outside Telegram'}
+            {editable ? 'Tap a value to change it — live equity always wins' : 'Read-only outside Telegram'}
           </p>
         </div>
+        <span className={`text-[10px] px-2.5 py-1 rounded-full border ${editable ? 'text-[#D0CFCC] border-[#D0CFCC]/20 bg-[#D0CFCC]/10' : 'text-[#4a4060] border-[#2a2240] bg-[#1a1528]'}`}>
+          {editable ? '⚡ auto-save' : 'read-only'}
+        </span>
       </div>
 
-      {error && (
-        <div className="mb-4 p-3 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400 text-xs flex items-start gap-2">
-          <AlertCircle size={14} className="shrink-0 mt-0.5" />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {/* Venue panels */}
-      <div className="space-y-4 mb-6">
-        {capitals.map(cap => {
-          const v = cap.venue
-          const slotExceeds = cap.max_slots * cap.slot_pct > 100
-          const noRoom = cap.slot_size > 0 && cap.free < cap.slot_size
-          const busy = actionLoading === `${v}:toggle` || actionLoading?.startsWith(`${v}:`)
-          const e = edit[v] || {}
-          return (
-            <div key={v} className="rounded-xl border border-[#2a2240] bg-[#1a1528] overflow-hidden">
-              <div className="px-3 py-2.5 flex items-center justify-between border-b border-[#2a2240]">
-                <span className="text-sm font-medium">{VENUE_LABEL[v]}</span>
-                {editable && (
-                  <button
-                    onClick={() => toggleVenue(v, cap.enabled)}
-                    disabled={busy}
-                    className={`text-[10px] px-2.5 py-1 rounded-full border transition-colors disabled:opacity-40 ${
-                      cap.enabled !== 'False'
-                        ? 'text-green-400 border-green-500/30 bg-green-500/10'
-                        : 'text-[#4a4060] border-[#2a2240] bg-[#171421]'
-                    }`}
-                  >
-                    {cap.enabled !== 'False' ? 'ON' : 'OFF'}
-                  </button>
-                )}
-              </div>
-
-              <div className="p-3 space-y-2 text-[11px]">
-                {/* Declared vs live equity */}
-                <div className="flex items-center justify-between">
-                  <span className="text-[#7a7090]">Declared</span>
-                  {editable ? (
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="number"
-                        value={e.declared ?? String(cap.declared_capital)}
-                        onChange={ev => setEdit({ ...edit, [v]: { ...e, declared: ev.target.value } })}
-                        min="0"
-                        step="100"
-                        className="w-24 px-2 py-1 text-right text-xs bg-[#171421] border border-[#2a2240] rounded-md text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC]"
-                      />
-                      <button
-                        onClick={() => {
-                          const key = v === 'binance' ? 'capital_cex_usdt' : 'capital_dex_usdc'
-                          saveSetting(v, key, e.declared ?? String(cap.declared_capital))
-                        }}
-                        disabled={actionLoading === `${v}:capital_${key(v)}`}
-                        className="px-2 py-1 text-[10px] bg-green-500/10 border border-green-500/30 rounded-md text-green-400 hover:bg-green-500/20 disabled:opacity-40"
-                      >
-                        {actionLoading === `${v}:capital_${key(v)}` ? <Loader2 size={10} className="animate-spin" /> : 'Save'}
-                      </button>
-                    </div>
-                  ) : (
-                    <span>${cap.declared_capital.toFixed(0)}</span>
-                  )}
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[#7a7090]">Live equity</span>
-                  <span className="font-medium">${cap.live_equity.toFixed(0)}</span>
-                </div>
-
-                {cap.divergence && (
-                  <div className="p-2 rounded-lg bg-amber-500/10 border border-amber-500/30 text-amber-400">
-                    ⚠️ Declared ${cap.divergence.declared.toFixed(0)} diverges from live
-                    ${cap.divergence.live.toFixed(0)} by {cap.divergence.pct}% — exchange wins, sizing unchanged
-                  </div>
-                )}
-
-                {/* Slot config */}
-                <div className="flex items-center justify-between">
-                  <span className="text-[#7a7090]">Slot %</span>
-                  {editable ? (
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="number"
-                        value={e.slotPct ?? String(cap.slot_pct)}
-                        onChange={ev => setEdit({ ...edit, [v]: { ...e, slotPct: ev.target.value } })}
-                        min="0.1"
-                        max="100"
-                        step="0.5"
-                        className="w-20 px-2 py-1 text-right text-xs bg-[#171421] border border-[#2a2240] rounded-md text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC]"
-                      />
-                      <button
-                        onClick={() => saveSetting(v, `${v === 'binance' ? 'cex' : 'dex'}_slot_pct`, e.slotPct ?? String(cap.slot_pct))}
-                        disabled={actionLoading === `${v}:${v === 'binance' ? 'cex' : 'dex'}_slot_pct`}
-                        className="px-2 py-1 text-[10px] bg-green-500/10 border border-green-500/30 rounded-md text-green-400 hover:bg-green-500/20 disabled:opacity-40"
-                      >
-                        {actionLoading === `${v}:${v === 'binance' ? 'cex' : 'dex'}_slot_pct` ? <Loader2 size={10} className="animate-spin" /> : 'Save'}
-                      </button>
-                    </div>
-                  ) : (
-                    <span>{cap.slot_pct}%</span>
-                  )}
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[#7a7090]">Slot size</span>
-                  <span className="font-medium">${cap.slot_size.toFixed(0)}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[#7a7090]">Max slots</span>
-                  {editable ? (
-                    <div className="flex items-center gap-1.5">
-                      <input
-                        type="number"
-                        value={e.maxSlots ?? String(cap.max_slots)}
-                        onChange={ev => setEdit({ ...edit, [v]: { ...e, maxSlots: ev.target.value } })}
-                        min="1"
-                        step="1"
-                        className="w-16 px-2 py-1 text-right text-xs bg-[#171421] border border-[#2a2240] rounded-md text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC]"
-                      />
-                      <button
-                        onClick={() => saveSetting(v, `max_slots_${v === 'binance' ? 'cex' : 'dex'}`, e.maxSlots ?? String(cap.max_slots))}
-                        disabled={actionLoading === `${v}:max_slots_${v === 'binance' ? 'cex' : 'dex'}`}
-                        className="px-2 py-1 text-[10px] bg-green-500/10 border border-green-500/30 rounded-md text-green-400 hover:bg-green-500/20 disabled:opacity-40"
-                      >
-                        {actionLoading === `${v}:max_slots_${v === 'binance' ? 'cex' : 'dex'}` ? <Loader2 size={10} className="animate-spin" /> : 'Save'}
-                      </button>
-                    </div>
-                  ) : (
-                    <span>{cap.max_slots}</span>
-                  )}
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[#7a7090]">Deployed / Free</span>
-                  <span>${cap.deployed.toFixed(0)} / ${cap.free.toFixed(0)}</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[#7a7090]">Fee (round trip)</span>
-                  <span>{cap.fee_pct.toFixed(2)}%</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-[#7a7090]">Net edge</span>
-                  <span className={cap.net_edge_pct > 0 ? 'text-green-400' : 'text-red-400'}>{cap.net_edge_pct.toFixed(2)}%</span>
-                </div>
-
-                {/* Deterministic inline validation */}
-                {(slotExceeds || noRoom) && (
-                  <div className="p-2 rounded-lg bg-red-500/10 border border-red-500/30 text-red-400">
-                    {slotExceeds && <div>✗ {cap.max_slots} slots × {cap.slot_pct}% = {Math.round(cap.max_slots * cap.slot_pct)}% of equity — exceeds 100%</div>}
-                    {noRoom && <div>✗ Free ${cap.free.toFixed(0)} below one slot ${cap.slot_size.toFixed(0)} — insufficient equity</div>}
-                  </div>
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
-
-      {/* Universe panels */}
-      {(['binance', 'orderly'] as const).map(venue => {
-        const u = uniByVenue(venue)
-        if (!u) return null
+      {/* Per-venue capital panels */}
+      {capitals.map(cap => {
+        const v = cap.venue
+        const slotExceeds = cap.max_slots * cap.slot_pct > 100
+        const noRoom = cap.slot_size > 0 && cap.free < cap.slot_size
+        const on = cap.enabled !== 'False'
         return (
-          <div key={venue} className={`rounded-xl border overflow-hidden mb-4 ${u.stale ? 'border-red-500/40 bg-red-500/5' : 'border-[#2a2240] bg-[#1a1528]'}`}>
-            <div className="px-3 py-2.5 flex items-center justify-between border-b border-[#2a2240]">
-              <span className="text-sm font-medium">🛰️ {VENUE_SHORT[venue]} Universe</span>
-              {u.scan_age_hours != null && (
-                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                  u.stale ? 'text-red-400 border-red-500/40 bg-red-500/10' : 'text-[#7a7090] border-[#2a2240] bg-[#171421]'
-                }`}>
-                  {u.stale ? `⚠️ STALE · ${u.scan_age_hours.toFixed(0)}h` : `${u.scan_age_hours.toFixed(1)}h ago`}
-                </span>
-              )}
-            </div>
-            {u.rows.length === 0 ? (
-              <div className="p-3 text-center text-[#4a4060] text-xs">No scan stored yet.</div>
-            ) : (
-              <div className="divide-y divide-[#2a2240]">
-                {u.rows.map(r => (
-                  <div key={r.asset} className={`px-3 py-2 flex items-center justify-between text-[11px] ${r.blacklisted ? 'opacity-60' : ''}`}>
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-[#4a4060]">#{r.rank}</span>
-                        <span className="text-sm font-medium truncate">{r.asset}</span>
-                        {r.blacklisted && <Ban size={12} className="text-red-400 shrink-0" />}
-                      </div>
-                      <div className="text-[10px] text-[#7a7090] mt-0.5">
-                        rec={r.recovery_rate != null ? `${Math.round(r.recovery_rate * 100)}%` : '—'}
-                        {' · '}sig={r.signals_count ?? '—'}
-                        {' · '}spread={r.spread_pct != null ? `${r.spread_pct.toFixed(3)}%` : '—'}
-                        {' · '}vol=${((r.quote_volume_24h || 0) / 1e6).toFixed(1)}M
-                        {' · '}depth=${((r.depth_bid_top10 || 0) / 1e3).toFixed(0)}k
-                      </div>
-                    </div>
-                    {editable && (
-                      <button
-                        onClick={() => toggleBlacklist(venue, r.asset, r.blacklisted)}
-                        disabled={actionLoading === `${venue}:${r.asset}`}
-                        className={`ml-2 px-2 py-1 text-[10px] rounded-md border transition-colors shrink-0 disabled:opacity-40 ${
-                          r.blacklisted
-                            ? 'text-red-400 border-red-500/30 bg-red-500/10 hover:bg-red-500/20'
-                            : 'text-[#4a4060] border-[#2a2240] hover:text-[#D0CFCC] hover:bg-[#2a2240]'
-                        }`}
-                        title={r.blacklisted ? 'Blacklisted — click to allow' : 'Blacklist (operator override)'}
-                      >
-                        {actionLoading === `${venue}:${r.asset}` ? <Loader2 size={10} className="animate-spin" /> : r.blacklisted ? 'Unblock' : 'Block'}
-                      </button>
-                    )}
-                  </div>
-                ))}
+          <Section
+            key={v}
+            title={`${VENUE_SHORT[v]} · ${VENUE_LABEL[v]}`}
+            right={
+              editable && (
+                <button
+                  onClick={() => toggleVenue(v, cap.enabled)}
+                  disabled={saving.has(`${v}:toggle`)}
+                  className={`text-[10px] px-3 py-1 rounded-full border transition-colors disabled:opacity-40 ${on ? 'text-green-400 border-green-500/30 bg-green-500/10' : 'text-[#7a7090] border-[#2a2240] bg-[#171421]'}`}
+                >
+                  {on ? 'ON' : 'OFF'}
+                </button>
+              )
+            }
+          >
+            <SettingRow label="Declared Capital" hint="Operator-declared pool — live equity wins if they diverge" statusKey={`${v}:${DECLARED_KEY[v]}`}>
+              <NumberField
+                value={String(cap.declared_capital)}
+                suffix="$"
+                disabled={!editable}
+                error={errors.has(`${v}:${DECLARED_KEY[v]}`)}
+                onChange={val => debouncedSave(`${v}:${DECLARED_KEY[v]}`, val)}
+              />
+            </SettingRow>
+
+            <ReadRow label="Live equity" value={`$${cap.live_equity.toFixed(0)}`} />
+
+            {cap.divergence && (
+              <div className="px-3 py-2.5 bg-amber-500/10 border-t border-amber-500/30 text-amber-400 text-xs">
+                ⚠️ Declared ${cap.divergence.declared.toFixed(0)} diverges from live ${cap.divergence.live.toFixed(0)} by {cap.divergence.pct}% — exchange wins, sizing unchanged
               </div>
             )}
-          </div>
+
+            <SettingRow label="Slot %" hint="Size of a single position = this % × live equity" statusKey={`${v}:${SLOT_PCT_KEY[v]}`}>
+              <NumberField
+                value={String(cap.slot_pct)}
+                suffix="%"
+                step="0.5"
+                min="0.1"
+                max="100"
+                disabled={!editable}
+                error={errors.has(`${v}:${SLOT_PCT_KEY[v]}`)}
+                onChange={val => debouncedSave(`${v}:${SLOT_PCT_KEY[v]}`, val)}
+              />
+            </SettingRow>
+
+            <ReadRow label="Slot size" value={`$${cap.slot_size.toFixed(0)}`} />
+
+            <SettingRow label="Max Slots" hint="Max concurrent open positions on this venue" statusKey={`${v}:${MAX_SLOTS_KEY[v]}`}>
+              <NumberField
+                value={String(cap.max_slots)}
+                step="1"
+                min="1"
+                disabled={!editable}
+                error={errors.has(`${v}:${MAX_SLOTS_KEY[v]}`)}
+                onChange={val => debouncedSave(`${v}:${MAX_SLOTS_KEY[v]}`, val)}
+              />
+            </SettingRow>
+
+            <ReadRow label="Deployed / Free" value={`$${cap.deployed.toFixed(0)} / $${cap.free.toFixed(0)}`} />
+            <ReadRow label="Fee (round trip)" value={`${cap.fee_pct.toFixed(2)}%`} />
+            <ReadRow
+              label="Net edge"
+              value={`${cap.net_edge_pct.toFixed(2)}%`}
+              tone={cap.net_edge_pct > 0 ? 'text-green-400' : 'text-red-400'}
+            />
+
+            {(slotExceeds || noRoom) && (
+              <div className="px-3 py-2.5 bg-red-500/10 border-t border-red-500/30 text-red-400 text-xs">
+                {slotExceeds && <div>✗ {cap.max_slots} slots × {cap.slot_pct}% = {Math.round(cap.max_slots * cap.slot_pct)}% of equity — exceeds 100%</div>}
+                {noRoom && <div>✗ Free ${cap.free.toFixed(0)} below one slot ${cap.slot_size.toFixed(0)} — insufficient equity</div>}
+              </div>
+            )}
+          </Section>
         )
       })}
 
-      <p className="mt-3 text-[10px] text-[#4a4060] text-center">
+      {/* Universe panels (read-only except blacklist) */}
+      {(['binance', 'orderly'] as const).map(venue => {
+        const u = universes[venue]
+        if (!u) return null
+        return (
+          <Section
+            key={venue}
+            title={`🛰️ ${VENUE_SHORT[venue]} Universe`}
+            right={
+              u.scan_age_hours != null ? (
+                <span className={`text-[10px] px-2 py-0.5 rounded-full border ${u.stale ? 'text-red-400 border-red-500/40 bg-red-500/10' : 'text-[#7a7090] border-[#2a2240] bg-[#171421]'}`}>
+                  {u.stale ? `⚠️ STALE · ${u.scan_age_hours.toFixed(0)}h` : `${u.scan_age_hours.toFixed(1)}h ago`}
+                </span>
+              ) : undefined
+            }
+          >
+            {u.rows.length === 0 ? (
+              <div className="px-3 py-4 text-center text-[#4a4060] text-xs">No scan stored yet.</div>
+            ) : (
+              u.rows.map(r => (
+                <div key={r.asset} className={`px-3 py-2.5 flex items-center justify-between gap-2 ${r.blacklisted ? 'opacity-60' : ''}`}>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] text-[#4a4060]">#{r.rank}</span>
+                      <span className="text-sm font-medium truncate">{r.asset}</span>
+                      {r.blacklisted && <Ban size={12} className="text-red-400 shrink-0" />}
+                    </div>
+                    <div className="text-[10px] text-[#7a7090] mt-0.5 leading-tight">
+                      rec={r.recovery_rate != null ? `${Math.round(r.recovery_rate * 100)}%` : '—'}
+                      {' · '}sig={r.signals_count ?? '—'}
+                      {' · '}spread={r.spread_pct != null ? `${r.spread_pct.toFixed(3)}%` : '—'}
+                      {' · '}vol=${((r.quote_volume_24h || 0) / 1e6).toFixed(1)}M
+                    </div>
+                  </div>
+                  {editable && (
+                    <button
+                      onClick={() => toggleBlacklist(venue, r.asset, r.blacklisted)}
+                      disabled={saving.has(`${venue}:${r.asset}`)}
+                      className={`shrink-0 px-3 py-1.5 text-xs rounded-lg border transition-colors disabled:opacity-40 ${
+                        r.blacklisted
+                          ? 'text-red-400 border-red-500/30 bg-red-500/10 hover:bg-red-500/20'
+                          : 'text-[#7a7090] border-[#2a2240] hover:text-[#D0CFCC] hover:bg-[#2a2240]'
+                      }`}
+                      title={r.blacklisted ? 'Blacklisted — click to allow' : 'Blacklist (operator override)'}
+                    >
+                      {saving.has(`${venue}:${r.asset}`) ? <Loader2 size={12} className="animate-spin" /> : r.blacklisted ? 'Unblock' : 'Block'}
+                    </button>
+                  )}
+                </div>
+              ))
+            )}
+          </Section>
+        )
+      })}
+
+      <div className="text-center text-[10px] text-[#4a4060] pb-6">
         Recovery rate is a relative ranking signal from candle replay — not a predicted win rate.
-      </p>
+      </div>
     </div>
   )
-}
-
-function key(v: string): string {
-  return v === 'binance' ? 'cex_usdt' : 'dex_usdc'
 }
