@@ -49,9 +49,10 @@ const SLOT_PCT_KEY: Record<string, string> = { binance: 'cex_slot_pct', orderly:
 const MAX_SLOTS_KEY: Record<string, string> = { binance: 'max_slots_cex', orderly: 'max_slots_dex' }
 
 // Standard-size number input — same style as the Settings view (MiniSettings).
-function NumberField({ value, suffix, disabled, step, min, max, error, onChange }: {
+// `onEnter` commits the current value when the Enter / Done key is pressed.
+function NumberField({ value, suffix, disabled, step, min, max, error, onChange, onEnter }: {
   value: string; suffix?: string; disabled?: boolean; step?: string; min?: string; max?: string;
-  error?: boolean; onChange: (v: string) => void
+  error?: boolean; onChange: (v: string) => void; onEnter?: () => void
 }) {
   return (
     <div className="flex items-center gap-2 w-full">
@@ -59,6 +60,7 @@ function NumberField({ value, suffix, disabled, step, min, max, error, onChange 
         type="number"
         value={value}
         onChange={e => onChange(e.target.value)}
+        onKeyUp={e => { if (e.key === 'Enter' && onEnter) onEnter() }}
         disabled={disabled}
         step={step ?? 'any'}
         min={min}
@@ -214,36 +216,49 @@ export default function CapitalManager() {
   )
 
   // Editable row with an explicit Save button — no auto-save.
-  // `settingsKey` is the real DB settings key; it is used both for the status
-  // icon and for saving.
+  // `settingsKey` is the real DB settings key; used for the status icon and
+  // for saving. Empty/NaN values are refused: a cleared field can never store
+  // "" and silently turn the setting into its 0 default.
   const EditableRow = ({ label, hint, settingsKey, value, suffix, step, min, max }: {
     label: string; hint: string; settingsKey: string; value: string;
     suffix?: string; step?: string; min?: string; max?: string
-  }) => (
-    <SettingRow label={label} hint={hint} statusKey={settingsKey}>
-      <div className="flex items-center gap-2">
-        <NumberField
-          value={drafts[settingsKey] ?? value}
-          suffix={suffix}
-          step={step}
-          min={min}
-          max={max}
-          disabled={!editable}
-          error={errors.has(settingsKey)}
-          onChange={v => setDrafts(prev => ({ ...prev, [settingsKey]: v }))}
-        />
-        {editable && (
-          <button
-            onClick={() => saveSetting(settingsKey, drafts[settingsKey] ?? value)}
-            disabled={saving.has(settingsKey)}
-            className="shrink-0 px-3 py-2.5 text-xs font-medium rounded-lg border border-[#2a2240] bg-[#2a2240] text-[#D0CFCC] hover:bg-[#3a3050] transition-colors disabled:opacity-40"
-          >
-            {saving.has(settingsKey) ? <Loader2 size={14} className="animate-spin" /> : 'Save'}
-          </button>
-        )}
-      </div>
-    </SettingRow>
-  )
+  }) => {
+    const commit = () => {
+      const raw = (drafts[settingsKey] ?? value).trim()
+      if (raw === '' || Number.isNaN(parseFloat(raw))) {
+        // invalid/empty — revert to the current stored value, do not save
+        setDrafts(prev => { const n = { ...prev }; delete n[settingsKey]; return n })
+        return
+      }
+      saveSetting(settingsKey, raw)
+    }
+    return (
+      <SettingRow label={label} hint={hint} statusKey={settingsKey}>
+        <div className="flex items-center gap-2">
+          <NumberField
+            value={drafts[settingsKey] ?? value}
+            suffix={suffix}
+            step={step}
+            min={min}
+            max={max}
+            disabled={!editable}
+            error={errors.has(settingsKey)}
+            onChange={v => setDrafts(prev => ({ ...prev, [settingsKey]: v }))}
+            onEnter={commit}
+          />
+          {editable && (
+            <button
+              onClick={commit}
+              disabled={saving.has(settingsKey)}
+              className="shrink-0 px-3 py-2.5 text-xs font-medium rounded-lg border border-[#2a2240] bg-[#2a2240] text-[#D0CFCC] hover:bg-[#3a3050] transition-colors disabled:opacity-40"
+            >
+              {saving.has(settingsKey) ? <Loader2 size={14} className="animate-spin" /> : 'Save'}
+            </button>
+          )}
+        </div>
+      </SettingRow>
+    )
+  }
 
   const ReadRow = ({ label, value, tone }: { label: string; value: string; tone?: string }) => (
     <div className="px-3 py-3 flex items-center justify-between gap-2">
