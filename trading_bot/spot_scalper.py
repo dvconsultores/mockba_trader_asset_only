@@ -17,6 +17,7 @@ from trading_bot.types import Fill
 from trade.pnl import record_closed_trade, is_entry_blocked, compute_slot_size
 from trade.regime import get_atr_pct
 from trade.toxicity import evaluate as tox_eval, record_observation
+from trade.universe import compute_thresholds  # shared with universe replay (Amendment 003)
 from db.db_ops import (
     get_setting_float, get_setting_int, get_setting_bool,
     save_position, load_all_positions, update_position, delete_position,
@@ -96,8 +97,8 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
         equity=exchange.get_equity()
         blocked,reason=is_entry_blocked(venue,equity)
         if blocked: _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped",reason); return None
-        if len(load_all_positions(asset=asset,venue=venue))>=get_setting_int("max_slots",9):
-            _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped","max_slots"); return None
+        if len(load_all_positions(asset=asset,venue=venue))>=get_setting_int("max_slots_cex",9):
+            _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped","max_slots_cex"); return None
 
     _update_price_memory(asset,live_price)
 
@@ -108,10 +109,7 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
     tk=get_setting_float("tp_k",1.0); tm=get_setting_float("tp_min_pct",0.8)
     sk=get_setting_float("sl_k",0.6); sm=get_setting_float("sl_min_pct",0.5)
 
-    if atr and atr>0:
-        dn=max(dk*atr,dm); pn=max(pk*atr,pm); te=max(tk*atr,tm); se=max(sk*atr,sm)
-    else:
-        dn=dm; pn=pm; te=tm; se=sm
+    dn, pn, te, se = compute_thresholds(atr, dk, dm, pk, pm, tk, tm, sk, sm)
 
     if te<=se: _log(asset,venue,regime,None,live_price,0,dn,atr or 0,obi,0,None,{},"skipped","tp_eff<=sl_eff"); return None
 

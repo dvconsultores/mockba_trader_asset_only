@@ -15,9 +15,10 @@ import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 from db.db_ops import (
     upsert_setting, get_all_settings, initialize_database_tables, get_setting,
-    get_setting_float, get_setting_bool,
-    get_all_asset_configs, upsert_asset_config, delete_asset_config,
+    get_setting_float, get_setting_bool, get_setting_int,
     load_all_positions,
+    get_universe, get_universe_scan_age, get_venue_equity,
+    set_blacklist, get_capital_pool, get_tradeable_universe,
 )
 import json
 from datetime import timedelta
@@ -186,7 +187,9 @@ def command_list(m):
 
     markup = InlineKeyboardMarkup()
     markup.row(InlineKeyboardButton(translate("📡 Process Signal", cid), callback_data="ProcessSignal"))
-    markup.row(InlineKeyboardButton(translate("📖 Explain Settings", cid), callback_data="ExplainAll"))
+    markup.row(InlineKeyboardButton(translate("� Capital", cid), callback_data="Capital"))
+    markup.row(InlineKeyboardButton(translate("🛰️ Universe", cid), callback_data="Universe"))
+    markup.row(InlineKeyboardButton(translate("�📖 Explain Settings", cid), callback_data="ExplainAll"))
     markup.row(InlineKeyboardButton(translate("🤖 Propose Changes", cid), callback_data="ProposeStart"))
     markup.row(InlineKeyboardButton(translate("🔄 Reset to Defaults", cid), callback_data="ResetDefaults"))
     bot.send_message(cid, translate("Available options.", cid), reply_markup=markup)
@@ -222,6 +225,138 @@ def command_propose(m):
         bot.send_message(cid, translate("🔍 Not authorized", cid))
         return
     _send_proposals(cid)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Amendment 003 — Capital / Universe / Blacklist commands
+# ═════════════════════════════════════════════════════════════════════════════
+
+@bot.message_handler(commands=['capital'])
+def command_capital(m):
+    """Capital view — per-venue pools: declared vs live equity, slot, deployed."""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+    show_capital(m)
+
+
+@bot.message_handler(commands=['universe'])
+def command_universe(m):
+    """Show the current universe for a venue. Usage: /universe [cex|dex]"""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+    arg = (m.text.replace('/universe', '').strip() or "").lower()
+    if arg in ("cex", "binance"):
+        venues = ["binance"]
+    elif arg in ("dex", "orderly"):
+        venues = ["orderly"]
+    else:
+        venues = ["binance", "orderly"]
+    for venue in venues:
+        _send_universe(cid, venue)
+
+
+@bot.message_handler(commands=['blacklist'])
+def command_blacklist(m):
+    """Operator blacklist override. Usage: /blacklist add|remove <ASSET>"""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+    parts = (m.text.replace('/blacklist', '').strip() or "").split()
+    if len(parts) < 2:
+        bot.send_message(cid, translate(
+            "Usage: /blacklist add|remove <ASSET>\n"
+            "Examples:\n/blacklist add NEAR\n/blacklist remove NEAR", cid))
+        return
+    action = parts[0].lower()
+    asset = parts[1].upper()
+    if action not in ("add", "remove"):
+        bot.send_message(cid, translate("Action must be 'add' or 'remove'.", cid))
+        return
+    target = (action == "add")
+    results = []
+    for venue in ("binance", "orderly"):
+        if set_blacklist(venue, asset, target):
+            results.append(f"{venue}: {'🚫 blacklisted' if target else '✅ unblacklisted'}")
+    if not results:
+        bot.send_message(cid, translate(f"❌ '{asset}' is not in any stored universe — nothing to toggle.", cid))
+        return
+    bot.send_message(cid, translate(f"✅ {asset}: " + "; ".join(results), cid))
+
+
+def show_capital(m):
+    """Capital view — per-venue pools: declared vs live equity, slot size, deployed, free."""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
+
+    lines = ["💰 Capital (per venue)"]
+    for venue, vlabel, pct_key, slots_key in (
+        ("binance", "CEX — Binance spot", "cex_slot_pct", "max_slots_cex"),
+        ("orderly", "DEX — Orderly perps", "dex_slot_pct", "max_slots_dex"),
+    ):
+        pool = get_capital_pool(venue)
+        st = get_venue_equity(venue)
+        equity = float(st["equity"]) if st else 0.0
+        eq_age = st["updated_at"] if st else None
+        slot_pct = get_setting_float(pct_key, 10.0)
+        slot = equity * slot_pct / 100 if equity > 0 else 0.0
+        max_slots = get_setting_int(slots_key, 9)
+        deployed = sum(
+            float(p.get("qty", 0) or 0) * float(p.get("entry_price", 0) or 0)
+            for p in load_all_positions(venue=venue)
+        )
+        free = max(0.0, equity - deployed)
+        warn = ""
+        if equity > 0 and pool > 0 and abs(pool - equity) / equity > 0.25:
+            warn = f"\n  ⚠️ Declared ${pool:,.0f} diverges from live ${equity:,.0f} — exchange wins, sizing unchanged"
+        age_txt = f"  (as of {time.strftime('%H:%M UTC', time.gmtime(eq_age))})" if eq_age else ""
+        lines.append(
+            f"\n▫️ {vlabel}"
+            f"\n  Declared: ${pool:,.0f}   Live equity: ${equity:,.0f}{age_txt}{warn}"
+            f"\n  Slot: {slot_pct:.1f}% → ${slot:,.0f}   Max slots: {max_slots}"
+            f"\n  Deployed: ${deployed:,.0f}   Free: ${free:,.0f}"
+        )
+    send_text_message_chunked(cid, "\n".join(lines))
+
+
+def _send_universe(cid: int, venue: str):
+    """Send the current universe list with metrics and scan age (read-only)."""
+    rows = get_universe(venue, include_blacklisted=True)
+    age = get_universe_scan_age(venue)
+    label = "CEX" if venue == "binance" else "DEX"
+    if age is None:
+        bot.send_message(cid, translate(f"🛰️ {label} universe: no scan stored yet.", cid))
+        return
+    hours = (time.time() - age) / 3600
+    max_age = get_setting_float("universe_max_age_hours", 36)
+    stale = hours > max_age
+    head = f"🛰️ {label} universe — scan {hours:.1f}h ago{'  ⚠️ STALE' if stale else ''}"
+    if not rows:
+        bot.send_message(cid, translate(f"{head}\n(empty)", cid))
+        return
+    lines = [head]
+    for r in rows:
+        rec = r.get("recovery_rate")
+        rec_txt = f"{rec * 100:.0f}%" if rec is not None else "—"
+        sig = r.get("signals_count")
+        sig_txt = str(sig) if sig is not None else "—"
+        spread = r.get("spread_pct")
+        spread_txt = f"{spread:.3f}%" if spread is not None else "—"
+        vol = r.get("quote_volume_24h") or 0
+        flag = "  🚫" if r.get("blacklisted") else ""
+        lines.append(
+            f"#{r['rank']} {r['asset']}  rec={rec_txt} sig={sig_txt} "
+            f"spread={spread_txt} vol=${vol / 1e6:.1f}M{flag}"
+        )
+    send_text_message_chunked(cid, "\n".join(lines))
 
 
 def _send_explain(cid, key):
@@ -425,19 +560,6 @@ def _dispatch_callback(call, cid):
     elif call.data.startswith("exec_sig:"):
         asset = call.data.split(":", 1)[1]
         execute_signal(call.message, asset=asset)
-    elif call.data == "asset_add_prompt":
-        handle_asset_add_prompt(call.message)
-    elif call.data.startswith("asset_venuetoggle:"):
-        _, symbol, venue, activate_str = call.data.split(":")
-        handle_asset_venuetoggle(cid, symbol, venue, activate_str == "1")
-        manage_assets(call.message)
-    elif call.data.startswith("asset_toggle:"):
-        symbol = call.data.split(":", 1)[1]
-        handle_asset_toggle(cid, symbol)
-    elif call.data.startswith("asset_remove:"):
-        symbol = call.data.split(":", 1)[1]
-        handle_asset_remove(cid, symbol)
-        manage_assets(call.message)
     elif call.data.startswith("ExplainGroup:"):
         group = call.data.split(":", 1)[1]
         _show_group_keys(cid, group)
@@ -453,7 +575,8 @@ def _dispatch_callback(call, cid):
             'List': command_list,
             'ProcessSignal': pick_exchange_for_signal,
             'AnalyzeTradesPerforming': execute_trade_performance,
-            'ManageAssets': manage_assets,
+            'Capital': show_capital,
+            'Universe': show_universe,
             'ExplainPrompt': explain_prompt,
             'ProposeStart': propose_start,
         }
@@ -548,9 +671,8 @@ def pick_exchange_for_signal(m):
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
-    configs = get_all_asset_configs()
-    if not configs:
-        bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
+    if not get_tradeable_universe("binance") and not get_tradeable_universe("orderly"):
+        bot.send_message(cid, translate("❌ No universe assets available. Run the scanner first.", cid))
         return
 
     markup = InlineKeyboardMarkup()
@@ -566,15 +688,16 @@ def pick_asset_for_signal(m, exchange):
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
-    configs = get_all_asset_configs()
-    if not configs:
-        bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
+    venue = "orderly" if exchange == "dex" else "binance"
+    rows = get_tradeable_universe(venue)
+    if not rows:
+        bot.send_message(cid, translate(f"❌ No universe assets for {exchange}. Run the scanner first.", cid))
         return
 
     exchange_label = "DEX" if exchange == "dex" else "CEX"
     markup = InlineKeyboardMarkup()
-    for c in configs:
-        sym = c["symbol"]
+    for r in rows:
+        sym = r["asset"]
         markup.add(InlineKeyboardButton(sym, callback_data=f"exec_sig_{exchange}_asset:{sym}"))
     bot.send_message(cid, translate(f"Select asset for {exchange_label} signal:", cid), reply_markup=markup)
 
@@ -585,11 +708,11 @@ def execute_signal(m, asset=None, exchange=None):
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
 
     if asset is None:
-        configs = get_all_asset_configs()
-        symbols = [c["symbol"] for c in configs]
-        asset = symbols[0] if symbols else None
+        venue_default = "orderly" if exchange == "dex" else "binance"
+        rows = get_tradeable_universe(venue_default)
+        asset = rows[0]["asset"] if rows else None
         if not asset:
-            bot.send_message(cid, translate("❌ No assets configured. Please add one first.", cid))
+            bot.send_message(cid, translate("❌ No universe assets available. Run the scanner first.", cid))
             return
 
     if exchange is None:
@@ -636,154 +759,13 @@ def execute_signal(m, asset=None, exchange=None):
         bot.send_message(cid, translate(f"Signal processed but error displaying result: {str(e)}", cid))
          
 
-def manage_assets(m):
-    """Show asset configs with per-venue capital, active flags, and open position counts."""
+def show_universe(m):
+    """Show the current universe for both venues (read-only)."""
     if m.chat.type != 'private': return
     cid = m.chat.id
     if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-
-    configs = get_all_asset_configs()
-    markup = InlineKeyboardMarkup()
-    markup.row(InlineKeyboardButton(translate("➕ Add Asset", cid), callback_data="asset_add_prompt"))
-
-    if configs:
-        for c in configs:
-            sym = c["symbol"]
-            dex_on = c.get("active_dex", 0)
-            cex_on = c.get("active_cex", 0)
-            cap_d = float(c.get("capital_dex", 0) or 0)
-            cap_c = float(c.get("capital_cex", 0) or 0)
-            ops = c.get("open_positions", 0)
-            dex_icon = "🟢" if dex_on else "🔴"
-            cex_icon = "🟢" if cex_on else "🔴"
-            label = f"{sym}\n  DEX {dex_icon} ${cap_d:.0f}  |  CEX {cex_icon} ${cap_c:.0f}"
-            if ops > 0:
-                label += f"  ({ops} open)"
-            markup.row(InlineKeyboardButton(label, callback_data=f"asset_toggle:{sym}"))
-            markup.row(InlineKeyboardButton(
-                translate("❌ Remove", cid), callback_data=f"asset_remove:{sym}"
-            ))
-
-    markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="List"))
-    total = len(configs)
-    active = sum(1 for c in configs if c.get("active_dex") or c.get("active_cex"))
-    # Per-venue allocation summary
-    dex_alloc = sum(float(c.get("capital_dex", 0) or 0) for c in configs if c.get("active_dex"))
-    cex_alloc = sum(float(c.get("capital_cex", 0) or 0) for c in configs if c.get("active_cex"))
-    dex_count = sum(1 for c in configs if c.get("active_dex") and float(c.get("capital_dex", 0) or 0) > 0)
-    cex_count = sum(1 for c in configs if c.get("active_cex") and float(c.get("capital_cex", 0) or 0) > 0)
-    summary_lines = [
-        f"📦 Assets: {total} total, {active} active",
-        f"DEX: ${dex_alloc:,.0f} allocated ({dex_count} active pairs)",
-        f"CEX: ${cex_alloc:,.0f} allocated ({cex_count} active pairs)",
-    ]
-    bot.send_message(cid, translate("\n".join(summary_lines), cid), reply_markup=markup)
-
-
-def handle_asset_add_prompt(m):
-    """Prompt user to send the asset name to add."""
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-
-    msg = bot.send_message(cid, translate("📝 Send the asset name to add (e.g., PERP_NEAR_USDC):", cid),
-                           reply_markup=telebot.types.ForceReply(selective=True))
-    bot.register_next_step_handler(msg, handle_asset_add_reply)
-
-
-def handle_asset_add_reply(m):
-    """Process the asset name from user reply. Adds with zero capital, inactive — user edits after."""
-    if m.chat.type != 'private': return
-    cid = m.chat.id
-    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid): return
-
-    symbol = (m.text or "").strip()
-    if not symbol:
-        bot.send_message(cid, translate("❌ Invalid asset name.", cid))
-        return
-
-    configs = get_all_asset_configs()
-    if any(c["symbol"] == symbol for c in configs):
-        bot.send_message(cid, translate(f"❌ Asset '{symbol}' already exists.", cid))
-        return
-
-    upsert_asset_config(symbol, capital_dex=0, capital_cex=0, active_dex=False, active_cex=False)
-    bot.send_message(cid, translate(f"✅ Asset '{symbol}' added with zero capital. Edit to set capital and activate.", cid))
-    manage_assets(m)
-
-
-def handle_asset_toggle(cid: int, symbol: str):
-    """Show inline keyboard to toggle DEX/CEX activation and edit capital for an asset."""
-    configs = get_all_asset_configs()
-    cfg = next((c for c in configs if c["symbol"] == symbol), None)
-    if not cfg:
-        bot.send_message(cid, translate(f"❌ Asset '{symbol}' not found.", cid))
-        return
-
-    dex_on = cfg.get("active_dex", 0)
-    cex_on = cfg.get("active_cex", 0)
-    cap_d = float(cfg.get("capital_dex", 0) or 0)
-    cap_c = float(cfg.get("capital_cex", 0) or 0)
-    ops = cfg.get("open_positions", 0)
-
-    markup = InlineKeyboardMarkup()
-    # DEX toggle
-    dex_icon = "🟢 ON" if dex_on else "🔴 OFF"
-    markup.row(InlineKeyboardButton(
-        f"DEX {dex_icon} — ${cap_d:.0f}",
-        callback_data=f"asset_venuetoggle:{symbol}:dex:{int(not dex_on)}"
-    ))
-    # CEX toggle
-    cex_icon = "🟢 ON" if cex_on else "🔴 OFF"
-    markup.row(InlineKeyboardButton(
-        f"CEX {cex_icon} — ${cap_c:.0f}",
-        callback_data=f"asset_venuetoggle:{symbol}:cex:{int(not cex_on)}"
-    ))
-    markup.row(InlineKeyboardButton(translate("🔙 Back", cid), callback_data="ManageAssets"))
-
-    status = f"📊 {symbol}\nDEX: {dex_icon}  |  CEX: {cex_icon}\nCapital: DEX=${cap_d:.0f}  CEX=${cap_c:.0f}"
-    if ops > 0:
-        status += f"\n⚠️ {ops} open position(s)"
-    bot.send_message(cid, status, reply_markup=markup)
-
-
-def handle_asset_venuetoggle(cid: int, symbol: str, venue: str, activate: bool):
-    """Toggle active_dex or active_cex for an asset."""
-    configs = get_all_asset_configs()
-    cfg = next((c for c in configs if c["symbol"] == symbol), None)
-    if not cfg:
-        bot.send_message(cid, translate(f"❌ Asset '{symbol}' not found.", cid))
-        return
-
-    cd = float(cfg.get("capital_dex", 0) or 0)
-    cc = float(cfg.get("capital_cex", 0) or 0)
-    ad = bool(cfg.get("active_dex", 0))
-    ac = bool(cfg.get("active_cex", 0))
-
-    if venue == "dex":
-        ad = activate
-    else:
-        ac = activate
-
-    upsert_asset_config(symbol, capital_dex=cd, capital_cex=cc, active_dex=ad, active_cex=ac)
-    vlabel = "DEX" if venue == "dex" else "CEX"
-    status = "ON" if activate else "OFF"
-    bot.send_message(cid, translate(f"✅ {symbol} {vlabel} is now {status}", cid))
-
-
-def handle_asset_remove(cid: int, symbol: str):
-    """Remove an asset config. Blocked if open positions exist."""
-    positions = load_all_positions(asset=symbol)
-    if positions:
-        bot.send_message(cid, translate(
-            f"❌ Cannot remove '{symbol}' — {len(positions)} open position(s). Deactivate first, wait for positions to close, then remove.",
-            cid
-        ))
-        return
-
-    delete_asset_config(symbol)
-    configs = get_all_asset_configs()
-    bot.send_message(cid, translate(f"✅ Asset '{symbol}' removed. {len(configs)} remaining.", cid))
+    _send_universe(cid, "binance")
+    _send_universe(cid, "orderly")
 
 
 # Start polling

@@ -26,8 +26,7 @@ class SettingsContext:
     venue: str = ""               # "binance" | "orderly" | "" (both)
     equity: float = 0.0           # current venue equity
     min_notional: float = 0.0     # symbol min notional
-    # Multi-asset (Amendment 004)
-    asset_configs: list[dict] | None = None  # from get_all_asset_configs()
+    # Per-venue pools (Amendment 003)
     dex_equity: float = 0.0       # Orderly DEX account balance
     cex_equity: float = 0.0       # Binance CEX account balance
 
@@ -114,15 +113,32 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
             sug = round(min_edge + fee + slip + 0.05, 2)
             return Verdict("error", f"Net edge {net:.2f}% below minimum {min_edge}% (tp={tp}, fee={fee}, slip={slip})", sug)
 
-    # Multi-asset: max_active_pairs vs actual active pairs
-    if key == "max_active_pairs" and ctx.asset_configs is not None:
-        actual = sum(
-            (1 if (c.get("active_dex") or 0) and (c.get("capital_dex") or 0) > 0 else 0) +
-            (1 if (c.get("active_cex") or 0) and (c.get("capital_cex") or 0) > 0 else 0)
-            for c in ctx.asset_configs
-        )
-        if isinstance(value, int) and actual > value:
-            return Verdict("warn", f"{actual} active pairs exceed max_active_pairs ({value})", actual)
+    # Per-venue fee rate (Amendment 003): the venue's own fee must clear the
+    # net-edge gate at tp_min_pct. DEX and CEX use their own rates, so the
+    # same tp/slip can pass on DEX and fail on CEX.
+    if key in ("dex_round_trip_fee_pct", "cex_round_trip_fee_pct"):
+        tp = get_setting_float("tp_min_pct", 0.8)
+        slip = get_setting_float("assumed_slippage_pct", 0.03)
+        min_edge = get_setting_float("min_net_edge_pct", 0.30)
+        net = tp - value - slip
+        if net < min_edge:
+            sug = round(max(0.0, tp - slip - min_edge - 0.05), 3)
+            return Verdict("error", f"Net edge {net:.2f}% below minimum {min_edge}% for {key} (tp={tp}, fee={value}, slip={slip})", sug)
+
+    # max_active_pairs vs actual universe size (Amendment 003)
+    if key == "max_active_pairs":
+        if isinstance(value, int):
+            try:
+                from db.db_ops import get_db_connection
+                with get_db_connection() as conn:
+                    row = conn.execute(
+                        "SELECT COUNT(*) AS c FROM asset_universe WHERE blacklisted = 0"
+                    ).fetchone()
+                actual = int(row["c"]) if row else 0
+                if actual > value:
+                    return Verdict("warn", f"{actual} universe assets exceed max_active_pairs ({value})", actual)
+            except Exception:
+                pass
 
     # Multi-asset: max_concurrent_positions vs max_slots (already handled above)
     if key == "leverage":
@@ -135,6 +151,99 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
         adaptive = get_setting_bool("adaptive_enabled", True)
         if adaptive and isinstance(value, (int, float)) and value < 0.3:
             return Verdict("warn", f"dip_k ({value}) is very low — adaptive thresholds will be floor-bound most of the time", None)
+
+    # ── Universe cross-checks (Amendment 003) ─────────────────────────────
+    if key == "universe_rank_min":
+        rmax = get_setting_int("universe_rank_max", 90)
+        if isinstance(value, int) and value >= rmax:
+            return Verdict("error", f"universe_rank_min ({value}) must be below universe_rank_max ({rmax}) — band is empty", rmax - 1)
+    if key == "universe_rank_max":
+        rmin = get_setting_int("universe_rank_min", 15)
+        if isinstance(value, int) and value <= rmin:
+            return Verdict("error", f"universe_rank_max ({value}) must exceed universe_rank_min ({rmin}) — band is empty", rmin + 1)
+
+    if key == "universe_spread_ratio_max":
+        if isinstance(value, (int, float)) and value > 0.25:
+            return Verdict("warn", f"universe_spread_ratio_max ({value}) — spread would exceed a quarter of TP", 0.25)
+
+    if key == "universe_max_age_hours":
+        interval = get_setting_int("universe_scan_interval_hours", 24)
+        if isinstance(value, int) and value < interval:
+            return Verdict("error", f"universe_max_age_hours ({value}) < universe_scan_interval_hours ({interval}) — universe is permanently stale", interval + 1)
+    if key == "universe_scan_interval_hours":
+        max_age = get_setting_int("universe_max_age_hours", 36)
+        if isinstance(value, int) and value > max_age:
+            return Verdict("error", f"universe_scan_interval_hours ({value}) > universe_max_age_hours ({max_age}) — universe is permanently stale", max_age - 1)
+
+    # max_slots × slot_pct > 100 → error (per venue)
+    if key == "max_slots_cex":
+        pct = get_setting_float("cex_slot_pct", 10.0)
+        if isinstance(value, int) and value * pct > 100:
+            sug = max(1, int(100 / pct))
+            return Verdict("error", f"max_slots_cex ({value}) × cex_slot_pct ({pct}%) = {value*pct:.0f}% of equity — exceeds 100%", sug)
+    if key == "max_slots_dex":
+        pct = get_setting_float("dex_slot_pct", 10.0)
+        if isinstance(value, int) and value * pct > 100:
+            sug = max(1, int(100 / pct))
+            return Verdict("error", f"max_slots_dex ({value}) × dex_slot_pct ({pct}%) = {value*pct:.0f}% of equity — exceeds 100%", sug)
+    if key == "cex_slot_pct":
+        slots = get_setting_int("max_slots_cex", 9)
+        if isinstance(value, (int, float)) and slots * value > 100:
+            sug = round(100 / slots, 2)
+            return Verdict("error", f"max_slots_cex ({slots}) × cex_slot_pct ({value}%) = {slots*value:.0f}% of equity — exceeds 100%", sug)
+    if key == "dex_slot_pct":
+        slots = get_setting_int("max_slots_dex", 9)
+        if isinstance(value, (int, float)) and slots * value > 100:
+            sug = round(100 / slots, 2)
+            return Verdict("error", f"max_slots_dex ({slots}) × dex_slot_pct ({value}%) = {slots*value:.0f}% of equity — exceeds 100%", sug)
+
+    # universe_size vs stored universe (warn — universe will be short)
+    if key == "universe_size":
+        if isinstance(value, int):
+            try:
+                from db.db_ops import get_db_connection
+                with get_db_connection() as conn:
+                    rows = conn.execute(
+                        "SELECT venue, COUNT(*) AS c FROM asset_universe GROUP BY venue"
+                    ).fetchall()
+                short = [f"{r['venue']}={r['c']}" for r in rows if r["c"] < value]
+                if short:
+                    return Verdict("warn", f"universe_size ({value}) exceeds stored universe count ({', '.join(short)}) — universe will be short", None)
+            except Exception:
+                pass
+
+    # depth multiple × slot size vs stored depth (warn — universe will be empty)
+    if key in ("universe_depth_slot_multiple", "cex_slot_pct", "dex_slot_pct"):
+        try:
+            from db.db_ops import get_db_connection
+            with get_db_connection() as conn:
+                row = conn.execute(
+                    "SELECT venue, AVG(depth_bid_top10) AS db FROM asset_universe "
+                    "WHERE depth_bid_top10 IS NOT NULL GROUP BY venue LIMIT 1"
+                ).fetchone()
+                if not row or not row["db"]:
+                    pass
+                else:
+                    mult = get_setting_float("universe_depth_slot_multiple", 3.0)
+                    eqv = 0.0
+                    try:
+                        eqrow = conn.execute(
+                            "SELECT equity FROM venue_state WHERE venue = ?", (row["venue"],)
+                        ).fetchone()
+                        eqv = float(eqrow["equity"]) if eqrow else 0.0
+                    except Exception:
+                        eqv = 0.0
+                    if eqv > 0:
+                        vpct = get_setting_float(
+                            "cex_slot_pct" if row["venue"] == "binance" else "dex_slot_pct", 10.0
+                        )
+                        slot = eqv * vpct / 100
+                        if mult * slot > float(row["db"]):
+                            return Verdict("warn",
+                                f"depth requirement ({mult}× slot ${slot:.0f} ≈ ${mult*slot:.0f}) "
+                                f"exceeds stored median depth ${float(row['db']):.0f} — universe will be empty", None)
+        except Exception:
+            pass
 
     # Toxicity enforce + unvalidated baseline
     if key.startswith("tox_") and key.endswith("_enforce"):
@@ -152,95 +261,42 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
     return Verdict("ok", "")
 
 
-# ── Per-asset capital validation (Amendment 004) ─────────────────────────────
+# ── Per-venue capital pools (Amendment 003) ──────────────────────────────────
 
-def validate_asset_capital(
-    symbol: str,
-    capital_dex: float,
-    capital_cex: float,
-    active_dex: bool,
-    active_cex: bool,
-    ctx: SettingsContext | None = None,
-) -> list[Verdict]:
-    """Validate a single asset's capital and flags. Returns list of verdicts (empty = OK)."""
+def validate_capital_pools(ctx: SettingsContext | None = None) -> list[Verdict]:
+    """Amendment 003: per-venue capital pools vs live equity.
+
+    Declared capital is a UI/validation quantity only — sizing never reads it.
+    A divergence beyond 25% is a warning; sizing always uses live exchange
+    equity. Also enforces max_slots × slot_pct <= 100 per venue.
+    """
     results: list[Verdict] = []
     if ctx is None:
         ctx = SettingsContext()
 
-    # Active without capital
-    if active_dex and capital_dex <= 0:
-        results.append(Verdict("warn", f"{symbol}: active_dex=true but capital_dex=0 — DEX will be skipped"))
-    if active_cex and capital_cex <= 0:
-        results.append(Verdict("warn", f"{symbol}: active_cex=true but capital_cex=0 — CEX will be skipped"))
+    for venue, equity, pool_key, slot_key, max_slots_key in (
+        ("binance", ctx.cex_equity, "capital_cex_usdt", "cex_slot_pct", "max_slots_cex"),
+        ("orderly", ctx.dex_equity, "capital_dex_usdc", "dex_slot_pct", "max_slots_dex"),
+    ):
+        pool = get_setting_float(pool_key, 0.0)
+        if equity > 0 and pool > 0:
+            diff = abs(pool - equity) / equity
+            if diff > 0.25:
+                results.append(Verdict(
+                    "warn",
+                    f"{venue}: declared capital ${pool:,.0f} diverges from live equity "
+                    f"${equity:,.0f} by {diff * 100:.0f}% — exchange wins, sizing unchanged",
+                    None,
+                ))
+        pct = get_setting_float(slot_key, 10.0)
+        slots = get_setting_int(max_slots_key, 9)
+        if slots * pct > 100:
+            results.append(Verdict(
+                "error",
+                f"{venue}: max_slots ({slots}) × slot_pct ({pct}%) = {slots * pct:.0f}% of equity — exceeds 100%",
+                None,
+            ))
 
-    # Negative capital
-    if capital_dex < 0:
-        results.append(Verdict("error", f"{symbol}: capital_dex must be >= 0", 0.0))
-    if capital_cex < 0:
-        results.append(Verdict("error", f"{symbol}: capital_cex must be >= 0", 0.0))
-
-    return results
-
-
-def validate_asset_overallocation(ctx: SettingsContext) -> list[Verdict]:
-    """Check that sum of allocated capital per venue does not exceed equity."""
-    results: list[Verdict] = []
-    if ctx.asset_configs is None:
-        return results
-
-    # DEX overallocation
-    dex_allocated = sum(
-        c.get("capital_dex", 0) or 0
-        for c in ctx.asset_configs
-        if (c.get("active_dex") or 0) and (c.get("capital_dex") or 0) > 0
-    )
-    if ctx.dex_equity > 0 and dex_allocated > ctx.dex_equity:
-        over = dex_allocated - ctx.dex_equity
-        results.append(Verdict(
-            "error",
-            f"DEX overallocation: total ${dex_allocated:.0f} exceeds available ${ctx.dex_equity:.0f} by ${over:.0f}",
-            ctx.dex_equity,
-        ))
-
-    # CEX overallocation
-    cex_allocated = sum(
-        c.get("capital_cex", 0) or 0
-        for c in ctx.asset_configs
-        if (c.get("active_cex") or 0) and (c.get("capital_cex") or 0) > 0
-    )
-    if ctx.cex_equity > 0 and cex_allocated > ctx.cex_equity:
-        over = cex_allocated - ctx.cex_equity
-        results.append(Verdict(
-            "error",
-            f"CEX overallocation: total ${cex_allocated:.0f} exceeds available ${ctx.cex_equity:.0f} by ${over:.0f}",
-            ctx.cex_equity,
-        ))
-
-    return results
-
-
-def validate_all_assets(ctx: SettingsContext | None = None) -> dict[str, list[Verdict]]:
-    """Run per-asset validation on all asset_configs rows. Returns {symbol: [Verdict]}."""
-    from db.db_ops import get_all_asset_configs
-    if ctx is None:
-        ctx = SettingsContext()
-    configs = ctx.asset_configs if ctx.asset_configs is not None else get_all_asset_configs()
-    results: dict[str, list[Verdict]] = {}
-    for c in configs:
-        verdicts = validate_asset_capital(
-            c["symbol"],
-            float(c.get("capital_dex", 0) or 0),
-            float(c.get("capital_cex", 0) or 0),
-            bool(c.get("active_dex", 0)),
-            bool(c.get("active_cex", 0)),
-            ctx,
-        )
-        if verdicts:
-            results[c["symbol"]] = verdicts
-    # Overallocation check
-    overall = validate_asset_overallocation(ctx)
-    if overall:
-        results["__overallocation__"] = overall
     return results
 
 

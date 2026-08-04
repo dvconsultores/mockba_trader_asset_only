@@ -136,3 +136,54 @@ Both clear the minimum with room. The risk is that real slippage is worse than a
 3. **Are there additional DEX trades beyond the 25 in `all_trades.json`?** The file only covers 3 days. The `trades_daily` table shows 9 trading days. Where are the other trades?
 
 4. **Does the account use cross or isolated margin on Orderly?** `all_trades.json` shows `"margin_mode": "CROSS"`. Cross margin means liquidation price depends on total equity — the liquidation distance guard must account for this.
+
+---
+
+# Amendment 003 — Universe Scanner Calibration
+
+> Added: 2026-08-04 | Status: PROVISIONAL — all values below are hypotheses to be replaced by dry-run evidence.
+
+## 1. Recovery rate: predicted vs realized
+
+The scanner's Stage-4 replay (trade/universe.py) computes `recovery_rate` on
+historical 5m candles **ignoring spread, fees and slippage, assuming fills at
+the candle price**. It is a *relative* ranking signal, not an expectancy
+estimate.
+
+**Calibration requirement:** record the realized win rate per asset from
+`closed_trades` (exit_reason='tp') and compare it to the scan-time
+`recovery_rate` for the same period. The *size of the gap* is the calibration
+number that makes the ranking trustworthy.
+
+| Metric | Value |
+|---|---|
+| Predicted recovery_rate (replay) | per-asset, stored in `asset_universe.recovery_rate` |
+| Realized win rate (dry-run) | from `closed_trades` — to be measured |
+| Expected gap | realized will be lower (replay ignores spread/fees/slippage) |
+
+Record the measured gap here once the first dry-run completes.
+
+## 2. Rank band evidence
+
+The `universe_rank_min`/`universe_rank_max` band (defaults 15–90) is a
+hypothesis: "liquid enough that spread/slippage are a small fraction of TP,
+and no more liquid than that". The single most valuable dry-run output is
+**realized expectancy by volume-rank decile**, which tests whether the edge
+actually lives inside the 15–90 band.
+
+## 3. Per-venue fee rates (final, measured)
+
+| Venue | Round-trip fee | Status |
+|---|---|---|
+| Orderly DEX | 0.06% | Measured (25 trades, 2026-06) — see section 1 above |
+| Binance CEX | 0.20% | Assumed (standard taker ×2) — replace once measured |
+
+Fees are **per-venue** keys (`dex_round_trip_fee_pct` / `cex_round_trip_fee_pct`).
+Every net-edge calculation uses the venue's own rate. At a 0.8% TP, DEX fees
+consume ~7.5% of gross edge versus ~25% on CEX.
+
+## 4. Universe churn
+
+The dry-run report must record how many assets entered and left the universe
+daily, and whether trades cluster in stable members or in newcomers. Churn
+must never force an exit (only new entries stop for dropped-out assets).

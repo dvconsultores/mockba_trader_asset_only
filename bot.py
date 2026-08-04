@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import math
+import threading
 from pathlib import Path
 
 # Ensure project root is importable
@@ -20,11 +21,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from db.db_ops import (
     get_setting, get_setting_float, get_setting_int, get_setting_bool,
-    upsert_setting, get_active_pairs, initialize_database_tables,
+    upsert_setting, initialize_database_tables,
+    get_tradeable_universe, set_venue_equity, load_all_positions,
 )
 from logs.log_config import apolo_trader_logger as logger
 from trade.regime import detect_regime, invalidate_cache
 from trade.pnl import is_entry_blocked, is_entry_blocked_per_pair, can_trade_venue, compute_slot_size, max_effective_slots, check_global_daily_loss
+from trade.universe import run_scans_if_due, is_universe_stale
 from trading_bot.executor import BinanceSpot, OrderlyFutures
 from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle
 from trading_bot.futures_scalper import manage_open_positions as futures_manage, scalp_cycle as futures_cycle
@@ -36,7 +39,7 @@ from trading_bot.futures_scalper import manage_open_positions as futures_manage,
 
 def validate_startup() -> bool:
     """Run all startup checks via settings_rules. Logs issues, never blocks — trader is responsible."""
-    from trade.settings_rules import validate_all, SettingsContext, validate_all_assets
+    from trade.settings_rules import validate_all, SettingsContext
     results = validate_all()
     errors = [f"{k}: {v.message}" for k, v in results.items() if v.level == "error"]
     warns = [f"{k}: {v.message}" for k, v in results.items() if v.level == "warn"]
@@ -46,25 +49,23 @@ def validate_startup() -> bool:
     for e in errors:
         logger.warning(f"[STARTUP] {e}")
 
-    pairs = get_active_pairs()
-    if not pairs:
-        logger.info("[STARTUP] no active pairs configured — add assets via Telegram or Mini App")
+    # Universe presence (Amendment 003) — the scanner populates this on startup
+    if not get_tradeable_universe("binance") and not get_tradeable_universe("orderly"):
+        logger.info("[STARTUP] no universe scan stored yet — the scanner thread will populate it")
 
-    # Per-asset validation (Amendment 004)
+    # Capital pools (Amendment 003) — declared vs live equity cache, slot caps
     try:
-        from db.db_ops import get_all_asset_configs
-        asset_ctx = SettingsContext(asset_configs=get_all_asset_configs())
-        asset_results = validate_all_assets(asset_ctx)
-        for symbol, verdicts in asset_results.items():
-            if symbol == "__overallocation__":
-                for v in verdicts:
-                    logger.warning(f"[STARTUP] overallocation: {v.message}")
-            else:
-                for v in verdicts:
-                    if v.level in ("error", "warn"):
-                        logger.warning(f"[STARTUP] {symbol}: {v.message}")
-    except Exception as e:
-        logger.error(f"[STARTUP] per-asset validation failed: {e}")
+        from trade.settings_rules import validate_capital_pools
+        from db.db_ops import get_venue_equity
+        def _eq(venue: str) -> float:
+            st = get_venue_equity(venue)
+            return float(st["equity"]) if st else 0.0
+        pool_ctx = SettingsContext(dex_equity=_eq("orderly"), cex_equity=_eq("binance"))
+        for v in validate_capital_pools(pool_ctx):
+            if v.level in ("error", "warn"):
+                logger.warning(f"[STARTUP] {v.message}")
+    except Exception:
+        pass
 
     tp = get_setting_float("tp_min_pct", 0.8); sl = get_setting_float("sl_min_pct", 0.5)
     fee_key = "dex_round_trip_fee_pct"
@@ -80,72 +81,77 @@ def validate_startup() -> bool:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _reconcile_startup(binance, orderly):
-    """Reconcile exchange state with local DB for all active (asset, venue) pairs."""
-    from db.db_ops import get_active_pairs, load_all_positions, save_position, delete_position
-    logger.info("[RECONCILE] starting multi-asset reconciliation")
-
-    pairs = get_active_pairs()
-    if not pairs:
-        logger.info("[RECONCILE] no active pairs — skipping reconciliation")
-        return
+    """Reconcile exchange state with local DB for every asset that could hold a
+    position: current universe members unioned with assets that have a local
+    record (Amendment 003 — churn must not orphan restart reconciliation)."""
+    from db.db_ops import load_all_positions, save_position, delete_position, get_tradeable_universe
+    logger.info("[RECONCILE] starting universe reconciliation")
 
     exchange_map = {"binance": binance, "orderly": orderly}
+    reconciled = 0
 
-    for asset, venue, capital in pairs:
-        ex = exchange_map.get(venue)
-        if ex is None:
+    for venue, ex in exchange_map.items():
+        universe_assets = {u["asset"] for u in get_tradeable_universe(venue)}
+        local_assets = {p["asset"] for p in load_all_positions(venue=venue)}
+        assets = sorted(universe_assets | local_assets)
+        if not assets:
             continue
-        try:
-            local_positions = load_all_positions(asset=asset, venue=venue)
-            local_ids = {p["id"] for p in local_positions}
 
-            # Query exchange for open positions (dry-run skips actual API calls)
-            exchange_positions = ex.get_open_positions(asset) if hasattr(ex, "get_open_positions") else []
-            if exchange_positions is None:
-                exchange_positions = []
+        for asset in assets:
+            try:
+                local_positions = load_all_positions(asset=asset, venue=venue)
+                local_ids = {p["id"] for p in local_positions}
 
-            exchange_ids = set()
-            for ep in exchange_positions:
-                pid = ep.get("id") or ep.get("orderId", "")
-                if not pid:
-                    continue
-                exchange_ids.add(str(pid))
+                # Query exchange for open positions (dry-run skips actual API calls)
+                exchange_positions = ex.get_open_positions(asset) if hasattr(ex, "get_open_positions") else []
+                if exchange_positions is None:
+                    exchange_positions = []
 
-                # Adopt exchange position with no local DB record
-                if str(pid) not in local_ids:
+                exchange_ids = set()
+                for ep in exchange_positions:
+                    pid = ep.get("id") or ep.get("orderId", "")
+                    if not pid:
+                        continue
+                    exchange_ids.add(str(pid))
+
+                    # Adopt exchange position with no local DB record
+                    if str(pid) not in local_ids:
+                        logger.warning(
+                            f"[RECONCILE] adopting orphan position {venue}:{asset}:{pid}"
+                        )
+                        # Minimal save — details will be filled on next manage cycle
+                        try:
+                            save_position({
+                                "id": str(pid),
+                                "asset": asset,
+                                "venue": venue,
+                                "side": ep.get("side", "long"),
+                                "qty": float(ep.get("qty", 0)),
+                                "entry_price": float(ep.get("entryPrice", 0)),
+                                "signal_price": float(ep.get("entryPrice", 0)),
+                                "tp_price": 0.0,
+                                "sl_price": 0.0,
+                                "tp_order_id": None,
+                                "sl_order_id": None,
+                                "opened_at": time.time(),
+                            })
+                        except Exception:
+                            logger.error(f"[RECONCILE] failed to save orphan {venue}:{asset}:{pid}")
+
+                # Close DB records with no matching exchange position
+                for pid in local_ids - exchange_ids:
                     logger.warning(
-                        f"[RECONCILE] adopting orphan position {venue}:{asset}:{pid}"
+                        f"[RECONCILE] closing stale DB record {venue}:{asset}:{pid}"
                     )
-                    # Minimal save — details will be filled on next manage cycle
-                    try:
-                        save_position({
-                            "id": str(pid),
-                            "asset": asset,
-                            "venue": venue,
-                            "side": ep.get("side", "long"),
-                            "qty": float(ep.get("qty", 0)),
-                            "entry_price": float(ep.get("entryPrice", 0)),
-                            "signal_price": float(ep.get("entryPrice", 0)),
-                            "tp_price": 0.0,
-                            "sl_price": 0.0,
-                            "tp_order_id": None,
-                            "sl_order_id": None,
-                            "opened_at": time.time(),
-                        })
-                    except Exception:
-                        logger.error(f"[RECONCILE] failed to save orphan {venue}:{asset}:{pid}")
+                    delete_position(asset, venue, pid)
+                reconciled += 1
 
-            # Close DB records with no matching exchange position
-            for pid in local_ids - exchange_ids:
-                logger.warning(
-                    f"[RECONCILE] closing stale DB record {venue}:{asset}:{pid}"
-                )
-                delete_position(asset, venue, pid)
+            except Exception as e:
+                logger.error(f"[RECONCILE] {venue}:{asset} reconciliation failed: {e}")
+                # Continue to next asset — do not abort
 
-        except Exception as e:
-            logger.error(f"[RECONCILE] {venue}:{asset} reconciliation failed: {e}")
-            # Continue to next pair — do not abort
-
+    if reconciled == 0:
+        logger.info("[RECONCILE] no assets to reconcile")
     logger.info("[RECONCILE] complete")
 
 
@@ -197,6 +203,29 @@ def run():
     # ── Startup reconciliation (Amendment 004, Constitution VI) ──────────
     _reconcile_startup(binance, orderly)
 
+    # ── Universe scanner thread (Amendment 003) ─────────────────────────
+    # Never runs inside the trading cycle. Scans each venue when the stored
+    # scan is missing or older than universe_scan_interval_hours.
+    def _universe_scanner_loop():
+        while True:
+            try:
+                def _equity_for(v: str) -> float | None:
+                    try:
+                        return (binance if v == "binance" else orderly).get_equity()
+                    except Exception:
+                        return None
+                results = run_scans_if_due(equity_fn=_equity_for)
+                for r in results:
+                    if r.get("ok"):
+                        logger.info(f"[UNIVERSE] {r['venue']} scan stored {r.get('stored_count', 0)} assets")
+                    else:
+                        logger.warning(f"[UNIVERSE] {r['venue']} scan not stored: {r.get('reason', 'unknown')}")
+            except Exception as e:
+                logger.error(f"[UNIVERSE] scanner loop error: {e}")
+            time.sleep(600)  # re-check due-ness every 10 minutes
+
+    threading.Thread(target=_universe_scanner_loop, daemon=True, name="universe-scanner").start()
+
     _last_settings: dict[str, str] = {}
     _last_validation = time.time()
     VALIDATION_INTERVAL = 300  # re-validate every 5 minutes
@@ -210,7 +239,9 @@ def run():
             if time.time() - _last_mode_log > 300:
                 dex_m = _normalize_venue_mode(get_setting("auto_trade_orderly"))
                 cex_m = _normalize_venue_mode(get_setting("auto_trade_binance"))
-                logger.info(f"[MODE] DEX={dex_m} CEX={cex_m} pairs={len(get_active_pairs())}")
+                logger.info(f"[MODE] DEX={dex_m} CEX={cex_m} "
+                            f"universe_dex={len(get_tradeable_universe('orderly'))} "
+                            f"universe_cex={len(get_tradeable_universe('binance'))}")
                 _last_mode_log = time.time()
 
             # Refresh settings
@@ -241,97 +272,120 @@ def run():
                 time.sleep(30)
                 continue
 
-            # ── Multi-asset iteration (Amendment 004) ──────────────────
-            pairs = get_active_pairs()
+            # ── Universe-driven iteration (Amendment 003) ────────────────
+            # Assets come from the daily scan (asset_universe), not from a
+            # static list. Exits run for universe members AND assets that
+            # dropped out — churn never forces an exit.
             max_pairs = get_setting_int("max_active_pairs", 6)
-            if len(pairs) > max_pairs:
-                logger.warning(f"[LIMIT] {len(pairs)} active pairs exceeds max_active_pairs={max_pairs} — capping")
-                pairs = pairs[:max_pairs]
-
-            if not pairs:
-                if time.time() % 300 < 30:  # Log once every ~5 min
-                    logger.debug("[LOOP] no active pairs")
-                time.sleep(30)
-                continue
-
-            # ── Max concurrent positions enforcement ────────────────
-            from db.db_ops import load_all_positions
             max_positions = get_setting_int("max_concurrent_positions", 9)
             all_open = load_all_positions()
             if len(all_open) >= max_positions:
                 logger.info(f"[LIMIT] max_concurrent_positions={max_positions} reached ({len(all_open)} open) — no new entries this cycle")
 
-            exchange_map = {"binance": binance, "orderly": orderly}
             _venue_failures: dict[str, int] = {}
 
             # ── Read per-venue mode (False / Signal / Automatic) ──
             dex_mode = _normalize_venue_mode(get_setting("auto_trade_orderly"))
             cex_mode = _normalize_venue_mode(get_setting("auto_trade_binance"))
 
-            for asset, venue, capital in pairs:
+            for venue, ex, venue_mode, label in (
+                ("binance", binance, cex_mode, "CEX"),
+                ("orderly", orderly, dex_mode, "DEX"),
+            ):
+                if venue_mode == "False":
+                    continue
+
+                universe = get_tradeable_universe(venue)
+                if len(universe) > max_pairs:
+                    logger.warning(f"[LIMIT] {venue}: {len(universe)} assets exceeds max_active_pairs={max_pairs} — capping")
+                    universe = universe[:max_pairs]
+                universe_by_asset = {u["asset"]: u for u in universe}
+
+                # Exit management covers universe members AND dropped-out assets
+                open_assets = {p["asset"] for p in load_all_positions(venue=venue)}
+                assets = sorted(set(universe_by_asset) | open_assets)
+                if not assets:
+                    if time.time() % 300 < 30:
+                        logger.debug(f"[LOOP] {venue}: no universe assets or open positions")
+                    continue
+
+                # ── Stale universe: no new entries, exits still managed ──
+                stale = is_universe_stale(venue)
+                if stale:
+                    logger.warning(f"[UNIVERSE] {venue} scan is stale — new entries blocked until rescan (positions still managed)")
+
+                # ── Equity query (once per venue) ──────────────
                 try:
-                    # ── Skip if venue mode is False ──────────────
-                    venue_mode = dex_mode if venue == "orderly" else cex_mode
-                    if venue_mode == "False":
-                        continue
-
-                    # ── Automatic mode requires capital ──────────
-                    if venue_mode == "Automatic" and capital <= 0:
-                        logger.warning(f"[CONFIG] {venue}:{asset} automatic mode but capital={capital} — skipping")
-                        continue
-
-                    ex = exchange_map.get(venue)
-                    if ex is None:
-                        continue
-
-                    # ── Equity query ──────────────────────────────
-                    try:
-                        equity = ex.get_equity()
-                    except Exception:
-                        _venue_failures[venue] = _venue_failures.get(venue, 0) + 1
-                        logger.error(f"[ERROR] {venue}:{asset} equity query failed")
-                        continue
-
-                    signal_only = (venue_mode == "Signal")
-
-                    # ── Per-pair kill switch (skip for signal-only) ──
-                    blocked = False
-                    reason = ""
-                    if not signal_only:
-                        blocked, reason = is_entry_blocked_per_pair(asset, venue, equity)
-                        if len(all_open) >= max_positions:
-                            blocked = True
-                            reason = f"max_concurrent_positions={max_positions} reached"
-                    regime = detect_regime(asset, venue)
-
-                    # ── Manage exits FIRST ────────────────────────
-                    if venue == "binance":
-                        spot_manage(asset, binance)
-                        if not blocked and regime != "UNKNOWN":
-                            obi = _get_obi_binance(asset)
-                            price = _get_live_price_binance(asset)
-                            if obi is not None and price is not None:
-                                result = spot_cycle(asset, binance, regime, obi, price, signal_only=signal_only)
-                                if result:
-                                    _notify_entry(asset, "CEX", regime, result, price, signal_only)
-                            else:
-                                logger.warning(f"[DATA] {asset} CEX: obi={obi} price={price} — skipping cycle")
-                    else:
-                        futures_manage(asset, orderly, regime)
-                        if not blocked and regime != "UNKNOWN":
-                            obi = _get_obi_orderly(asset)
-                            price = _get_live_price_orderly(asset)
-                            if obi is not None and price is not None:
-                                result = futures_cycle(asset, orderly, regime, obi, price, signal_only=signal_only)
-                                if result:
-                                    _notify_entry(asset, "DEX", regime, result, price, signal_only)
-                            else:
-                                logger.warning(f"[DATA] {asset} DEX: obi={obi} price={price} — skipping cycle")
-
-                except Exception as e:
-                    logger.error(f"[ERROR] {venue}:{asset} cycle failed: {e}")
+                    equity = ex.get_equity()
+                    set_venue_equity(venue, equity)
+                except Exception:
                     _venue_failures[venue] = _venue_failures.get(venue, 0) + 1
-                    # Continue to next pair — do not abort
+                    logger.error(f"[ERROR] {venue} equity query failed")
+                    continue
+
+                signal_only = (venue_mode == "Signal")
+
+                for asset in assets:
+                    try:
+                        regime = detect_regime(asset, venue)
+
+                        # ── Manage exits FIRST (always) ──────────
+                        if venue == "binance":
+                            spot_manage(asset, binance)
+                        else:
+                            futures_manage(asset, orderly, regime)
+
+                        # Dropped out of the universe → exits only
+                        if asset not in universe_by_asset:
+                            if not signal_only and time.time() % 600 < 30:
+                                logger.debug(f"[UNIVERSE] {asset} {venue} dropped out — entries stopped, position managed to exit")
+                            continue
+
+                        # Stale universe → no new entries (fail closed)
+                        if stale:
+                            continue
+
+                        blocked = False
+                        reason = ""
+                        if not signal_only:
+                            blocked, reason = is_entry_blocked_per_pair(asset, venue, equity)
+                            if len(all_open) >= max_positions:
+                                blocked = True
+                                reason = f"max_concurrent_positions={max_positions} reached"
+                        if blocked:
+                            logger.debug(f"[SKIP] {venue}:{asset} {reason}")
+                            continue
+                        if regime == "UNKNOWN":
+                            continue
+
+                        obi, spread = _get_obi_and_spread(asset, venue)
+                        price = _get_live_price_orderly(asset) if venue == "orderly" else _get_live_price_binance(asset)
+
+                        # ── Live spread degradation guard (Amendment 003) ──
+                        # Compare against scan-time spread already stored; no
+                        # extra API call (spread comes from the OBI snapshot).
+                        row = universe_by_asset.get(asset)
+                        scan_spread = float(row["spread_pct"]) if row and row.get("spread_pct") else None
+                        if scan_spread and spread is not None:
+                            mult = get_setting_float("universe_spread_degradation_multiple", 3.0)
+                            if spread > scan_spread * mult:
+                                logger.warning(f"[UNIVERSE] {asset} {venue} live spread {spread:.3f}% exceeds scan spread {scan_spread:.3f}% × {mult} — skipping entries this cycle")
+                                continue
+
+                        if obi is not None and price is not None:
+                            if venue == "binance":
+                                result = spot_cycle(asset, binance, regime, obi, price, signal_only=signal_only)
+                            else:
+                                result = futures_cycle(asset, orderly, regime, obi, price, signal_only=signal_only)
+                            if result:
+                                _notify_entry(asset, label, regime, result, price, signal_only)
+                        else:
+                            logger.warning(f"[DATA] {asset} {label}: obi={obi} price={price} — skipping cycle")
+
+                    except Exception as e:
+                        logger.error(f"[ERROR] {venue}:{asset} cycle failed: {e}")
+                        _venue_failures[venue] = _venue_failures.get(venue, 0) + 1
+                        # Continue to next asset — do not abort
 
             # ── Venue-level failure escalation (Constitution IV) ────
             for venue, fails in _venue_failures.items():
@@ -354,19 +408,30 @@ def run():
 
 # ── Price & OBI helpers (thin wrappers — executor provides them) ──────────────
 
-def _get_obi_binance(asset: str) -> float | None:
+def _get_obi_and_spread(asset: str, venue: str) -> tuple[float | None, float | None]:
+    """Return (obi, spread_pct) for an asset from a single order-book snapshot.
+
+    Orderly public orderbook is restricted — Binance is used as proxy
+    (same asset, correlated books), consistent with the existing pattern.
+    The spread here feeds the per-cycle degradation guard (Amendment 003)
+    with no additional API call.
+    """
     try:
         import requests
         r = requests.get("https://api.binance.com/api/v3/depth",
                          params={"symbol": f"{asset}USDT", "limit": 10}, timeout=5)
         data = r.json()
-        bids = sum(float(b[1]) for b in data.get("bids", []))
-        asks = sum(float(a[1]) for a in data.get("asks", []))
-        if asks == 0:
-            return 2.0
-        return bids / asks
+        bids = data.get("bids", [])
+        asks = data.get("asks", [])
+        bid_qty = sum(float(b[1]) for b in bids)
+        ask_qty = sum(float(a[1]) for a in asks)
+        obi = (bid_qty / ask_qty) if ask_qty > 0 else 2.0
+        best_bid = float(bids[0][0]) if bids else 0.0
+        best_ask = float(asks[0][0]) if asks else 0.0
+        spread = ((best_ask - best_bid) / best_bid * 100) if best_bid > 0 else None
+        return obi, spread
     except Exception:
-        return None
+        return None, None
 
 
 def _get_live_price_binance(asset: str) -> float | None:
@@ -377,11 +442,6 @@ def _get_live_price_binance(asset: str) -> float | None:
         return float(r.json()["price"])
     except Exception:
         return None
-
-
-def _get_obi_orderly(asset: str) -> float | None:
-    """Orderly public orderbook is restricted — use Binance as proxy (same asset, correlated books)."""
-    return _get_obi_binance(asset)
 
 
 def _get_live_price_orderly(asset: str) -> float | None:

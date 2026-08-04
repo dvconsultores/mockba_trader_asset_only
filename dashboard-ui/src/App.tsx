@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
-import { TerminalSquare, BarChart3, Radio, Settings2, MoreHorizontal, Package } from 'lucide-react'
+import { TerminalSquare, BarChart3, Radio, Settings2, MoreHorizontal, Banknote } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import Terminal from './Terminal'
 import Signals from './Signals'
 import StatusBar from './StatusBar'
 import MiniSettings from './MiniSettings'
-import AssetManager from './AssetManager'
+import CapitalManager from './CapitalManager'
 import { TG, isTelegram } from './TelegramProvider'
 
-type Tab = 'live' | 'signals' | 'status' | 'settings' | 'assets'
+type Tab = 'live' | 'signals' | 'status' | 'settings' | 'capital'
 
 interface BotStatus {
   uptime_seconds: number
@@ -54,7 +54,7 @@ export default function App() {
     if (!isTelegram || !TG?.BackButton) return
 
     const backBtn = TG.BackButton
-    const mainTabIds: Tab[] = ['live', 'signals', 'assets']
+    const mainTabIds: Tab[] = ['live', 'signals', 'capital']
     const isHome = tab === 'live' && !moreOpen
 
     // Remove previous handler if any
@@ -97,7 +97,7 @@ export default function App() {
   const mainTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'live', label: 'Live', icon: TerminalSquare },
     { id: 'signals', label: 'Signals', icon: BarChart3 },
-    { id: 'assets', label: 'Assets', icon: Package },
+    { id: 'capital', label: 'Capital', icon: Banknote },
   ]
 
   const moreTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
@@ -128,7 +128,7 @@ export default function App() {
       <div className="flex-1 overflow-y-auto">
         {tab === 'live' && <Terminal />}
         {tab === 'signals' && <Signals />}
-        {tab === 'assets' && <AssetManager />}
+        {tab === 'capital' && <CapitalManager />}
         {tab === 'status' && <StatusBar status={status} />}
         {tab === 'settings' && <MiniSettings />}
       </div>

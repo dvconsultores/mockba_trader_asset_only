@@ -241,3 +241,67 @@ Missing from this list vs what the rebuilder will need:
 | Modules with import-time bugs | 1 (`futures_grid_scalper.py` — `float("long")`) |
 | Modules with no position persistence | 2 (both scalpers) |
 | Modules with no exit management | 2 (both scalpers — spot has partial, futures has none) |
+
+---
+
+# Amendment 003 — Current State (Dynamic Universe & Capital View)
+
+> Added: 2026-08-04. This section reflects the CURRENT codebase; sections above
+> describe the historical Phase-1 code and are preserved for reference.
+
+## New modules & tables
+
+| Item | Purpose |
+|---|---|
+| `trade/universe.py` | Daily universe scanner (5 stages) + shared `compute_thresholds` used by both live scalpers and the replay. |
+| `db/migrations/006_amendment_003.sql` | Creates `asset_universe` + `venue_state`, seeds universe/capital settings + baselines. |
+| `asset_universe` table | One row per venue per asset; replaced wholesale per scan; `blacklisted` carried forward. |
+| `venue_state` table | Live equity cache written by `bot.py` each cycle; read by the Capital view. |
+
+## Where the trading universe comes from
+
+`bot.py` iterates `get_tradeable_universe(venue)` (non-blacklisted `asset_universe`
+rows) instead of the legacy `asset_configs` pairs. Exits run for universe members
+AND dropped-out assets (churn never forces an exit). A stale scan
+(`universe_max_age_hours`) blocks new entries but not exit management. A live
+spread exceeding the scan-time spread by `universe_spread_degradation_multiple`
+skips entries for that asset (no extra API call — spread comes from the OBI
+snapshot).
+
+The scanner runs in a dedicated background thread in `bot.py` — never inside the
+trading cycle. It runs on startup if the stored scan is stale, then every
+`universe_scan_interval_hours`. Rate-limit exhaustion aborts the scan and
+preserves the previous universe (no partial write).
+
+## Capital model
+
+- Slot size = `{venue}_slot_pct` × **live exchange equity**, floored at
+  `min_notional × 1.5`, recomputed daily (`trade/pnl.compute_slot_size`).
+- Declared pools (`capital_cex_usdt` / `capital_dex_usdc`) are for display and
+  validation only — sizing never reads them. Divergence beyond 25% surfaces a
+  warning; the exchange wins.
+- Per-venue slot limits: `max_slots_cex` / `max_slots_dex`.
+- Fees are per-venue (`dex_round_trip_fee_pct` / `cex_round_trip_fee_pct`) and
+  drive all net-edge calculations, including the universe replay's minimum
+  recovery rate (`universe_min_recovery_rate='auto'` → breakeven `(sl+fee)/(tp+sl)`).
+
+## Interfaces
+
+- **Telegram:** `/capital`, `/universe [cex|dex]`, `/blacklist add|remove <ASSET>`.
+  Per-asset add/toggle/remove handlers removed; the manual signal asset picker
+  now sources from the universe.
+- **Dashboard API:** `GET /api/capital`, `GET /api/universe/{venue}`,
+  `PUT /api/universe/{venue}/{asset}/blacklist`. The `/api/assets*` per-asset
+  endpoints were replaced.
+- **Mini App:** Assets tab → Capital view (`CapitalManager.tsx`) with per-venue
+  panels and read-only Universe panels (blacklist toggles only).
+- `asset_configs` remains in the DB as legacy data but is no longer read by the
+  bot loop, Telegram, or the Capital view.
+
+## Status
+
+- Backend, scanner, guards, Telegram, dashboard API, Mini App Capital view, and
+  unit tests implemented (`tests/test_amendment003.py`, 17 tests).
+- **Not yet done:** dry-run validation under the new universe (48h), the
+  predicted-vs-realized recovery-rate gap, rank-band decile evidence, and
+  measured CEX fee rate — see `docs/CALIBRATION.md`.

@@ -60,52 +60,43 @@ def _upsert_setting(key: str, value: str):
     db.close()
 
 
-# ── Asset config helpers (Amendment 004) ───────────────────────────
+# ── Capital & universe helpers (Amendment 003) ──────────────────────
 
-def _get_asset_configs() -> list[dict]:
-    """Return all asset_configs rows."""
-    db = _get_db()
-    rows = db.execute(
-        "SELECT symbol, capital_dex, capital_cex, active_dex, active_cex "
-        "FROM asset_configs ORDER BY symbol"
-    ).fetchall()
-    db.close()
-    return [dict(r) for r in rows]
+def _get_setting_float(key: str, default: float) -> float:
+    try:
+        v = _get_setting(key)
+        return float(v) if v is not None else default
+    except (ValueError, TypeError):
+        return default
 
 
-def _get_asset_open_position_count(symbol: str) -> int:
-    """Count open positions for an asset across both venues."""
+def _get_setting_int(key: str, default: int) -> int:
+    try:
+        v = _get_setting(key)
+        return int(v) if v is not None else default
+    except (ValueError, TypeError):
+        return default
+
+
+def _get_venue_equity(venue: str) -> dict | None:
+    """Live equity cached by bot.py each cycle."""
     db = _get_db()
     row = db.execute(
-        "SELECT COUNT(*) as c FROM open_positions WHERE asset = ?", (symbol,)
+        "SELECT venue, equity, updated_at FROM venue_state WHERE venue = ?", (venue,)
     ).fetchone()
     db.close()
-    return row["c"] if row else 0
+    return dict(row) if row else None
 
 
-def _upsert_asset_config_inline(symbol: str, capital_dex: float = 0.0,
-                                 capital_cex: float = 0.0, active_dex: bool = False,
-                                 active_cex: bool = False):
-    """Insert or update asset_config row."""
-    db = _get_db_rw()
-    db.execute(
-        "INSERT INTO asset_configs (symbol, capital_dex, capital_cex, active_dex, active_cex) "
-        "VALUES (?, ?, ?, ?, ?) ON CONFLICT(symbol) DO UPDATE SET "
-        "capital_dex = excluded.capital_dex, capital_cex = excluded.capital_cex, "
-        "active_dex = excluded.active_dex, active_cex = excluded.active_cex, "
-        "updated_at = datetime('now')",
-        (symbol, capital_dex, capital_cex, int(active_dex), int(active_cex)),
-    )
-    db.commit()
+def _get_venue_deployed(venue: str) -> float:
+    """Notional of open positions on a venue (qty × entry price)."""
+    db = _get_db()
+    row = db.execute(
+        "SELECT COALESCE(SUM(qty * entry_price), 0) AS s FROM open_positions WHERE venue = ?",
+        (venue,),
+    ).fetchone()
     db.close()
-
-
-def _delete_asset_config_inline(symbol: str):
-    """Delete an asset_config row."""
-    db = _get_db_rw()
-    db.execute("DELETE FROM asset_configs WHERE symbol = ?", (symbol,))
-    db.commit()
-    db.close()
+    return float(row["s"]) if row else 0.0
 
 
 def _get_db() -> sqlite3.Connection:
@@ -617,194 +608,119 @@ async def api_miniapp_update(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ── Asset Management API (Amendment 004 — multi-asset) ───────────────
+# ── Capital & Universe API (Amendment 003 — replaces Asset Management API) ──
 
-@app.get("/api/assets")
-async def api_assets_get():
-    """Return all asset_configs rows with open position counts and allocation summary."""
+@app.get("/api/capital")
+async def api_capital_get():
+    """Per-venue capital view.
+
+    Declared capital (editable pool) vs live exchange equity (venue_state cache
+    written by bot.py each cycle), slot sizing, deployed/free, fee + net edge.
+    Live equity always wins — divergence is surfaced, never applied.
+    """
     try:
-        configs = _get_asset_configs()
-        assets = []
-        for c in configs:
-            assets.append({
-                "symbol": c["symbol"],
-                "capital_dex": float(c.get("capital_dex", 0) or 0),
-                "capital_cex": float(c.get("capital_cex", 0) or 0),
-                "active_dex": bool(c.get("active_dex", 0)),
-                "active_cex": bool(c.get("active_cex", 0)),
-                "open_positions": _get_asset_open_position_count(c["symbol"]),
+        venues = []
+        for venue, pool_key, pct_key, slots_key, fee_key in (
+            ("binance", "capital_cex_usdt", "cex_slot_pct", "max_slots_cex", "cex_round_trip_fee_pct"),
+            ("orderly", "capital_dex_usdc", "dex_slot_pct", "max_slots_dex", "dex_round_trip_fee_pct"),
+        ):
+            pool = _get_setting_float(pool_key, 0.0)
+            st = _get_venue_equity(venue)
+            equity = float(st["equity"]) if st else 0.0
+            eq_age = st["updated_at"] if st else None
+            slot_pct = _get_setting_float(pct_key, 10.0)
+            slot = equity * slot_pct / 100 if equity > 0 else 0.0
+            max_slots = _get_setting_int(slots_key, 9)
+            deployed = _get_venue_deployed(venue)
+            free = max(0.0, equity - deployed)
+            fee = _get_setting_float(fee_key, 0.06 if venue == "orderly" else 0.20)
+            tp = _get_setting_float("tp_min_pct", 0.8)
+            slip = _get_setting_float("assumed_slippage_pct", 0.03)
+            net_edge = tp - fee - slip
+            divergence = None
+            if equity > 0 and pool > 0:
+                diff = abs(pool - equity) / equity
+                if diff > 0.25:
+                    divergence = {"declared": round(pool, 2), "live": round(equity, 2),
+                                  "pct": round(diff * 100, 1)}
+            mode = _get_setting("auto_trade_binance" if venue == "binance" else "auto_trade_orderly") or "False"
+            venues.append({
+                "venue": venue,
+                "declared_capital": round(pool, 2),
+                "live_equity": round(equity, 2),
+                "equity_age": eq_age,
+                "divergence": divergence,
+                "slot_pct": slot_pct,
+                "slot_size": round(slot, 2),
+                "max_slots": max_slots,
+                "deployed": round(deployed, 2),
+                "free": round(free, 2),
+                "fee_pct": fee,
+                "net_edge_pct": round(net_edge, 3),
+                "enabled": mode,
             })
-        summary = []
-        for vk, vl in [("dex", "orderly"), ("cex", "binance")]:
-            total = sum(a[f"capital_{vk}"] for a in assets if a[f"active_{vk}"] and a[f"capital_{vk}"] > 0)
-            active = sum(1 for a in assets if a[f"active_{vk}"] and a[f"capital_{vk}"] > 0)
-            # Exchange equity query requires API credentials — not available in dashboard context.
-            # The bot's startup validation gate checks overallocation via settings_rules.py.
-            summary.append({
-                "venue": vl,
-                "total_allocated": round(total, 2),
-                "active_pairs": active,
-                "remaining": None,
-                "balance_error": "Equity query unavailable in dashboard — use Telegram bot for balance-checked saves",
-            })
-        return {"ok": True, "assets": assets, "summary": summary}
+        return {"ok": True, "venues": venues}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/assets")
-async def api_assets_add(request: Request):
-    """Add an asset configuration. Requires auth."""
-    _a = await _check_auth(request)
-    if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
-    body = await request.json()
-    symbol = (body.get("symbol") or "").strip()
-    if not symbol: raise HTTPException(status_code=422, detail="Symbol is required")
-    cd, cc = float(body.get("capital_dex", 0) or 0), float(body.get("capital_cex", 0) or 0)
-    ad, ac = bool(body.get("active_dex", False)), bool(body.get("active_cex", False))
-    if cd < 0 or cc < 0: raise HTTPException(status_code=422, detail="Capital must be >= 0")
-    configs = _get_asset_configs()
-    if any(c["symbol"] == symbol for c in configs):
-        raise HTTPException(status_code=409, detail=f"Asset {symbol} already exists")
-    _upsert_asset_config_inline(symbol, cd, cc, ad, ac)
-    return {"ok": True, "symbol": symbol, "capital_dex": cd, "capital_cex": cc,
-            "active_dex": ad, "active_cex": ac, "open_positions": 0}
-
-
-@app.put("/api/assets/{symbol}")
-async def api_assets_edit(symbol: str, request: Request):
-    """Edit an existing asset configuration. Partial update."""
-    _a = await _check_auth(request)
-    if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
-    symbol = symbol.strip()
-    configs = _get_asset_configs()
-    ex = next((c for c in configs if c["symbol"] == symbol), None)
-    if ex is None: raise HTTPException(status_code=404, detail=f"Asset {symbol} not found")
-    body = await request.json()
-    cd = float(body.get("capital_dex", ex.get("capital_dex", 0) or 0))
-    cc = float(body.get("capital_cex", ex.get("capital_cex", 0) or 0))
-    ad = bool(body.get("active_dex", ex.get("active_dex", 0)))
-    ac = bool(body.get("active_cex", ex.get("active_cex", 0)))
-    if cd < 0 or cc < 0: raise HTTPException(status_code=422, detail="Capital must be >= 0")
-    if not ad and not ac and cd == 0 and cc == 0:
-        oc = _get_asset_open_position_count(symbol)
-        if oc > 0:
-            raise HTTPException(status_code=409,
-                detail=f"Cannot remove {symbol} — {oc} open position(s). Deactivate first.")
-    _upsert_asset_config_inline(symbol, cd, cc, ad, ac)
-    return {"ok": True, "symbol": symbol, "capital_dex": cd, "capital_cex": cc,
-            "active_dex": ad, "active_cex": ac, "open_positions": _get_asset_open_position_count(symbol)}
-
-
-@app.delete("/api/assets/{symbol}")
-async def api_assets_remove(symbol: str, request: Request):
-    """Remove an asset configuration. Blocked if open positions exist."""
-    _a = await _check_auth(request)
-    if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
-    symbol = symbol.strip()
-    configs = _get_asset_configs()
-    if not any(c["symbol"] == symbol for c in configs):
-        raise HTTPException(status_code=404, detail=f"Asset {symbol} not found")
-    oc = _get_asset_open_position_count(symbol)
-    if oc > 0:
-        raise HTTPException(status_code=409,
-            detail=f"Cannot remove {symbol} — {oc} open position(s). Deactivate first.")
-    _delete_asset_config_inline(symbol)
-    remaining = [c["symbol"] for c in _get_asset_configs()]
-    return {"ok": True, "removed": symbol, "assets": remaining}
-
-
-# ── Asset Validation & Force-Save (Amendment 004) ─────────────────
-
-@app.post("/api/assets/validate")
-async def api_assets_validate(request: Request):
-    """Dry-run validation for asset config without saving. Requires auth.
-
-    Body: { symbol, capital_dex, capital_cex, active_dex, active_cex }
-    Returns: { ok, warnings: [{field, message}], errors: [{field, message}] }
-    """
-    _a = await _check_auth(request)
-    if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
-    body = await request.json()
-    symbol = (body.get("symbol") or "").strip()
-    cd = float(body.get("capital_dex", 0) or 0)
-    cc = float(body.get("capital_cex", 0) or 0)
-    ad = bool(body.get("active_dex", False))
-    ac = bool(body.get("active_cex", False))
-
-    warnings = []
-    errors = []
-
-    if not symbol:
-        errors.append({"field": "symbol", "message": "Symbol is required"})
-    if cd < 0:
-        errors.append({"field": "capital_dex", "message": "Capital must be >= 0"})
-    if cc < 0:
-        errors.append({"field": "capital_cex", "message": "Capital must be >= 0"})
-    if ad and cd == 0:
-        warnings.append({"field": "capital_dex", "message": "DEX active but capital is $0"})
-    if ac and cc == 0:
-        warnings.append({"field": "capital_cex", "message": "CEX active but capital is $0"})
-
-    # Check for duplicate symbol (skip if editing existing)
-    existing = body.get("is_edit")
-    if not existing:
-        configs = _get_asset_configs()
-        if any(c["symbol"] == symbol for c in configs):
-            errors.append({"field": "symbol", "message": f"Asset '{symbol}' already exists"})
-
-    # Overallocation check (best-effort — exchange balance query may fail)
+@app.get("/api/universe/{venue}")
+async def api_universe_get(venue: str):
+    """Current universe for a venue with scan age (read-only)."""
+    if venue not in ("binance", "orderly"):
+        raise HTTPException(status_code=400, detail="Venue must be 'binance' or 'orderly'")
     try:
-        configs = _get_asset_configs()
-        total_dex = sum(float(c.get("capital_dex", 0) or 0) for c in configs if c.get("active_dex") and c["symbol"] != symbol)
-        total_cex = sum(float(c.get("capital_cex", 0) or 0) for c in configs if c.get("active_cex") and c["symbol"] != symbol)
-        if ad:
-            total_dex += cd
-        if ac:
-            total_cex += cc
-        # Warn if total > 0 but actual balance check requires exchange API
-        if total_dex > 0 and ad:
-            warnings.append({"field": "capital_dex", "message": f"Total DEX allocation would be ${total_dex:,.0f} — verify against exchange balance"})
-        if total_cex > 0 and ac:
-            warnings.append({"field": "capital_cex", "message": f"Total CEX allocation would be ${total_cex:,.0f} — verify against exchange balance"})
-    except Exception:
-        warnings.append({"field": "_global", "message": "Could not verify total allocation — exchange balance query unavailable"})
+        db = _get_db()
+        rows = db.execute(
+            "SELECT asset, symbol, rank, scanned_at, quote_volume_24h, spread_pct, "
+            "depth_bid_top10, depth_ask_top10, atr_pct_median, signals_count, "
+            "recovery_rate, median_minutes_to_tp, blacklisted "
+            "FROM asset_universe WHERE venue = ? ORDER BY rank", (venue,)
+        ).fetchall()
+        age_row = db.execute(
+            "SELECT MAX(scanned_at) AS t FROM asset_universe WHERE venue = ?", (venue,)
+        ).fetchone()
+        db.close()
+        max_age = _get_setting_float("universe_max_age_hours", 36)
+        age = float(age_row["t"]) if age_row and age_row["t"] is not None else None
+        scan_age_hours = (time.time() - age) / 3600 if age else None
+        return {
+            "ok": True, "venue": venue,
+            "rows": [dict(r) for r in rows],
+            "scanned_at": age,
+            "scan_age_hours": round(scan_age_hours, 2) if scan_age_hours is not None else None,
+            "stale": scan_age_hours is not None and scan_age_hours > max_age,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
-    return {"ok": len(errors) == 0, "warnings": warnings, "errors": errors}
 
+@app.put("/api/universe/{venue}/{asset}/blacklist")
+async def api_universe_blacklist(venue: str, asset: str, request: Request):
+    """Set the operator blacklist flag for an asset in a venue's universe.
 
-@app.post("/api/assets/{symbol}/force-save")
-async def api_assets_force_save(symbol: str, request: Request):
-    """Save asset config bypassing balance check. Requires auth.
-
-    Logs the override prominently. Use only when balance query fails (Constitution IV emergency).
+    This is the only writable part of the Universe panel — assets are not
+    manually added; the scanner decides the set.
     """
     _a = await _check_auth(request)
     if not _a: raise HTTPException(status_code=403, detail="Invalid auth")
-    symbol = symbol.strip()
+    if venue not in ("binance", "orderly"):
+        raise HTTPException(status_code=400, detail="Venue must be 'binance' or 'orderly'")
     body = await request.json()
-    cd = float(body.get("capital_dex", 0) or 0)
-    cc = float(body.get("capital_cex", 0) or 0)
-    ad = bool(body.get("active_dex", False))
-    ac = bool(body.get("active_cex", False))
-    if cd < 0 or cc < 0:
-        raise HTTPException(status_code=422, detail="Capital must be >= 0")
-
-    configs = _get_asset_configs()
-    ex = next((c for c in configs if c["symbol"] == symbol), None)
-
-    _upsert_asset_config_inline(symbol, cd, cc, ad, ac)
-    logger.warning(f"[FORCE-SAVE] Asset '{symbol}' saved without balance check. "
-                   f"capital_dex={cd}, capital_cex={cc}, active_dex={ad}, active_cex={ac}")
-
-    return {
-        "ok": True,
-        "symbol": symbol,
-        "capital_dex": cd, "capital_cex": cc,
-        "active_dex": ad, "active_cex": ac,
-        "force_saved": True,
-        "open_positions": _get_asset_open_position_count(symbol),
-    }
+    target = bool(body.get("blacklisted", False))
+    asset = asset.strip().upper()
+    db = _get_db_rw()
+    cur = db.execute(
+        "UPDATE asset_universe SET blacklisted = ? WHERE venue = ? AND asset = ?",
+        (int(target), venue, asset),
+    )
+    db.commit()
+    found = cur.rowcount > 0
+    db.close()
+    if not found:
+        raise HTTPException(status_code=404, detail=f"{asset} not in {venue} universe")
+    logger.info(f"[BLACKLIST] {venue}:{asset} blacklisted={target}")
+    return {"ok": True, "venue": venue, "asset": asset, "blacklisted": target}
 
 
 async def _check_auth(request: Request) -> bool:

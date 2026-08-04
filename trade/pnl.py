@@ -204,13 +204,14 @@ def compute_slot_size(
     capital: float = 0.0,
 ) -> float:
     """
-    Absolute-USD position size for a single slot (Amendment 004).
+    Absolute-USD position size for a single slot (Amendment 003).
 
-    If capital > 0, uses the per-asset capital allocation directly.
-    Falls back to percentage-based sizing for backward compatibility.
+    Per-venue pool model: slot = {venue}_slot_pct × LIVE exchange equity,
+    floored at min_notional × 1.5, recomputed once per UTC day.
 
-    Recomputed once per UTC day. Uses realized PnL compounding for DEX.
-    Returns the slot size in quote currency (USDT/USDC).
+    Sizing never reads the declared capital_* pools (Amendment 003: the
+    exchange wins on disagreement). The `capital` argument is retained for
+    backward compatibility but is no longer used for sizing.
     """
     today = _today_utc()
 
@@ -218,13 +219,9 @@ def compute_slot_size(
     if _day_cache_date.get(venue) == today and venue in _day_cache:
         return _day_cache[venue]
 
-    if capital > 0:
-        # Absolute USD capital — use directly
-        raw = capital
-    else:
-        # Fallback: legacy percentage-based (for transition)
-        slot_pct = get_setting_float(f"{venue}_slot_pct", 15.0)
-        raw = equity * (slot_pct / 100)
+    slot_pct_key = "cex_slot_pct" if venue == "binance" else "dex_slot_pct"
+    slot_pct = get_setting_float(slot_pct_key, 10.0)
+    raw = equity * (slot_pct / 100)
 
     floored = max(raw, min_notional * 1.5)
     _day_cache[venue] = floored

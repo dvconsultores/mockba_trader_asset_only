@@ -201,6 +201,10 @@ def delete_asset_config(symbol: str):
 def get_active_pairs() -> list[tuple[str, str, float]]:
     """Return (asset, venue, capital) tuples for all active pairs.
     Active means active_<venue>=true. Capital may be 0 for signal-only pairs.
+
+    LEGACY since Amendment 003 — the bot loop now derives pairs from the
+    asset_universe table via get_tradeable_universe(). Kept for backward
+    compatibility with telegram.py / startup validation.
     """
     pairs: list[tuple[str, str, float]] = []
     with get_db_connection() as conn:
@@ -214,6 +218,135 @@ def get_active_pairs() -> list[tuple[str, str, float]]:
         if row["active_cex"]:
             pairs.append((row["symbol"], "binance", float(row["capital_cex"])))
     return pairs
+
+
+# ── asset_universe CRUD (Amendment 003) ───────────────────────────────────────
+
+def replace_universe(venue: str, rows: list[dict]):
+    """Replace the stored universe for a venue wholesale.
+
+    blacklisted is carried forward by (venue, asset) so the operator's
+    override survives a rescan. Rows: list of dicts with keys asset, symbol,
+    rank, scanned_at, quote_volume_24h, spread_pct, depth_bid_top10,
+    depth_ask_top10, atr_pct_median, signals_count, recovery_rate,
+    median_minutes_to_tp.
+    """
+    with get_db_connection() as conn:
+        # Carry blacklist forward
+        prev = {
+            (r["venue"], r["asset"]): bool(r["blacklisted"])
+            for r in conn.execute(
+                "SELECT venue, asset, blacklisted FROM asset_universe WHERE venue = ?",
+                (venue,),
+            ).fetchall()
+        }
+        conn.execute("DELETE FROM asset_universe WHERE venue = ?", (venue,))
+        now = time.time()
+        for r in rows:
+            asset = r["asset"]
+            conn.execute(
+                "INSERT INTO asset_universe (venue, asset, symbol, rank, scanned_at, "
+                "quote_volume_24h, spread_pct, depth_bid_top10, depth_ask_top10, "
+                "atr_pct_median, signals_count, recovery_rate, median_minutes_to_tp, "
+                "blacklisted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    venue, asset, r.get("symbol", asset), int(r.get("rank", 0)),
+                    float(r.get("scanned_at", now)),
+                    r.get("quote_volume_24h"), r.get("spread_pct"),
+                    r.get("depth_bid_top10"), r.get("depth_ask_top10"),
+                    r.get("atr_pct_median"), r.get("signals_count"),
+                    r.get("recovery_rate"), r.get("median_minutes_to_tp"),
+                    int(prev.get((venue, asset), False)),
+                ),
+            )
+        conn.commit()
+
+
+def get_universe(venue: str, include_blacklisted: bool = False) -> list[dict]:
+    """Return universe rows for a venue, ordered by rank."""
+    q = "SELECT * FROM asset_universe WHERE venue = ?"
+    params: list = [venue]
+    if not include_blacklisted:
+        q += " AND blacklisted = 0"
+    q += " ORDER BY rank"
+    with get_db_connection() as conn:
+        return [dict(r) for r in conn.execute(q, params).fetchall()]
+
+
+def get_universe_row(venue: str, asset: str) -> dict | None:
+    """Return one universe row (including blacklisted) or None."""
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM asset_universe WHERE venue = ? AND asset = ?",
+            (venue, asset),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def get_universe_scan_age(venue: str) -> float | None:
+    """Return the newest scanned_at timestamp for a venue, or None if empty."""
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT MAX(scanned_at) AS t FROM asset_universe WHERE venue = ?",
+            (venue,),
+        ).fetchone()
+        return float(row["t"]) if row and row["t"] is not None else None
+
+
+def set_blacklist(venue: str, asset: str, blacklisted: bool) -> bool:
+    """Set the operator blacklist flag for a universe row.
+
+    Only applies to rows already in the universe. Returns False if the row
+    does not exist (nothing to toggle).
+    """
+    with get_db_connection() as conn:
+        cur = conn.execute(
+            "UPDATE asset_universe SET blacklisted = ? WHERE venue = ? AND asset = ?",
+            (int(blacklisted), venue, asset),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_tradeable_universe(venue: str) -> list[dict]:
+    """Return non-blacklisted universe rows for the bot loop, by rank."""
+    return get_universe(venue, include_blacklisted=False)
+
+
+# ── venue_state CRUD (Amendment 003) ──────────────────────────────────────────
+
+def set_venue_equity(venue: str, equity: float):
+    """Cache the venue's live equity (written by bot.py each cycle)."""
+    with get_db_connection() as conn:
+        conn.execute(
+            "INSERT INTO venue_state (venue, equity, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(venue) DO UPDATE SET equity = excluded.equity, "
+            "updated_at = excluded.updated_at",
+            (venue, float(equity), time.time()),
+        )
+        conn.commit()
+
+
+def get_venue_equity(venue: str) -> dict | None:
+    """Return {venue, equity, updated_at} for a venue, or None."""
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT venue, equity, updated_at FROM venue_state WHERE venue = ?",
+            (venue,),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+# ── Declared capital pools (Amendment 003) ────────────────────────────────────
+
+def get_capital_pool(venue: str) -> float:
+    """Return the operator's declared capital pool for a venue.
+
+    capital_cex_usdt for binance, capital_dex_usdc for orderly.
+    Used for UI display/validation only — never for sizing.
+    """
+    key = "capital_cex_usdt" if venue == "binance" else "capital_dex_usdc"
+    return get_setting_float(key, 0.0)
 
 
 # ── Migration: legacy global settings → per-asset configs (Amendment 004) ─────

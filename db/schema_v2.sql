@@ -74,6 +74,8 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('obi_z_max', '2.5');
 -- ── asset_configs (Amendment 004) ────────────────────────────────────────────
 -- Per-asset capital and venue activation. Replaces global %-based capital
 -- and global auto_trade_* booleans.
+-- LEGACY since Amendment 003 — no longer read by the bot loop, Telegram,
+-- or the Capital view. Kept for data preservation only.
 CREATE TABLE IF NOT EXISTS asset_configs (
     symbol      TEXT PRIMARY KEY,
     capital_dex REAL NOT NULL DEFAULT 0.0,
@@ -82,6 +84,37 @@ CREATE TABLE IF NOT EXISTS asset_configs (
     active_cex  INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ── asset_universe (Amendment 003) ───────────────────────────────────────────
+-- One row per venue per asset, replaced wholesale on each scan.
+-- blacklisted survives a rescan (carried forward by asset).
+CREATE TABLE IF NOT EXISTS asset_universe (
+    venue                TEXT    NOT NULL,      -- 'binance' | 'orderly'
+    asset                TEXT    NOT NULL,
+    symbol               TEXT    NOT NULL,      -- venue-native
+    rank                 INTEGER NOT NULL,
+    scanned_at           REAL    NOT NULL,
+    quote_volume_24h     REAL,
+    spread_pct           REAL,
+    depth_bid_top10      REAL,
+    depth_ask_top10      REAL,
+    atr_pct_median       REAL,
+    signals_count        INTEGER,
+    recovery_rate        REAL,
+    median_minutes_to_tp REAL,
+    blacklisted          INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (venue, asset)
+);
+
+CREATE INDEX IF NOT EXISTS idx_universe_rank ON asset_universe(venue, rank);
+
+-- ── venue_state (Amendment 003) ──────────────────────────────────────────────
+-- Live equity cache written by bot.py each cycle; read by the Capital view.
+CREATE TABLE IF NOT EXISTS venue_state (
+    venue      TEXT PRIMARY KEY,
+    equity     REAL NOT NULL DEFAULT 0.0,
+    updated_at REAL NOT NULL
 );
 
 -- ── open_positions ──────────────────────────────────────────────────────────

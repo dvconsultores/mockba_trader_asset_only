@@ -681,3 +681,115 @@ The validator is called before any exchange connection, before any position quer
 | File-based cache grows unbounded | Low | Low — disk usage | TTL enforced by `llm_explain_cache_days`; cache files are tiny (~500 bytes each); max 51 × 3 languages × 4 bands = 612 files = ~300KB |
 | Validator performance in hot path | None | N/A | `validate()` is O(1): dict lookup + isinstance + 2 comparisons. `validate_all()` is 51 × that. Benchmarked at <1ms per setting. |
 | Migration 003 conflicts with future schema changes | Low | Medium | Idempotent (`IF NOT EXISTS`, `OR IGNORE`). Safe to re-run. |
+
+---
+
+# Amendment 003 — Dynamic Asset Universe & Capital View
+
+**Plan Version**: 1.4.0 | **Date**: 2026-08-04 | **Spec**: `.specify/specs/003-dynamic-asset-universe-capital/spec.md`
+
+**Status**: In progress
+
+## Summary
+
+Amendment 003 replaces the static per-asset configuration with a daily scanner (`trade/universe.py`) that selects the tradeable set per venue, and replaces the Assets view with a Capital view where capital is a per-venue pool. Rationale (static lists guess; depth alone selects the wrong assets; the ranking key must be the strategy's own replay hit rate; per-asset capital cannot survive a daily-changing universe) is recorded in the spec.
+
+## Constitution Check
+
+| Principle | Assessment |
+|---|---|
+| **I. One Strategy** | ✅ Replay measures the mean-reversion rule itself; no new strategy. Scanner runs offline from the trading cycle (background thread). |
+| **II. Reward Must Exceed Risk** | ✅ Net-edge validation becomes per-venue via `dex_round_trip_fee_pct` / `cex_round_trip_fee_pct`; `universe_min_recovery_rate='auto'` is the implied breakeven WR. Stale universe fails closed (no new entries). |
+| **III. No Leveraged Position Without Confirmed Stop** | ✅ Unchanged — exit management is untouched by the universe. |
+| **IV. Unknown State Means No Trading** | ✅ Stale universe → no new entries, exits still managed. Rate-limit exhaustion → keep previous universe (no partial write). |
+| **V. Real Fills Only** | ✅ Slot sizing derives from live exchange equity (`slot_pct × equity`), never from declared `capital_*`. Replay recovery rate is explicitly labeled a relative ranking signal, not an expectancy estimate. |
+| **VI. Restart Safety** | ✅ Startup scans if the stored scan is stale; blacklist survives rescans; churn never forces an exit. |
+| **VII. Simplicity Is a Constraint** | ✅ `trade/universe.py` is the only new hot-path-adjacent module; shared threshold function is extracted, not duplicated. |
+| **VIII. The Bot Trades** | ✅ The scanner targets ranks 15–90 — a band chosen to keep enough inefficiency while remaining executable. |
+| **No hardcoded assets** | ✅ Mechanism change, intent preserved: the constitution's `assets`-DB-setting is superseded by the `asset_universe` table. The bot still trades whatever the scanner selects — never a hardcoded list. |
+
+## Module: `trade/universe.py` (new)
+
+Pipeline (per venue):
+
+1. **Stage 1 (2 whole-exchange calls):** `ticker/bookTicker` (spread per symbol) + `ticker/24hr` (volume per symbol). Filter quote asset, exclude leveraged tokens / stablecoins / non-trading. DEX path falls back to Binance proxy (consistent with existing Orderly data handling) filtered to the venue's perp listing.
+2. **Stage 2 (hard filters, no ranking):** volume ≥ `universe_min_volume_usd`; spread ≤ `tp_min_pct × universe_spread_ratio_max`; volume-rank within `[universe_rank_min, universe_rank_max]`; `min_notional × 1.5` fundable at current slot size.
+3. **Stage 3 (depth, survivors only):** top-10 depth both sides ≥ `universe_depth_slot_multiple × slot_size`; token-bucket rate limit; abort on budget exhaustion keeping the previous universe.
+4. **Stage 4 (replay):** fetch `universe_replay_days` of 5m candles; replay the live entry rule using the **shared threshold functions**; produce `signals_count`, `recovery_rate`, `median_minutes_to_tp`, `atr_pct_median`.
+5. **Stage 5 (rank & store):** reject `recovery_rate < min_recovery_rate` (auto → breakeven `(sl+fee)/(tp+sl)`) and `signals_count < universe_min_signals`; rank by recovery_rate desc, tiebreak `atr_pct_median` desc; store top `universe_size`; carry blacklist forward.
+
+**Shared threshold functions** (replay must equal live logic — enforced by a shared function and a test):
+- `compute_thresholds(atr, dk, dm, pk, pm, tk, tm, sk, sm) -> (dn, pn, te, se)` — extracted from `spot_scalper.py`/`futures_scalper.py`; both scalpers now call it.
+- The replay re-uses the same rolling peak/trough window (40 candles, 10-candle warmup) and dip rule as the live bot.
+
+## Per-cycle guards (`bot.py`)
+
+- **Live spread check:** the OBI depth snapshot (already fetched per cycle) also yields live spread; if it exceeds the scan-time spread by `universe_spread_degradation_multiple`, skip entries for that asset this cycle and log. No extra API call.
+- **Churn never forces an exit:** iteration is split so `manage_open_positions()` runs for every open position regardless of universe membership; only entries consult the universe.
+- **Stale universe:** `now - scanned_at > universe_max_age_hours` → no new entries on that venue, log warning, exits continue.
+
+## Capital model (`trade/pnl.py` + settings)
+
+- `compute_slot_size(venue, equity, min_notional)` uses `{venue}_slot_pct × equity` (percentage of venue equity, min-notional floor, daily recompute). The per-asset `capital` branch is removed — sizing never reads `capital_*`.
+- Declared pools `capital_cex_usdt` / `capital_dex_usdc` are for UI/validation only; the exchange's live equity wins on disagreement.
+- `max_slots_cex` / `max_slots_dex` replace the global per-asset `max_slots` gate in the scalpers.
+
+## Settings added (Amendment 002 schema + validator)
+
+`universe_scan_interval_hours`, `universe_max_age_hours`, `universe_size`, `universe_min_volume_usd`, `universe_spread_ratio_max`, `universe_rank_min`, `universe_rank_max`, `universe_depth_slot_multiple`, `universe_replay_days`, `universe_min_signals`, `universe_min_recovery_rate` ('auto' → computed breakeven; literal overrides), `universe_spread_degradation_multiple`, `capital_cex_usdt`, `capital_dex_usdc`, `max_slots_cex`, `max_slots_dex`.
+
+Cross-checks (all in `settings_rules.py`): `rank_min >= rank_max` → error; `spread_ratio_max > 0.25` → warn; `max_age_hours < scan_interval_hours` → error; per-venue fee making net edge fail at `tp_min_pct` → error; `max_slots × slot_pct > 100` → error.
+
+## Interfaces
+
+- **Telegram:** `/capital`, `/universe [cex|dex]`, `/blacklist add|remove <asset>`. Per-asset add/toggle/remove handlers removed.
+- **Dashboard API:** `GET /api/capital` (declared vs live equity, slot size, deployed, fee, net edge), `GET /api/universe/{venue}`, `PUT /api/universe/{venue}/{asset}/blacklist`, plus `venue_state` equity cache written by the bot each cycle.
+- **Mini App:** Assets tab → Capital view (two venue panels + read-only Universe panels with blacklist toggles).
+
+## Data model
+
+- `asset_universe` table (one row per venue per asset, replaced wholesale per scan; `blacklisted` carried forward).
+- `venue_state` table (`venue`, `equity`, `updated_at`) — live equity cache the dashboard reads.
+- `asset_configs` remains in the DB (legacy) but is no longer read by the bot loop, Telegram, or the Capital view.
+
+## Migration — `db/migrations/006_amendment_003.sql`
+
+Creates `asset_universe` + index, seeds universe/capital settings, deletes any legacy `fee_round_trip_pct` key (no-op here — per-venue keys already exist), seeds `settings_baseline` for the new keys as `unvalidated`.
+
+## File Manifest
+
+| File | Action |
+|---|---|
+| `.specify/specs/003-dynamic-asset-universe-capital/spec.md` | ✅ Created |
+| `trade/universe.py` | ✅ New scanner + shared thresholds |
+| `db/schema_v2.sql` | ✅ Add `asset_universe` DDL |
+| `db/migrations/006_amendment_003.sql` | ✅ New migration |
+| `db/db_ops.py` | ✅ Universe CRUD + `venue_state` |
+| `trade/settings_schema.py` | ✅ New SettingSpecs |
+| `trade/settings_rules.py` | ✅ Cross-checks |
+| `trade/pnl.py` | ✅ Per-venue slot sizing |
+| `trading_bot/spot_scalper.py` | 🔧 Shared thresholds + `max_slots_cex` |
+| `trading_bot/futures_scalper.py` | 🔧 Shared thresholds + `max_slots_dex` |
+| `bot.py` | 🔧 Scanner thread + universe loop + guards |
+| `telegram.py` | 🔧 `/capital`, `/universe`, `/blacklist` |
+| `dashboard/main.py` | 🔧 Capital + universe endpoints |
+| `dashboard-ui/src/` | 🔧 Capital view + Universe panels |
+| `tests/` | ✅ New unit tests |
+| `docs/CALIBRATION.md`, `docs/CURRENT_STATE.md` | 🔧 Update |
+
+## Dry-run reporting additions (module 2.7)
+
+- Universe churn (entered/left daily; trade clustering in stable members vs newcomers).
+- Recovery rate predicted vs realized per asset — record the gap in `docs/CALIBRATION.md`.
+- Rank-band evidence (realized expectancy by volume-rank decile).
+- Per-venue net expectancy side by side.
+
+## Risk Assessment
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Replay diverges from live logic | Low | High — wrong ranking | Shared `compute_thresholds` + patch test observing both call sites |
+| DEX public data restricted | Known | Medium | Binance proxy for Orderly data (existing pattern); empty scan preserves previous universe |
+| Scanner blocks trading loop | Low | High — no trades | Dedicated background thread; never inside the cycle |
+| Blacklist silently erased | Low | Medium | Carried forward by (venue, asset) on every rescan |
+| Stale universe trades blindly | Medium | High | `universe_max_age_hours` blocks entries; exits continue |
