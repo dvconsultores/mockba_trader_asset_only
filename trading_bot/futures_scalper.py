@@ -178,7 +178,7 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, l
 def _save_open(a,v,s,fill,sp,tp,sl,pid,si):
     tpp=fill.fill_price*(1+tp/100) if s=="long" else fill.fill_price*(1-tp/100)
     slp=fill.fill_price*(1-sl/100) if s=="long" else fill.fill_price*(1+sl/100)
-    save_position({"id":pid,"asset":a,"venue":v,"side":s,"qty":fill.filled_qty,"entry_price":fill.fill_price,"signal_price":sp,"tp_price":tpp,"sl_price":slp,"tp_order_id":fill.tp_order_id or fill.order_id,"sl_order_id":fill.sl_order_id,"opened_at":time.time(),"signal_id":si})
+    save_position({"id":pid,"asset":a,"venue":v,"side":s,"qty":fill.filled_qty,"entry_price":fill.fill_price,"signal_price":sp,"tp_price":tpp,"sl_price":slp,"tp_order_id":fill.tp_order_id,"sl_order_id":fill.sl_order_id,"opened_at":time.time(),"signal_id":si})
 
 def _log(a,v,r,d,p,ex,th,at,ob,vl,dr,tx,act,rsn,tp=0.0,sl=0.0):
     try:

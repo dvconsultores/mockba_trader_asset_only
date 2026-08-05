@@ -165,7 +165,7 @@ class BinanceSpot:
             return Fill(
                 filled_qty=qty, fill_price=price, fee_amount=qty * price * 0.001,
                 fee_asset="USDT", sellable_qty=qty, order_id="dry-entry",
-                client_order_id=cid, raw={"dry_run": True},
+                client_order_id=cid, raw={"dry_run": True}, tp_order_id="dry-entry",
             )
 
         info = self.get_symbol_info(asset)
@@ -183,12 +183,13 @@ class BinanceSpot:
                 logger.warning(f"Binance entry failed: {r.status_code} {r.text[:200]}")
                 return None
             data = r.json()
-            fill_price = sum(float(f["price"]) * float(f["qty"]) for f in data.get("fills", []))
             filled_qty = sum(float(f["qty"]) for f in data.get("fills", []))
+            quote_qty = sum(float(f["price"]) * float(f["qty"]) for f in data.get("fills", []))
             if filled_qty == 0:
                 filled_qty = float(data.get("executedQty", 0))
-            if fill_price == 0 and filled_qty > 0:
-                fill_price = float(data.get("cummulativeQuoteQty", 0)) / filled_qty
+            if quote_qty == 0 and filled_qty > 0:
+                quote_qty = float(data.get("cummulativeQuoteQty", 0))
+            fill_price = quote_qty / filled_qty if filled_qty > 0 else 0.0
 
             # Fee — Binance may take fee from base asset
             fee_asset = "USDT"
@@ -240,7 +241,7 @@ class BinanceSpot:
 
             if not dry:
                 sl_params = {
-                    "symbol": symbol, "side": "SELL", "type": "STOP_MARKET",
+                    "symbol": symbol, "side": "SELL", "type": "STOP_LOSS",
                     "quantity": _fmt(fill.sellable_qty, info.base_tick),
                     "stopPrice": _fmt(sl_price, info.quote_tick),
                     "newClientOrderId": sl_cid,
@@ -276,12 +277,13 @@ class BinanceSpot:
             logger.warning(f"Binance market sell failed: {r.status_code} {r.text[:200]}")
             return None
         data = r.json()
-        fill_price = sum(float(f["price"]) * float(f["qty"]) for f in data.get("fills", []))
         filled_qty = sum(float(f["qty"]) for f in data.get("fills", []))
+        quote_qty = sum(float(f["price"]) * float(f["qty"]) for f in data.get("fills", []))
         if filled_qty == 0:
             filled_qty = float(data.get("executedQty", 0))
-        if fill_price == 0 and filled_qty > 0:
-            fill_price = float(data.get("cummulativeQuoteQty", 0)) / filled_qty
+        if quote_qty == 0 and filled_qty > 0:
+            quote_qty = float(data.get("cummulativeQuoteQty", 0))
+        fill_price = quote_qty / filled_qty if filled_qty > 0 else 0.0
         return Fill(
             filled_qty=filled_qty, fill_price=fill_price if filled_qty > 0 else 0.0,
             fee_amount=0.0, fee_asset="USDT", sellable_qty=filled_qty,
@@ -417,7 +419,7 @@ class OrderlyFutures:
                 filled_qty=qty, fill_price=price,
                 fee_amount=qty * price * 0.0003, fee_asset="USDC",
                 sellable_qty=qty, order_id="dry-entry",
-                client_order_id=cid, raw={"dry_run": True},
+                client_order_id=cid, raw={"dry_run": True}, tp_order_id="dry-entry",
             )
 
         info = self.get_symbol_info(asset)
