@@ -70,9 +70,10 @@ const PRESETS: PresetDef[] = [
     rec: (c) => c > 500 ? '120' : '60',
   },
   {
-    key: 'max_slots', label: 'Max Slots', hint: 'Concurrent open positions',
+    key: 'max_concurrent_positions', label: 'Max Concurrent Positions', hint: 'Total open positions across all pairs (global cap)',
     options: [
       { label: '1 — Single', value: '1' },
+      { label: '2 — Conservative', value: '2' },
       { label: '3 — Grid (default)', value: '3' },
       { label: '5 — Dense grid', value: '5' },
       { label: '9 — Multi-asset', value: '9' },
