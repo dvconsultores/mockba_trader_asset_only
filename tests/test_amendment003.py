@@ -334,3 +334,71 @@ def test_max_slots_times_slot_pct_validation(db):
     db.upsert_setting("cex_slot_pct", "20")
     assert validate("max_slots_cex", 10).level == "error"  # 10 × 20 = 200 > 100
     assert validate("max_slots_cex", 4).level == "ok"      # 4 × 20 = 80 <= 100
+
+
+# ── DEX scan: listing fallback + Binance depth proxy ─────────────────────────
+
+def _fake_binance_symbols():
+    return [
+        {"symbol": "NEARUSDT", "bid": 5.0, "ask": 5.01, "bid_qty": 1000.0, "ask_qty": 1000.0},
+        {"symbol": "BTCUSDT", "bid": 60000.0, "ask": 60001.0, "bid_qty": 10.0, "ask_qty": 10.0},
+    ]
+
+
+def _fake_binance_vol():
+    return {"NEARUSDT": 120_000_000.0, "BTCUSDT": 5_000_000_000.0}
+
+
+def _fake_binance_info():
+    return {"NEARUSDT": {"status": "TRADING", "spot_allowed": True, "min_notional": 10.0},
+            "BTCUSDT": {"status": "TRADING", "spot_allowed": True, "min_notional": 10.0}}
+
+
+def test_dex_candidates_fallback_to_cex_universe(db):
+    """When the Orderly listing is unreachable, the DEX candidate set falls
+    back to the stored CEX universe so the DEX scan can still populate."""
+    from db.db_ops import replace_universe
+    import trade.universe as u
+
+    replace_universe("binance", [{
+        "asset": "NEAR", "symbol": "NEARUSDT", "rank": 1, "scanned_at": 1.0,
+        "quote_volume_24h": 1e7, "spread_pct": 0.05, "recovery_rate": 0.8,
+        "signals_count": 30,
+    }])
+
+    with mock.patch.object(u, "_orderly_listing", return_value=set()), \
+         mock.patch.object(u, "_fetch_binance_book_ticker", return_value=_fake_binance_symbols()), \
+         mock.patch.object(u, "_fetch_binance_24hr", return_value=_fake_binance_vol()), \
+         mock.patch.object(u, "_fetch_binance_exchange_info", return_value=_fake_binance_info()):
+        cands = u._fetch_candidates("orderly")
+
+    assert any(c["asset"] == "NEAR" and c["symbol"] == "PERP_NEAR_USDC" for c in cands)
+    # BTC is not in the CEX universe → must NOT be a DEX candidate
+    assert not any(c["asset"] == "BTC" for c in cands)
+
+
+def test_dex_depth_uses_binance_proxy(db):
+    """Orderly depth is proxied through Binance ({ASSET}USDT)."""
+    import trade.universe as u
+
+    class FakeResp:
+        def __init__(self, data):
+            self._data = data
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self._data
+
+    captured = {}
+
+    def fake_get(url, params=None, timeout=None):
+        captured["url"] = url
+        captured["params"] = params
+        return FakeResp({"bids": [["5.0", "1000.0"]], "asks": [["5.01", "1000.0"]]})
+
+    with mock.patch.object(u.requests, "get", side_effect=fake_get):
+        d = u._fetch_depth("orderly", "PERP_NEAR_USDC")
+
+    assert "api.binance.com" in captured["url"]
+    assert captured["params"]["symbol"] == "NEARUSDT"
+    assert d == {"bid": 5000.0, "ask": 5010.0}

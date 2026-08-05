@@ -174,23 +174,35 @@ def _fetch_binance_exchange_info() -> dict[str, dict]:
 def _orderly_listing() -> set[str]:
     """Best-effort Orderly perp listing (PERP_*_USDC symbols).
 
-    Orderly public market data is restricted; this uses the public symbols
-    endpoint when reachable. Returns an empty set on failure — the caller
-    treats that as 'no DEX candidates' and preserves the previous universe.
+    Orderly public market data is restricted; tries several public hosts and
+    endpoints defensively. Returns an empty set when unreachable — the DEX
+    scan then falls back to the CEX universe as the listing source.
     """
-    try:
-        r = requests.get(f"{ORDERLY_API}/info", timeout=10)
-        r.raise_for_status()
-        data = r.json().get("data") or {}
-        symbols = data.get("symbols") if isinstance(data, dict) else None
-        listing = set()
-        for s in symbols or []:
-            sym = s.get("symbol") if isinstance(s, dict) else s
-            if isinstance(sym, str) and sym.startswith("PERP_") and sym.endswith("_USDC"):
-                listing.add(sym)
-        return listing
-    except Exception:
-        return set()
+    hosts = [ORDERLY_API, "https://api-evm.orderly.network/v1/public"]
+    endpoints = ["/info", "/tickers", "/symbols"]
+    for base in hosts:
+        for ep in endpoints:
+            try:
+                r = requests.get(f"{base}{ep}", timeout=10)
+                if r.status_code != 200:
+                    continue
+                payload = r.json()
+                data = payload.get("data") if isinstance(payload, dict) else payload
+                candidates = []
+                if isinstance(data, dict):
+                    candidates = data.get("symbols") or data.get("rows") or []
+                elif isinstance(data, list):
+                    candidates = data
+                listing = set()
+                for s in candidates:
+                    sym = s.get("symbol") if isinstance(s, dict) else s
+                    if isinstance(sym, str) and sym.startswith("PERP_") and sym.endswith("_USDC"):
+                        listing.add(sym)
+                if listing:
+                    return listing
+            except Exception:
+                continue
+    return set()
 
 
 def _fetch_candidates(venue: str) -> list[dict]:
@@ -225,6 +237,15 @@ def _fetch_candidates(venue: str) -> list[dict]:
     # Binance whole-exchange snapshot as the data proxy for spread/volume —
     # consistent with the existing Binance-proxy pattern for Orderly data.
     listing = _orderly_listing()
+    if not listing:
+        # Orderly listing unreachable — derive the DEX candidate set from the
+        # currently stored CEX universe (same assets; data comes from the
+        # Binance proxy anyway).
+        try:
+            from db.db_ops import get_universe
+            listing = {f"PERP_{r['asset']}_USDC" for r in get_universe("binance")}
+        except Exception:
+            listing = set()
     if not listing:
         return []
     try:
@@ -301,18 +322,19 @@ class _TokenBucket:
 
 
 def _fetch_depth(venue: str, symbol: str, limit: int = 10) -> dict | None:
-    """Top-of-book depth. Returns {bid: quote_depth, ask: quote_depth}."""
+    """Top-of-book depth. Returns {bid: quote_depth, ask: quote_depth}.
+
+    Orderly public orderbook is restricted — the DEX uses Binance as the depth
+    proxy ({ASSET}USDT), consistent with bot.py / regime.py.
+    """
     try:
-        if venue == "binance":
-            r = requests.get(f"{BINANCE_API}/depth",
-                             params={"symbol": symbol, "limit": limit}, timeout=8)
-            r.raise_for_status()
-            data = r.json()
-        else:
-            r = requests.get(f"{ORDERLY_API}/orderbook",
-                             params={"symbol": symbol, "limit": limit}, timeout=8)
-            r.raise_for_status()
-            data = r.json().get("data") or {}
+        if venue == "orderly":
+            asset = symbol[len("PERP_"):-len("_USDC")] if symbol.startswith("PERP_") else symbol
+            symbol = f"{asset}USDT"
+        r = requests.get(f"{BINANCE_API}/depth",
+                         params={"symbol": symbol, "limit": limit}, timeout=8)
+        r.raise_for_status()
+        data = r.json()
         bids = data.get("bids", [])
         asks = data.get("asks", [])
         bid_q = sum(float(b[0]) * float(b[1]) for b in bids[:limit])
