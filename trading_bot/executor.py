@@ -54,6 +54,17 @@ def _fmt(value: float, tick: float) -> str:
     return f"{value:.{_precision(tick)}f}"
 
 
+def _client_order_id(name: str, asset: str, position_id: str, kind: str) -> str:
+    """Short client order ID valid for exchange rules (≤36 chars, [a-zA-Z0-9-_]).
+
+    The full position UUID would overflow Binance's 36-char limit, so we use a
+    short hex prefix of it. The exchange-returned order ID is what the bot
+    tracks positions by, not this field.
+    """
+    short = position_id.replace("-", "")[:10]
+    return f"m{name[:4]}-{asset}-{short}-{kind[:2]}"[:36]
+
+
 _dry_run_cache: dict[str, SymbolFilters] = {}
 
 
@@ -146,7 +157,7 @@ class BinanceSpot:
         """Market buy + limit sell TP + optional stop-loss. Returns Fill with actual fill price."""
         dry = get_setting_bool("dry_run", True)
         symbol = f"{asset}USDT"
-        cid = f"mockba-{self.name}-{asset}-{position_id}-entry"
+        cid = _client_order_id(self.name, asset, position_id, "entry")
 
         if dry:
             return Fill(
@@ -200,7 +211,7 @@ class BinanceSpot:
         # Place TP limit sell
         tp_price = fill.fill_price * (1 + tp_pct / 100)
         tp_price = _floor(tp_price, info.quote_tick)  # toward entry = floor for sell
-        tp_cid = f"mockba-{self.name}-{asset}-{position_id}-tp"
+        tp_cid = _client_order_id(self.name, asset, position_id, "tp")
 
         if not dry:
             tp_params = {
@@ -221,7 +232,7 @@ class BinanceSpot:
             sl_price = _floor(sl_price, info.quote_tick)  # away from entry = lower = wider
             sl_limit = sl_price * 0.995  # 0.5% below stop trigger for limit fill
             sl_limit = _floor(sl_limit, info.quote_tick)
-            sl_cid = f"mockba-{self.name}-{asset}-{position_id}-sl"
+            sl_cid = _client_order_id(self.name, asset, position_id, "sl")
 
             if not dry:
                 sl_params = {
@@ -359,7 +370,7 @@ class OrderlyFutures:
     ) -> Fill | None:
         """Bracket order: market entry + TP + SL. Verifies SL exists after fill."""
         dry = get_setting_bool("dry_run", True)
-        cid = f"mockba-{self.name}-{asset}-{position_id}-entry"
+        cid = _client_order_id(self.name, asset, position_id, "entry")
 
         if dry:
             return Fill(
@@ -431,13 +442,13 @@ class OrderlyFutures:
             "symbol": symbol, "side": "SELL" if side == "long" else "BUY",
             "order_type": "LIMIT", "order_quantity": _fmt(fill.sellable_qty, info.base_tick),
             "order_price": _fmt(actual_tp, info.quote_tick),
-            "client_order_id": f"mockba-{self.name}-{asset}-{position_id}-tp",
+            "client_order_id": _client_order_id(self.name, asset, position_id, "tp"),
         }
         sl_body = {
             "symbol": symbol, "side": "SELL" if side == "long" else "BUY",
             "order_type": "STOP_MARKET", "order_quantity": _fmt(fill.sellable_qty, info.base_tick),
             "trigger_price": _fmt(actual_sl, info.quote_tick),
-            "client_order_id": f"mockba-{self.name}-{asset}-{position_id}-sl",
+            "client_order_id": _client_order_id(self.name, asset, position_id, "sl"),
         }
         self._post("/v1/order", tp_body)
         sl_r = self._post("/v1/order", sl_body)
