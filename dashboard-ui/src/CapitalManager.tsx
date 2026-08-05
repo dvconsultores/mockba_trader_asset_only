@@ -10,7 +10,6 @@ interface VenueCapital {
   divergence: { declared: number; live: number; pct: number } | null
   slot_pct: number
   slot_size: number
-  max_slots: number
   deployed: number
   free: number
   fee_pct: number
@@ -46,7 +45,6 @@ const VENUE_SHORT: Record<string, string> = { binance: 'CEX', orderly: 'DEX' }
 // settings keys per venue
 const DECLARED_KEY: Record<string, string> = { binance: 'capital_cex_usdt', orderly: 'capital_dex_usdc' }
 const SLOT_PCT_KEY: Record<string, string> = { binance: 'cex_slot_pct', orderly: 'dex_slot_pct' }
-const MAX_SLOTS_KEY: Record<string, string> = { binance: 'max_slots_cex', orderly: 'max_slots_dex' }
 
 // ── Presentational components — module level (STABLE identity).             ──
 // Defining these inside the main component would give them a new function
@@ -307,7 +305,6 @@ export default function CapitalManager() {
       {/* Per-venue capital panels */}
       {capitals.map(cap => {
         const v = cap.venue
-        const slotExceeds = cap.max_slots * cap.slot_pct > 100
         const noRoom = cap.slot_size > 0 && cap.free < cap.slot_size
         const on = cap.enabled !== 'False'
         return (
@@ -353,15 +350,6 @@ export default function CapitalManager() {
 
             <ReadRow label="Slot size" value={`$${cap.slot_size.toFixed(0)}`} />
 
-            {renderEditable(
-              'Max Slots',
-              'Max concurrent open positions on this venue',
-              MAX_SLOTS_KEY[v],
-              String(cap.max_slots),
-              undefined,
-              '1', '1', undefined,
-            )}
-
             <ReadRow label="Deployed / Free" value={`$${cap.deployed.toFixed(0)} / $${cap.free.toFixed(0)}`} />
             <ReadRow label="Fee (round trip)" value={`${cap.fee_pct.toFixed(2)}%`} />
             <ReadRow
@@ -370,10 +358,9 @@ export default function CapitalManager() {
               tone={cap.net_edge_pct > 0 ? 'text-green-400' : 'text-red-400'}
             />
 
-            {(slotExceeds || noRoom) && (
+            {noRoom && (
               <div className="px-3 py-2.5 bg-red-500/10 border-t border-red-500/30 text-red-400 text-xs">
-                {slotExceeds && <div>✗ {cap.max_slots} slots × {cap.slot_pct}% = {Math.round(cap.max_slots * cap.slot_pct)}% of equity — exceeds 100%</div>}
-                {noRoom && <div>✗ Free ${cap.free.toFixed(0)} below one slot ${cap.slot_size.toFixed(0)} — insufficient equity</div>}
+                <div>✗ Free ${cap.free.toFixed(0)} below one slot ${cap.slot_size.toFixed(0)} — insufficient equity</div>
               </div>
             )}
           </Section>
