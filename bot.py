@@ -380,6 +380,7 @@ def run():
                                 result = futures_cycle(asset, orderly, regime, obi, price, signal_only=signal_only)
                             if result:
                                 _notify_entry(asset, label, regime, result, price, signal_only)
+                                all_open = load_all_positions()
                         else:
                             logger.warning(f"[DATA] {asset} {label}: obi={obi} price={price} — skipping cycle")
 

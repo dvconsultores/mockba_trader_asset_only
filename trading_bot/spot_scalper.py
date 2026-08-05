@@ -14,6 +14,7 @@ from typing import Optional
 
 from trading_bot.executor import BinanceSpot
 from trading_bot.types import Fill
+from logs.log_config import apolo_trader_logger as logger
 from trade.pnl import record_closed_trade, is_entry_blocked, compute_slot_size
 from trade.regime import get_atr_pct
 from trade.toxicity import evaluate as tox_eval, record_observation
@@ -80,7 +81,12 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
         if (now-op)>mh:
             if tpid: exchange.cancel_order(sym,tpid)
             if slid: exchange.cancel_order(sym,slid)
-            _close(asset,"binance","long",ep,ep,sp,q,0.001,pid,si,"time_stop")
+            sell = exchange.market_sell(asset, q)
+            if sell is None:
+                logger.error(f"[EXIT] {asset} time_stop: market sell failed — keeping position to retry")
+                continue
+            xp = sell.fill_price if sell.fill_price > 0 else ep
+            _close(asset,"binance","long",ep,xp,sp,q,0.001,pid,si,"time_stop")
 
 def _close(a,v,s,ep,xp,sp,q,fr,pid,si,rsn):
     fee_ep=ep*q*fr; fee_xp=xp*q*fr
@@ -157,7 +163,7 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
 def _save_open(a,v,s,fill,sp,tp,sl,pid,si):
     tpp=fill.fill_price*(1+tp/100) if s=="long" else fill.fill_price*(1-tp/100)
     slp=fill.fill_price*(1-sl/100) if s=="long" else fill.fill_price*(1+sl/100)
-    save_position({"id":pid,"asset":a,"venue":v,"side":s,"qty":fill.sellable_qty,"entry_price":fill.fill_price,"signal_price":sp,"tp_price":tpp,"sl_price":slp if sl>0 else None,"tp_order_id":fill.order_id,"sl_order_id":None,"opened_at":time.time(),"signal_id":si})
+    save_position({"id":pid,"asset":a,"venue":v,"side":s,"qty":fill.sellable_qty,"entry_price":fill.fill_price,"signal_price":sp,"tp_price":tpp,"sl_price":slp if sl>0 else None,"tp_order_id":fill.tp_order_id or fill.order_id,"sl_order_id":fill.sl_order_id,"opened_at":time.time(),"signal_id":si})
 
 def _log(a,v,r,d,p,ex,th,at,ob,vl,dr,tx,act,rsn,tp=0.0,sl=0.0):
     try:

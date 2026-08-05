@@ -38,6 +38,8 @@ class Fill:
     order_id: str           # exchange-assigned order ID
     client_order_id: str    # our idempotency key, derived from position ID
     raw: dict               # full exchange response payload, preserved for logging
+    tp_order_id: Optional[str] = None   # exchange-assigned TP order ID (if placed)
+    sl_order_id: Optional[str] = None   # exchange-assigned SL order ID (if placed)
 
 
 @dataclass(frozen=True)

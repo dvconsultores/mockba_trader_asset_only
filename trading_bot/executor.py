@@ -21,6 +21,8 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv()
 
+from dataclasses import replace
+
 from trading_bot.types import Fill, SymbolFilters
 from db.db_ops import get_setting_bool
 from logs.log_config import apolo_trader_logger as logger
@@ -213,6 +215,7 @@ class BinanceSpot:
         tp_price = _floor(tp_price, info.quote_tick)  # toward entry = floor for sell
         tp_cid = _client_order_id(self.name, asset, position_id, "tp")
 
+        tp_order_id = None
         if not dry:
             tp_params = {
                 "symbol": symbol, "side": "SELL", "type": "LIMIT",
@@ -224,30 +227,67 @@ class BinanceSpot:
             r = self._post("/api/v3/order", tp_params)
             if r.status_code != 200:
                 logger.warning(f"Binance TP placement failed: {r.status_code} {r.text[:200]}")
+            else:
+                tp_order_id = str(r.json().get("orderId", ""))
 
-        # Place SL stop-limit sell (if sl_pct > 0)
+        # Place SL stop-market sell (if sl_pct > 0) — guaranteed fill on trigger
         sl_price = 0.0
+        sl_order_id = None
         if sl_pct > 0:
             sl_price = fill.fill_price * (1 - sl_pct / 100)
             sl_price = _floor(sl_price, info.quote_tick)  # away from entry = lower = wider
-            sl_limit = sl_price * 0.995  # 0.5% below stop trigger for limit fill
-            sl_limit = _floor(sl_limit, info.quote_tick)
             sl_cid = _client_order_id(self.name, asset, position_id, "sl")
 
             if not dry:
                 sl_params = {
-                    "symbol": symbol, "side": "SELL", "type": "STOP_LOSS_LIMIT",
-                    "timeInForce": "GTC",
+                    "symbol": symbol, "side": "SELL", "type": "STOP_MARKET",
                     "quantity": _fmt(fill.sellable_qty, info.base_tick),
-                    "price": _fmt(sl_limit, info.quote_tick),
                     "stopPrice": _fmt(sl_price, info.quote_tick),
                     "newClientOrderId": sl_cid,
                 }
                 r = self._post("/api/v3/order", sl_params)
                 if r.status_code != 200:
                     logger.warning(f"Binance SL placement failed: {r.status_code} {r.text[:200]}")
+                else:
+                    sl_order_id = str(r.json().get("orderId", ""))
 
-        return fill
+        return replace(fill, tp_order_id=tp_order_id, sl_order_id=sl_order_id)
+
+    def market_sell(self, asset: str, qty: float) -> Fill | None:
+        """Market-sell a spot position (time-stop exit). Returns Fill or None."""
+        dry = get_setting_bool("dry_run", True)
+        symbol = f"{asset}USDT"
+        if dry:
+            return Fill(filled_qty=qty, fill_price=0.0, fee_amount=0.0, fee_asset="USDT",
+                        sellable_qty=qty, order_id="dry-sell",
+                        client_order_id=_client_order_id(self.name, asset, "exit", "sl"),
+                        raw={"dry_run": True})
+        info = self.get_symbol_info(asset)
+        if info is None:
+            return None
+        cid = _client_order_id(self.name, asset, "exit", "sl")
+        params = {
+            "symbol": symbol, "side": "SELL", "type": "MARKET",
+            "quantity": _fmt(qty, info.base_tick),
+            "newClientOrderId": cid,
+        }
+        r = self._post("/api/v3/order", params)
+        if r.status_code != 200:
+            logger.warning(f"Binance market sell failed: {r.status_code} {r.text[:200]}")
+            return None
+        data = r.json()
+        fill_price = sum(float(f["price"]) * float(f["qty"]) for f in data.get("fills", []))
+        filled_qty = sum(float(f["qty"]) for f in data.get("fills", []))
+        if filled_qty == 0:
+            filled_qty = float(data.get("executedQty", 0))
+        if fill_price == 0 and filled_qty > 0:
+            fill_price = float(data.get("cummulativeQuoteQty", 0)) / filled_qty
+        return Fill(
+            filled_qty=filled_qty, fill_price=fill_price if filled_qty > 0 else 0.0,
+            fee_amount=0.0, fee_asset="USDT", sellable_qty=filled_qty,
+            order_id=str(data.get("orderId", "")), client_order_id=cid,
+            raw=data,
+        )
 
     def get_order_status(self, symbol: str, order_id: str) -> str:
         try:
@@ -450,8 +490,10 @@ class OrderlyFutures:
             "trigger_price": _fmt(actual_sl, info.quote_tick),
             "client_order_id": _client_order_id(self.name, asset, position_id, "sl"),
         }
-        self._post("/v1/order", tp_body)
+        tp_r = self._post("/v1/order", tp_body)
         sl_r = self._post("/v1/order", sl_body)
+        tp_order_id = str(tp_r.json().get("data", tp_r.json()).get("order_id", "")) if tp_r.status_code == 200 else None
+        sl_order_id = str(sl_r.json().get("data", sl_r.json()).get("order_id", "")) if sl_r.status_code == 200 else None
 
         # Verify SL exists (constitution III)
         if sl_r.status_code != 200:
@@ -468,7 +510,7 @@ class OrderlyFutures:
                 })
                 return None
 
-        return fill
+        return replace(fill, tp_order_id=tp_order_id, sl_order_id=sl_order_id)
 
     def get_open_positions(self, asset: str | None = None) -> list[dict]:
         try:
