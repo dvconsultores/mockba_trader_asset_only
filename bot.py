@@ -379,7 +379,7 @@ def run():
                             else:
                                 result = futures_cycle(asset, orderly, regime, obi, price, signal_only=signal_only)
                             if result:
-                                _notify_entry(asset, label, regime, result, price, signal_only, equity)
+                                _notify_entry(asset, label, regime, result, price, signal_only)
                         else:
                             logger.warning(f"[DATA] {asset} {label}: obi={obi} price={price} — skipping cycle")
 
@@ -478,13 +478,8 @@ def _price_decimals(price: float) -> int:
 
 
 def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, price: float,
-                  signal_only: bool = False, equity: float = 0.0):
-    """Send a Telegram notification when a signal fires or a trade is entered.
-
-    Includes per-position math from the Amendment 003 capital model:
-    margin = slot / leverage; possible gain/loss = margin × leverage × pct.
-    For spot (CEX) leverage is 1, so margin == slot size.
-    """
+                  signal_only: bool = False):
+    """Send a Telegram notification when a signal fires or a trade is entered."""
     try:
         from trading_bot.send_bot_message import send_message
         direction = result["direction"]
@@ -495,14 +490,6 @@ def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, pr
         mode = "🔍 SIGNAL" if signal_only else "💰 TRADE"
         emoji = "🟢" if direction == "buy" else "🔴"
         d = _price_decimals(price)
-
-        venue = "binance" if exchange_label == "CEX" else "orderly"
-        slot = compute_slot_size(venue, equity, 0.0)
-        leverage = 1 if venue == "binance" else min(get_setting_int("leverage", 3),
-                                                    get_setting_int("max_leverage", 3))
-        margin = slot / leverage if leverage > 0 else slot
-        gain = margin * leverage * tp_pct / 100
-        loss = margin * leverage * sl_pct / 100
 
         action = "BUY" if exchange_label == "CEX" else "LONG"
         if direction == "sell":
@@ -515,8 +502,6 @@ def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, pr
             f"{emoji} {asset} ({exchange_label}) —  [{mode}]\n"
             f"{action} at {price:.{d}f}\n"
             f"{close_label} at {tp:.{d}f}  ({tp_sign}{tp_pct:.2f}%)  |  SL at {sl:.{d}f}  ({sl_sign}{sl_pct:.2f}%)\n"
-            f"Possible gain with your capital ${margin:.2f} and leverage {leverage}x = ${gain:.2f}\n"
-            f"Possible loss with your capital ${margin:.2f} and leverage {leverage}x = ${loss:.2f}\n"
             f"Regime: {regime}"
         )
         send_message(msg)
