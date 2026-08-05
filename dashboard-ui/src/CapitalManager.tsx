@@ -48,6 +48,11 @@ const DECLARED_KEY: Record<string, string> = { binance: 'capital_cex_usdt', orde
 const SLOT_PCT_KEY: Record<string, string> = { binance: 'cex_slot_pct', orderly: 'dex_slot_pct' }
 const MAX_SLOTS_KEY: Record<string, string> = { binance: 'max_slots_cex', orderly: 'max_slots_dex' }
 
+// ── Presentational components — module level (STABLE identity).             ──
+// Defining these inside the main component would give them a new function
+// reference on every render, which makes React remount the subtree and drop
+// input focus after every keystroke. Keep them here.
+
 // Standard-size number input — same style as the Settings view (MiniSettings).
 // `onEnter` commits the current value when the Enter / Done key is pressed.
 function NumberField({ value, suffix, disabled, step, min, max, error, onChange, onEnter }: {
@@ -73,6 +78,50 @@ function NumberField({ value, suffix, disabled, step, min, max, error, onChange,
   )
 }
 
+function StatusIcon({ k, saving, errors }: { k: string; saving: Set<string>; errors: Set<string> }) {
+  if (saving.has(k)) return <Save size={14} className="text-yellow-500 animate-pulse" />
+  if (errors.has(k)) return <AlertCircle size={14} className="text-red-500" />
+  return <Check size={14} className="text-green-600" />
+}
+
+function Section({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) {
+  return (
+    <div className="mb-4 rounded-xl border border-[#2a2240] bg-[#1a1528] overflow-hidden">
+      <div className="px-3 py-2 border-b border-[#2a2240] bg-[#171421]/40 flex items-center justify-between">
+        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-[#7a7090]">{title}</h2>
+        {right}
+      </div>
+      <div className="divide-y divide-[#2a2240]">{children}</div>
+    </div>
+  )
+}
+
+function SettingRow({ label, hint, statusKey, saving, errors, children }: {
+  label: string; hint: string; statusKey: string; saving: Set<string>; errors: Set<string>; children: ReactNode
+}) {
+  return (
+    <div className="px-3 py-3 hover:bg-[#171421]/30 transition-colors">
+      <div className="flex items-start justify-between gap-2 mb-2">
+        <div className="min-w-0">
+          <div className="text-xs font-medium text-[#D0CFCC]">{label}</div>
+          <div className="text-[10px] text-[#7a7090] leading-tight">{hint}</div>
+        </div>
+        <div className="shrink-0 pt-0.5"><StatusIcon k={statusKey} saving={saving} errors={errors} /></div>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function ReadRow({ label, value, tone }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="px-3 py-3 flex items-center justify-between gap-2">
+      <span className="text-xs text-[#7a7090]">{label}</span>
+      <span className={`text-sm font-medium text-right ${tone ?? 'text-[#D0CFCC]'}`}>{value}</span>
+    </div>
+  )
+}
+
 export default function CapitalManager() {
   const [capitals, setCapitals] = useState<VenueCapital[]>([])
   const [universes, setUniverses] = useState<Record<string, UniverseData>>({})
@@ -80,7 +129,7 @@ export default function CapitalManager() {
   const [saving, setSaving] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Set<string>>(new Set())
   const [editable, setEditable] = useState(isTelegram)
-  // Staged edits per settings key — nothing is saved until Save is tapped.
+  // Staged edits per settings key — nothing is saved until Save/Enter.
   const [drafts, setDrafts] = useState<Record<string, string>>({})
 
   const authHeaders = useCallback((): Record<string, string> => {
@@ -186,54 +235,23 @@ export default function CapitalManager() {
     }
   }
 
-  const StatusIcon = ({ k }: { k: string }) => {
-    if (saving.has(k)) return <Save size={14} className="text-yellow-500 animate-pulse" />
-    if (errors.has(k)) return <AlertCircle size={14} className="text-red-500" />
-    return <Check size={14} className="text-green-600" />
-  }
-
-  const Section = ({ title, right, children }: { title: string; right?: ReactNode; children: ReactNode }) => (
-    <div className="mb-4 rounded-xl border border-[#2a2240] bg-[#1a1528] overflow-hidden">
-      <div className="px-3 py-2 border-b border-[#2a2240] bg-[#171421]/40 flex items-center justify-between">
-        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-[#7a7090]">{title}</h2>
-        {right}
-      </div>
-      <div className="divide-y divide-[#2a2240]">{children}</div>
-    </div>
-  )
-
-  const SettingRow = ({ label, hint, statusKey, children }: { label: string; hint: string; statusKey: string; children: ReactNode }) => (
-    <div className="px-3 py-3 hover:bg-[#171421]/30 transition-colors">
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <div className="min-w-0">
-          <div className="text-xs font-medium text-[#D0CFCC]">{label}</div>
-          <div className="text-[10px] text-[#7a7090] leading-tight">{hint}</div>
-        </div>
-        <div className="shrink-0 pt-0.5"><StatusIcon k={statusKey} /></div>
-      </div>
-      {children}
-    </div>
-  )
-
-  // Editable row with an explicit Save button — no auto-save.
-  // `settingsKey` is the real DB settings key; used for the status icon and
-  // for saving. Empty/NaN values are refused: a cleared field can never store
-  // "" and silently turn the setting into its 0 default.
-  const EditableRow = ({ label, hint, settingsKey, value, suffix, step, min, max }: {
-    label: string; hint: string; settingsKey: string; value: string;
-    suffix?: string; step?: string; min?: string; max?: string
-  }) => {
+  // Editable row rendered inline (NOT a component) so the input keeps focus
+  // across keystrokes. Empty/NaN values are refused: a cleared field can never
+  // store "" and silently turn the setting into its 0 default.
+  const renderEditable = (
+    label: string, hint: string, settingsKey: string, value: string,
+    suffix?: string, step?: string, min?: string, max?: string,
+  ) => {
     const commit = () => {
       const raw = (drafts[settingsKey] ?? value).trim()
       if (raw === '' || Number.isNaN(parseFloat(raw))) {
-        // invalid/empty — revert to the current stored value, do not save
         setDrafts(prev => { const n = { ...prev }; delete n[settingsKey]; return n })
         return
       }
       saveSetting(settingsKey, raw)
     }
     return (
-      <SettingRow label={label} hint={hint} statusKey={settingsKey}>
+      <SettingRow label={label} hint={hint} statusKey={settingsKey} saving={saving} errors={errors}>
         <div className="flex items-center gap-2">
           <NumberField
             value={drafts[settingsKey] ?? value}
@@ -259,13 +277,6 @@ export default function CapitalManager() {
       </SettingRow>
     )
   }
-
-  const ReadRow = ({ label, value, tone }: { label: string; value: string; tone?: string }) => (
-    <div className="px-3 py-3 flex items-center justify-between gap-2">
-      <span className="text-xs text-[#7a7090]">{label}</span>
-      <span className={`text-sm font-medium text-right ${tone ?? 'text-[#D0CFCC]'}`}>{value}</span>
-    </div>
-  )
 
   if (loading) {
     return (
@@ -315,13 +326,13 @@ export default function CapitalManager() {
               )
             }
           >
-            <EditableRow
-              label="Declared Capital"
-              hint="Operator-declared pool — live equity wins if they diverge"
-              settingsKey={DECLARED_KEY[v]}
-              value={String(cap.declared_capital)}
-              suffix="$"
-            />
+            {renderEditable(
+              'Declared Capital',
+              'Operator-declared pool — live equity wins if they diverge',
+              DECLARED_KEY[v],
+              String(cap.declared_capital),
+              '$',
+            )}
 
             <ReadRow label="Live equity" value={`$${cap.live_equity.toFixed(0)}`} />
 
@@ -331,27 +342,25 @@ export default function CapitalManager() {
               </div>
             )}
 
-            <EditableRow
-              label="Slot %"
-              hint="Size of a single position = this % × live equity"
-              settingsKey={SLOT_PCT_KEY[v]}
-              value={String(cap.slot_pct)}
-              suffix="%"
-              step="0.5"
-              min="0.1"
-              max="100"
-            />
+            {renderEditable(
+              'Slot %',
+              'Size of a single position = this % × live equity',
+              SLOT_PCT_KEY[v],
+              String(cap.slot_pct),
+              '%',
+              '0.5', '0.1', '100',
+            )}
 
             <ReadRow label="Slot size" value={`$${cap.slot_size.toFixed(0)}`} />
 
-            <EditableRow
-              label="Max Slots"
-              hint="Max concurrent open positions on this venue"
-              settingsKey={MAX_SLOTS_KEY[v]}
-              value={String(cap.max_slots)}
-              step="1"
-              min="1"
-            />
+            {renderEditable(
+              'Max Slots',
+              'Max concurrent open positions on this venue',
+              MAX_SLOTS_KEY[v],
+              String(cap.max_slots),
+              undefined,
+              '1', '1', undefined,
+            )}
 
             <ReadRow label="Deployed / Free" value={`$${cap.deployed.toFixed(0)} / $${cap.free.toFixed(0)}`} />
             <ReadRow label="Fee (round trip)" value={`${cap.fee_pct.toFixed(2)}%`} />
