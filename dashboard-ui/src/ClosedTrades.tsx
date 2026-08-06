@@ -202,7 +202,7 @@ export default function ClosedTrades() {
             <div className={`text-xl sm:text-2xl font-bold tabular-nums ${pnlColor(t.pnl_net)}`}>
               {loading ? '…' : formatPnl(t.pnl_net)}
             </div>
-            <div className="text-[10px] text-[#7a7090] mt-0.5">{t.wins}W · {t.losses}L · {t.count} trades</div>
+            <div className="text-[10px] text-[#7a7090] mt-0.5">{t.wins}W · {t.losses}L · {t.count} trades · {t.count > 0 ? Math.round((t.wins / t.count) * 100) : 0}%</div>
           </div>
         ))}
       </div>
