@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
-import { TerminalSquare, BarChart3, Radio, Settings2, MoreHorizontal, Banknote } from 'lucide-react'
+import { TerminalSquare, BarChart3, Radio, Settings2, MoreHorizontal, Banknote, History } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import Terminal from './Terminal'
 import Signals from './Signals'
 import StatusBar from './StatusBar'
 import MiniSettings from './MiniSettings'
 import CapitalManager from './CapitalManager'
+import ClosedTrades from './ClosedTrades'
 import { TG, isTelegram } from './TelegramProvider'
 
-type Tab = 'live' | 'signals' | 'status' | 'settings' | 'capital'
+type Tab = 'live' | 'signals' | 'status' | 'settings' | 'capital' | 'closed'
 
 interface BotStatus {
   uptime_seconds: number
@@ -72,7 +73,7 @@ export default function App() {
           setMoreOpen(false)
           return
         }
-        if (tab === 'status' || tab === 'settings') {
+        if (tab === 'status' || tab === 'settings' || tab === 'closed') {
           setTab('live')
           return
         }
@@ -102,6 +103,7 @@ export default function App() {
 
   const moreTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'status', label: 'Status', icon: Radio },
+    { id: 'closed', label: 'Closed Trades', icon: History },
     { id: 'settings', label: 'Settings', icon: Settings2 },
   ]
 
@@ -130,6 +132,7 @@ export default function App() {
         {tab === 'signals' && <Signals />}
         {tab === 'capital' && <CapitalManager />}
         {tab === 'status' && <StatusBar status={status} />}
+        {tab === 'closed' && <ClosedTrades />}
         {tab === 'settings' && <MiniSettings />}
       </div>
 

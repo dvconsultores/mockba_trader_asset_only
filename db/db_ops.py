@@ -309,8 +309,19 @@ def set_blacklist(venue: str, asset: str, blacklisted: bool) -> bool:
 
 
 def get_tradeable_universe(venue: str) -> list[dict]:
-    """Return non-blacklisted universe rows for the bot loop, by rank."""
-    return get_universe(venue, include_blacklisted=False)
+    """Return non-blacklisted universe rows for the bot loop, by rank.
+
+    Also excludes assets in the operator `binance_blocklist` setting
+    (comma-separated) — e.g. Binance 'Monitoring' tokens, which exchangeInfo
+    does not flag but a human operator knows about. Applies immediately,
+    without waiting for the next universe scan.
+    """
+    rows = get_universe(venue, include_blacklisted=False)
+    raw = get_setting("binance_blocklist") or ""
+    block = {a.strip().upper() for a in raw.split(",") if a.strip()}
+    if block:
+        rows = [r for r in rows if str(r["asset"]).upper() not in block]
+    return rows
 
 
 # ── venue_state CRUD (Amendment 003) ──────────────────────────────────────────

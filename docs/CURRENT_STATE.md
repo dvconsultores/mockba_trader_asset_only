@@ -291,10 +291,31 @@ preserves the previous universe (no partial write).
   Per-asset add/toggle/remove handlers removed; the manual signal asset picker
   now sources from the universe.
 - **Dashboard API:** `GET /api/capital`, `GET /api/universe/{venue}`,
-  `PUT /api/universe/{venue}/{asset}/blacklist`. The `/api/assets*` per-asset
-  endpoints were replaced.
+  `PUT /api/universe/{venue}/{asset}/blacklist`, and `GET /api/trades/closed`
+  (read-only month view). The `/api/assets*` per-asset endpoints were replaced.
 - **Mini App:** Assets tab → Capital view (`CapitalManager.tsx`) with per-venue
-  panels and read-only Universe panels (blacklist toggles only).
+  panels and read-only Universe panels (blacklist toggles only). Plus the Closed
+  Trades page (`ClosedTrades.tsx`) under More options.
+
+### Closed Trades page (`GET /api/trades/closed?venue=all|dex|cex`)
+
+Read-only month view of `closed_trades` (Amendment 004).
+
+- **Window:** current calendar month **by close time** (`closed_at`), boundary in
+  **Caracas UTC-4** (fixed −4h, matches `dashboard-ui/src/timezone.ts`), computed
+  server-side in one place. The client never defines the window.
+- **Totals:** per-venue `pnl_net` total + trade count for the full month, computed
+  server-side in the same query pass as the rows; both cards are always shown
+  (zero-filled when a venue has no trades) and are **unaffected by the venue filter**.
+- **Trades:** most recent close first, capped at 200 (`truncated` flag; totals are
+  uncapped). Venue filter (`all|dex|cex`) narrows the list only.
+- **Reason mapping:** `tp → TP`, `sl → SL`, `time_stop → Time stop`; unknown values
+  render uppercased.
+- **`pnl_net` semantics (Q4):** `gross − fee_entry − fee_exit`, where fees are
+  **estimated** at fixed per-side rates (spot `0.001`, futures `0.0003`); **funding
+  is not included**. The page discloses this ("Net of estimated fees · funding not
+  included"). Values are returned raw (no rounding); the UI formats with up to 4
+  decimals.
 - `asset_configs` remains in the DB as legacy data but is no longer read by the
   bot loop, Telegram, or the Capital view.
 

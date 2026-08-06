@@ -150,6 +150,16 @@ class BinanceSpot:
             pass
         return 0.0
 
+    def get_price(self, asset: str) -> float | None:
+        """Current live price for an asset (Binance ticker)."""
+        try:
+            r = requests.get(f"{self.base_url}/api/v3/ticker/price",
+                             params={"symbol": f"{asset}USDT"}, timeout=5)
+            r.raise_for_status()
+            return float(r.json()["price"])
+        except Exception:
+            return None
+
     # ── Order placement ───────────────────────────────────────────────────
 
     def place_entry(

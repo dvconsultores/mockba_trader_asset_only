@@ -161,6 +161,10 @@ const FREE_INPUTS: FreeDef[] = [
   { key: 'min_net_edge_pct', label: 'Min Net Edge', hint: 'Refuse to trade below this', step: '0.01', min: '0', suffix: '%' },
 ]
 
+const TEXT_INPUTS: FreeDef[] = [
+  { key: 'binance_blocklist', label: 'Binance Blocklist', hint: 'Never trade these assets (comma-separated) — e.g. Monitoring tokens' },
+]
+
 // ── Select fields ───────────────────────────────────────────────
 interface SelectDef { key: string; label: string; hint: string; options: string[] }
 
@@ -192,6 +196,27 @@ function NumberField({ value, suffix, disabled, step, min, max, error, onChange 
       />
       {suffix && <span className="text-xs text-[#7a7090] w-5 text-right shrink-0">{suffix}</span>}
     </div>
+  )
+}
+
+function TextField({ value, disabled, onChange }: { value: string; disabled?: boolean; onChange: (v: string) => void }) {
+  const [draft, setDraft] = useState(value)
+
+  useEffect(() => {
+    setDraft(value)
+  }, [value])
+
+  return (
+    <input
+      type="text"
+      value={draft}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={() => { if (draft !== value) onChange(draft) }}
+      onKeyUp={e => { if (e.key === 'Enter' && draft !== value) onChange(draft) }}
+      disabled={disabled}
+      placeholder="e.g. HEI, TOKEN2"
+      className="w-full px-3 py-2.5 text-sm text-left bg-[#171421] border rounded-lg text-[#D0CFCC] focus:outline-none focus:border-[#D0CFCC] disabled:opacity-50 transition-colors border-[#2a2240]"
+    />
   )
 }
 
@@ -462,6 +487,14 @@ function MiniSettingsComponent() {
                 error={errors.has(f.key)}
                 onChange={v => debouncedSave(f.key, v)}
               />
+            </SettingRow>
+          )
+        })}
+        {TEXT_INPUTS.map(f => {
+          const val = settings[f.key] ?? ''
+          return (
+            <SettingRow key={f.key} label={f.label} hint={f.hint} statusKey={f.key}>
+              <TextField value={val} disabled={!editable} onChange={v => debouncedSave(f.key, v)} />
             </SettingRow>
           )
         })}

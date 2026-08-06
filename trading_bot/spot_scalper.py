@@ -70,10 +70,23 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
     positions=load_all_positions(asset=asset, venue="binance")
     if not positions: return
     sym=f"{asset}USDT"; mh=get_setting_int("max_hold_minutes_spot",120)*60; now=time.time()
+    # Live price for price-based SL check — at/below sl_price: cancel TP limit + market sell
+    live = exchange.get_price(asset) if any(pd.get("sl_price") for pd in positions) else None
     for pd in positions:
         pid=pd["id"]; tpid=pd.get("tp_order_id"); slid=pd.get("sl_order_id")
         ep=float(pd["entry_price"]); sp=float(pd["signal_price"]); q=float(pd["qty"])
         op=float(pd["opened_at"]); si=pd.get("signal_id")
+        slp = float(pd["sl_price"]) if pd.get("sl_price") else 0.0
+        if slp > 0 and live is not None and live <= slp:
+            if tpid: exchange.cancel_order(sym, tpid)
+            if slid: exchange.cancel_order(sym, slid)
+            sell = exchange.market_sell(asset, q)
+            if sell is None:
+                logger.error(f"[EXIT] {asset} sl: market sell failed — keeping position to retry")
+                continue
+            xp = sell.fill_price if sell.fill_price > 0 else slp
+            _close(asset,"binance","long",ep,xp,sp,q,0.001,pid,si,"sl")
+            continue
         if tpid and exchange.get_order_status(sym,tpid)=="FILLED":
             _close(asset,"binance","long",ep,float(pd["tp_price"]),sp,q,0.001,pid,si,"tp"); continue
         if slid and exchange.get_order_status(sym,slid)=="FILLED":

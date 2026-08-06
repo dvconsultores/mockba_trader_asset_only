@@ -129,7 +129,7 @@ RECOMMENDED_DEFAULTS = {
     'dex_round_trip_fee_pct': '0.06', 'cex_round_trip_fee_pct': '0.20',
     'assumed_slippage_pct': '0.03', 'min_net_edge_pct': '0.30',
     'regime_cache_sec': '300', 'slope_threshold': '0.0012',
-    'max_active_pairs': '6', 'max_concurrent_positions': '9',
+    'max_active_pairs': '6', 'max_concurrent_positions': '9', 'binance_blocklist': '',
     'global_daily_loss_limit': '0', 'global_daily_loss_limit_pct': '0',
     'tox_window': '120', 'velocity_window': '3',
     'tox_velocity_enforce': 'false', 'tox_spread_enforce': 'false',

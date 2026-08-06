@@ -130,6 +130,17 @@ def _is_spot_tradable(base: str, quote: str, status: str = "TRADING",
     return True
 
 
+def _binance_blocklist() -> set[str]:
+    """Assets the operator never wants traded (e.g. Binance Monitoring tokens).
+
+    Binance does not expose the 'Monitoring' tag via exchangeInfo (such tokens
+    still report status=TRADING), so the operator maintains this list in the
+    `binance_blocklist` setting (comma-separated, case-insensitive).
+    """
+    raw = get_setting("binance_blocklist") or ""
+    return {a.strip().upper() for a in raw.split(",") if a.strip()}
+
+
 def _fetch_binance_book_ticker() -> list[dict]:
     """Whole-exchange best bid/ask. One call. Yields spread for every symbol."""
     r = requests.get(f"{BINANCE_API}/ticker/bookTicker", timeout=15)
@@ -212,6 +223,7 @@ def _fetch_candidates(venue: str) -> list[dict]:
         book = _fetch_binance_book_ticker()
         vol = _fetch_binance_24hr()
         info = _fetch_binance_exchange_info()
+        blocklist = _binance_blocklist()
         by_asset: dict[str, dict] = {}
         for b in book:
             symbol = b["symbol"]
@@ -223,6 +235,8 @@ def _fetch_candidates(venue: str) -> list[dict]:
                                      ex.get("spot_allowed", True)):
                 continue
             asset = symbol[:-4]
+            if asset in blocklist:
+                continue
             bid, ask = b["bid"], b["ask"]
             spread = ((ask - bid) / bid * 100) if bid and bid > 0 else None
             by_asset[asset] = {
@@ -254,9 +268,12 @@ def _fetch_candidates(venue: str) -> list[dict]:
         info = _fetch_binance_exchange_info()
     except Exception:
         return []
+    blocklist = _binance_blocklist()
     by_asset: dict[str, dict] = {}
     for sym in sorted(listing):
         asset = sym[len("PERP_"):-len("_USDC")]
+        if asset in blocklist:
+            continue
         bsymbol = f"{asset}USDT"
         b = next((x for x in book if x["symbol"] == bsymbol), None)
         if b is None:

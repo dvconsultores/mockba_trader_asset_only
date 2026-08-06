@@ -12,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import unquote, parse_qs
 
@@ -798,6 +799,108 @@ async def api_bot_control(request: Request):
             "mode": mode,
             "dex_mode": current_dex,
             "cex_mode": current_cex,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Closed Trades API (read-only, month view) ─────────────────────────
+CARACAS_TZ = timezone(timedelta(hours=-4))  # UTC-4, no DST since 2007 (matches dashboard-ui timezone.ts)
+VENUE_LABELS = (("dex", "orderly"), ("cex", "binance"))
+REASON_LABELS = {"tp": "TP", "sl": "SL", "time_stop": "Time stop"}
+
+
+def _caracas_month_bounds(now_ts: float | None = None) -> tuple[float, float, str]:
+    """(start_epoch, end_epoch, month_label) for the current calendar month in Caracas (UTC-4).
+
+    Membership is by close time (closed_at). End is the first instant of the next month.
+    """
+    now = datetime.fromtimestamp(now_ts if now_ts is not None else time.time(), tz=CARACAS_TZ)
+    start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start.timestamp(), end.timestamp(), start.strftime("%Y-%m")
+
+
+@app.get("/api/trades/closed")
+def api_trades_closed(venue: str = Query("all")):
+    """Month-to-date closed trades (read-only).
+
+    - Window: current calendar month by close time, Caracas UTC-4 (server-side).
+    - Totals: per-venue pnl_net + count for the FULL month — filter-independent.
+    - Trades: most-recent 200, optionally narrowed by venue (venue=all|dex|cex).
+    - reason mapped to human labels; pnl_net returned raw (no rounding).
+    """
+    if venue not in ("all", "dex", "cex"):
+        raise HTTPException(status_code=400, detail="venue must be 'all', 'dex' or 'cex'")
+    try:
+        start, end, month = _caracas_month_bounds()
+        db = _get_db()
+        where = "closed_at >= ? AND closed_at < ?"
+        args = [start, end]
+
+        # Totals: full month, per venue (zero-filled so both cards always render)
+        totals = [{"venue": lbl, "label": lbl.upper(), "pnl_net": 0.0, "count": 0}
+                  for lbl, _ in VENUE_LABELS]
+        for row in db.execute(
+            "SELECT venue, COUNT(*) AS c, COALESCE(SUM(pnl_net), 0) AS p "
+            f"FROM closed_trades WHERE {where} GROUP BY venue",
+            args,
+        ):
+            lbl = next((l for l, v in VENUE_LABELS if v == row["venue"]), None)
+            if lbl is None:
+                continue
+            for t in totals:
+                if t["venue"] == lbl:
+                    t["pnl_net"] = float(row["p"])
+                    t["count"] = int(row["c"])
+
+        # Rows: most recent first, LIMIT 201 to detect truncation in one pass
+        limit = 201
+        if venue != "all":
+            db_venue = dict(VENUE_LABELS)[venue]
+            rows = db.execute(
+                "SELECT id, asset, venue, side, pnl_net, exit_reason, closed_at "
+                f"FROM closed_trades WHERE {where} AND venue = ? "
+                "ORDER BY closed_at DESC LIMIT 201",
+                args + [db_venue],
+            ).fetchall()
+        else:
+            rows = db.execute(
+                "SELECT id, asset, venue, side, pnl_net, exit_reason, closed_at "
+                f"FROM closed_trades WHERE {where} ORDER BY closed_at DESC LIMIT 201",
+                args,
+            ).fetchall()
+        truncated = len(rows) > 200
+        rows = rows[:200]
+
+        trades = []
+        for r in rows:
+            lbl = next((l for l, v in VENUE_LABELS if v == r["venue"]), r["venue"])
+            trades.append({
+                "id": r["id"],
+                "asset": r["asset"],
+                "venue": lbl,
+                "side": r["side"],
+                "pnl_net": float(r["pnl_net"]),
+                "reason": r["exit_reason"],
+                "reason_label": REASON_LABELS.get(r["exit_reason"], str(r["exit_reason"]).upper()),
+                "closed_at": float(r["closed_at"]),
+            })
+        db.close()
+
+        return {
+            "ok": True,
+            "month": month,
+            "window": {
+                "start": round(start, 3), "end": round(end, 3),
+                "tz": "UTC-4 (Caracas)", "by": "close_time",
+            },
+            "totals": totals,
+            "trades": trades,
+            "truncated": truncated,
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
