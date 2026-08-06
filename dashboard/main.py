@@ -820,7 +820,7 @@ async def api_bot_control(request: Request):
 # ── Closed Trades API (read-only, month view) ─────────────────────────
 CARACAS_TZ = timezone(timedelta(hours=-4))  # UTC-4, no DST since 2007 (matches dashboard-ui timezone.ts)
 VENUE_LABELS = (("dex", "orderly"), ("cex", "binance"))
-REASON_LABELS = {"tp": "TP", "sl": "SL", "time_stop": "Time stop"}
+REASON_LABELS = {"tp": "TP", "sl": "SL", "time_stop": "Time stop", "orphan": "Orphan"}
 
 
 def _caracas_month_bounds(now_ts: float | None = None) -> tuple[float, float, str]:

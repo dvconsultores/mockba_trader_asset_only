@@ -150,6 +150,17 @@ class BinanceSpot:
             pass
         return 0.0
 
+    def get_asset_balance(self, asset: str) -> float | None:
+        """Free balance of the base asset; None if the account query failed."""
+        try:
+            data = self._get("/api/v3/account", signed=True)
+            for bal in data.get("balances", []):
+                if bal["asset"] == asset:
+                    return float(bal["free"])
+            return 0.0  # asset not listed → balance is zero
+        except Exception:
+            return None
+
     def get_price(self, asset: str) -> float | None:
         """Current live price for an asset (Binance ticker)."""
         try:
@@ -235,6 +246,7 @@ class BinanceSpot:
         tp_order_id = None
         sl_order_id = None
         if not dry:
+            oco_placed = False
             if sl_pct > 0:
                 oco_params = {
                     "symbol": symbol, "side": "SELL",
@@ -249,6 +261,7 @@ class BinanceSpot:
                 }
                 r = self._post("/api/v3/orderList/oco", oco_params)
                 if r.status_code == 200:
+                    oco_placed = True
                     for rep in r.json().get("orderReports", []):
                         if rep.get("type") == "LIMIT_MAKER":
                             tp_order_id = str(rep.get("orderId", ""))
@@ -261,7 +274,8 @@ class BinanceSpot:
                 else:
                     logger.warning(f"Binance OCO placement failed: {r.status_code} {r.text[:200]}")
             # Fallback: TP limit only (software SL in spot_scalper still protects).
-            if not tp_order_id:
+            # Only when the OCO was NOT placed — never stack a second TP on a live OCO.
+            if not oco_placed:
                 tp_params = {
                     "symbol": symbol, "side": "SELL", "type": "LIMIT",
                     "timeInForce": "GTC",

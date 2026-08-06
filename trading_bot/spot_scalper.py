@@ -100,7 +100,22 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
                     xp, fee_xp = _real_fill(exchange, sym, tpid, float(pd["tp_price"]))
                     _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp)
                 else:
-                    logger.error(f"[EXIT] {asset} sl: market sell failed — keeping position to retry")
+                    bal = exchange.get_asset_balance(asset)
+                    if bal is not None and bal < q:
+                        # Coins are not held on the exchange — position already gone.
+                        # Recover the real exit from the TP order if it filled, else orphan.
+                        if tpid:
+                            fill_info = exchange.get_order_fills(sym, tpid)
+                            if fill_info:
+                                xp, fee_xp = fill_info
+                                logger.warning(f"[EXIT] {asset} sl: no balance ({bal}) — closing as TP via real fill {xp}")
+                                _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp)
+                                continue
+                        xp = live if live else ep
+                        logger.warning(f"[EXIT] {asset} sl: no balance ({bal}) — closing orphan position at {xp}")
+                        _close(asset,"binance","long",ep,xp,sp,q,pid,si,"orphan",fee_ep,0.0)
+                    else:
+                        logger.error(f"[EXIT] {asset} sl: market sell failed — keeping position to retry")
                 continue
             xp = sell.fill_price if sell.fill_price > 0 else slp
             _close(asset,"binance","long",ep,xp,sp,q,pid,si,"sl",fee_ep,sell.fee_amount)
@@ -110,7 +125,22 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
             if slid: exchange.cancel_order(sym,slid)
             sell = exchange.market_sell(asset, q)
             if sell is None:
-                logger.error(f"[EXIT] {asset} time_stop: market sell failed — keeping position to retry")
+                bal = exchange.get_asset_balance(asset)
+                if bal is not None and bal < q:
+                    # Coins are not held on the exchange — position already gone.
+                    # Recover the real exit from the TP order if it filled, else orphan.
+                    if tpid:
+                        fill_info = exchange.get_order_fills(sym, tpid)
+                        if fill_info:
+                            xp, fee_xp = fill_info
+                            logger.warning(f"[EXIT] {asset} time_stop: no balance ({bal}) — closing as TP via real fill {xp}")
+                            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp)
+                            continue
+                    xp = live if live else ep
+                    logger.warning(f"[EXIT] {asset} time_stop: no balance ({bal}) — closing orphan position at {xp}")
+                    _close(asset,"binance","long",ep,xp,sp,q,pid,si,"orphan",fee_ep,0.0)
+                else:
+                    logger.error(f"[EXIT] {asset} time_stop: market sell failed — keeping position to retry")
                 continue
             xp = sell.fill_price if sell.fill_price > 0 else ep
             _close(asset,"binance","long",ep,xp,sp,q,pid,si,"time_stop",fee_ep,sell.fee_amount)
