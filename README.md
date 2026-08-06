@@ -226,7 +226,7 @@ Key settings:
 
 ## CI / CD
 
-`.github/workflows/build-main.yml` builds and pushes the three Docker images to Docker Hub (`andresdom2004/micro-mockba-asset-futures-bot`, `mockba-dashboard`, `mockba-dashboard-ui`) on every push to `main`, and can be triggered manually from the **Actions** tab (workflow_dispatch).
+`.github/workflows/build-main.yml` builds and pushes the three Docker images to Docker Hub (`andresdom2004/micro-mockba-asset-futures-bot`, `mockba-dashboard`, `mockba-dashboard-ui`) on every push to `main`.
 
 ---
 
@@ -236,7 +236,7 @@ Key settings:
 - **`-2010` on market sell / `time_stop` loop** — a stale position whose coins were already sold. The bot now detects it (no balance) and closes it as `tp`/`orphan` automatically. Restart the bot to pick this up.
 - **Nothing trades** — check `dry_run`, `auto_trade_binance/orderly`, `trading_enabled`, universe freshness (`/api/universe/{venue}`), and the kill switches.
 - **Import errors** — `pip install -r requirements.txt`; clear `__pycache__` if needed.
-- **Docker build not triggering on GitHub Actions** — the "job was not acquired by Runner" message is a GitHub infrastructure issue; re-run the job or trigger it manually via `workflow_dispatch`.
+- **Docker build not triggering on GitHub Actions** — the "job was not acquired by Runner" message is a GitHub infrastructure issue; re-run the job from the **Actions** tab.
 
 ---
 
