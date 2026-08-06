@@ -221,46 +221,59 @@ class BinanceSpot:
                 raw=data,
             )
 
-        # Place TP limit sell
+        # Place TP/SL as a single OCO order. Placing a separate TP limit + SL stop
+        # fails with -2010: the TP limit locks the entire base balance, so Binance
+        # rejects the SL stop placement. OCO places both atomically and auto-cancels
+        # the other leg when one fills.
         tp_price = fill.fill_price * (1 + tp_pct / 100)
         tp_price = _floor(tp_price, info.quote_tick)  # toward entry = floor for sell
-        tp_cid = _client_order_id(self.name, asset, position_id, "tp")
-
-        tp_order_id = None
-        if not dry:
-            tp_params = {
-                "symbol": symbol, "side": "SELL", "type": "LIMIT",
-                "timeInForce": "GTC",
-                "quantity": _fmt(fill.sellable_qty, info.base_tick),
-                "price": _fmt(tp_price, info.quote_tick),
-                "newClientOrderId": tp_cid,
-            }
-            r = self._post("/api/v3/order", tp_params)
-            if r.status_code != 200:
-                logger.warning(f"Binance TP placement failed: {r.status_code} {r.text[:200]}")
-            else:
-                tp_order_id = str(r.json().get("orderId", ""))
-
-        # Place SL stop-market sell (if sl_pct > 0) — guaranteed fill on trigger
         sl_price = 0.0
-        sl_order_id = None
         if sl_pct > 0:
             sl_price = fill.fill_price * (1 - sl_pct / 100)
             sl_price = _floor(sl_price, info.quote_tick)  # away from entry = lower = wider
-            sl_cid = _client_order_id(self.name, asset, position_id, "sl")
 
-            if not dry:
-                sl_params = {
-                    "symbol": symbol, "side": "SELL", "type": "STOP_LOSS",
+        tp_order_id = None
+        sl_order_id = None
+        if not dry:
+            if sl_pct > 0:
+                oco_params = {
+                    "symbol": symbol, "side": "SELL",
                     "quantity": _fmt(fill.sellable_qty, info.base_tick),
-                    "stopPrice": _fmt(sl_price, info.quote_tick),
-                    "newClientOrderId": sl_cid,
+                    "aboveType": "LIMIT_MAKER",
+                    "abovePrice": _fmt(tp_price, info.quote_tick),
+                    "aboveClientOrderId": _client_order_id(self.name, asset, position_id, "tp"),
+                    "belowType": "STOP_LOSS",
+                    "belowStopPrice": _fmt(sl_price, info.quote_tick),
+                    "belowClientOrderId": _client_order_id(self.name, asset, position_id, "sl"),
+                    "newOrderRespType": "RESULT",
                 }
-                r = self._post("/api/v3/order", sl_params)
-                if r.status_code != 200:
-                    logger.warning(f"Binance SL placement failed: {r.status_code} {r.text[:200]}")
+                r = self._post("/api/v3/orderList/oco", oco_params)
+                if r.status_code == 200:
+                    for rep in r.json().get("orderReports", []):
+                        if rep.get("type") == "LIMIT_MAKER":
+                            tp_order_id = str(rep.get("orderId", ""))
+                        elif rep.get("type") == "STOP_LOSS":
+                            sl_order_id = str(rep.get("orderId", ""))
+                    if not tp_order_id:
+                        logger.warning(f"Binance OCO placed but TP order id missing: {r.text[:200]}")
+                    if not sl_order_id:
+                        logger.warning(f"Binance OCO placed but SL order id missing: {r.text[:200]}")
                 else:
-                    sl_order_id = str(r.json().get("orderId", ""))
+                    logger.warning(f"Binance OCO placement failed: {r.status_code} {r.text[:200]}")
+            # Fallback: TP limit only (software SL in spot_scalper still protects).
+            if not tp_order_id:
+                tp_params = {
+                    "symbol": symbol, "side": "SELL", "type": "LIMIT",
+                    "timeInForce": "GTC",
+                    "quantity": _fmt(fill.sellable_qty, info.base_tick),
+                    "price": _fmt(tp_price, info.quote_tick),
+                    "newClientOrderId": _client_order_id(self.name, asset, position_id, "tp"),
+                }
+                r = self._post("/api/v3/order", tp_params)
+                if r.status_code != 200:
+                    logger.warning(f"Binance TP placement failed: {r.status_code} {r.text[:200]}")
+                else:
+                    tp_order_id = str(r.json().get("orderId", ""))
 
         return replace(fill, tp_order_id=tp_order_id, sl_order_id=sl_order_id)
 
