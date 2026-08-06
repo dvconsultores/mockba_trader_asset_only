@@ -77,20 +77,31 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
         ep=float(pd["entry_price"]); sp=float(pd["signal_price"]); q=float(pd["qty"])
         op=float(pd["opened_at"]); si=pd.get("signal_id")
         slp = float(pd["sl_price"]) if pd.get("sl_price") else 0.0
-        if slp > 0 and live is not None and live <= slp:
-            if tpid: exchange.cancel_order(sym, tpid)
-            if slid: exchange.cancel_order(sym, slid)
-            sell = exchange.market_sell(asset, q)
-            if sell is None:
-                logger.error(f"[EXIT] {asset} sl: market sell failed — keeping position to retry")
-                continue
-            xp = sell.fill_price if sell.fill_price > 0 else slp
-            _close(asset,"binance","long",ep,xp,sp,q,0.001,pid,si,"sl")
-            continue
+        # Exchange-side fills first: if TP/SL already filled the coins are gone, so
+        # close the position instead of attempting a phantom market sell below.
         if tpid and exchange.get_order_status(sym,tpid)=="FILLED":
             _close(asset,"binance","long",ep,float(pd["tp_price"]),sp,q,0.001,pid,si,"tp"); continue
         if slid and exchange.get_order_status(sym,slid)=="FILLED":
             _close(asset,"binance","long",ep,float(pd.get("sl_price",ep)),sp,q,0.001,pid,si,"sl"); continue
+        if slp > 0 and live is not None and live <= slp:
+            # Free the coins held by the open TP/SL orders first; only sell once the
+            # balance is actually free, otherwise the market sell gets -2010.
+            tp_cancel_ok = (not tpid) or exchange.cancel_order(sym, tpid)
+            if slid: exchange.cancel_order(sym, slid)
+            if not tp_cancel_ok:
+                logger.error(f"[EXIT] {asset} sl: TP cancel failed — cannot free balance, keeping position to retry")
+                continue
+            sell = exchange.market_sell(asset, q)
+            if sell is None:
+                # Coins likely already gone (TP filled between checks) — close as TP if so.
+                if tpid and exchange.get_order_status(sym,tpid)=="FILLED":
+                    _close(asset,"binance","long",ep,float(pd["tp_price"]),sp,q,0.001,pid,si,"tp")
+                else:
+                    logger.error(f"[EXIT] {asset} sl: market sell failed — keeping position to retry")
+                continue
+            xp = sell.fill_price if sell.fill_price > 0 else slp
+            _close(asset,"binance","long",ep,xp,sp,q,0.001,pid,si,"sl")
+            continue
         if (now-op)>mh:
             if tpid: exchange.cancel_order(sym,tpid)
             if slid: exchange.cancel_order(sym,slid)

@@ -311,8 +311,6 @@ class BinanceSpot:
     def cancel_order(self, symbol: str, order_id: str) -> bool:
         try:
             params = {"symbol": symbol, "orderId": order_id}
-            r = self._post("/api/v3/order", params)  # actually DELETE
-            # Actually Binance cancel uses DELETE, not POST. Let's use a direct request.
             params["timestamp"] = int(time.time() * 1000) - 1500
             params["signature"] = self._sign(params)
             r = requests.delete(f"{self.base_url}/api/v3/order", params=params, headers=self._headers(), timeout=10)
