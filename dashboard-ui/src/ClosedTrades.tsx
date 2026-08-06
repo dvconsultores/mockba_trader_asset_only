@@ -116,7 +116,7 @@ export default function ClosedTrades() {
       <div className="px-4 sm:px-6 py-2.5 bg-[#1a1528] border-b border-[#2a2240] shrink-0">
         <div className="flex items-baseline justify-between">
           <h2 className="text-sm font-semibold text-[#D0CFCC]">
-            Closed Trades <span className="text-[#7a7090] font-normal">{data ? formatMonth(data.month) : ''}</span>
+            Trades <span className="text-[#7a7090] font-normal">{data ? formatMonth(data.month) : ''}</span>
           </h2>
           <span className="text-[10px] text-[#7a7090]">UTC-4</span>
         </div>

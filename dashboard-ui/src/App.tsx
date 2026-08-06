@@ -103,7 +103,7 @@ export default function App() {
 
   const moreTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'status', label: 'Status', icon: Radio },
-    { id: 'closed', label: 'Closed Trades', icon: History },
+    { id: 'closed', label: 'Trades', icon: History },
     { id: 'settings', label: 'Settings', icon: Settings2 },
   ]
 
