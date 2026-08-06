@@ -424,15 +424,17 @@ def migrate_legacy_assets(dex_equity: float = 0.0, cex_equity: float = 0.0) -> d
 
 def save_position(pos: dict) -> bool:
     """Insert a new open position. Returns False on UNIQUE conflict."""
+    pos = dict(pos)
+    pos.setdefault("fee_entry", 0.0)
     with get_db_connection() as conn:
         try:
             conn.execute("""
                 INSERT INTO open_positions (id, asset, venue, side, qty,
                     entry_price, signal_price, tp_price, sl_price,
-                    tp_order_id, sl_order_id, opened_at)
+                    tp_order_id, sl_order_id, opened_at, fee_entry)
                 VALUES (:id, :asset, :venue, :side, :qty,
                     :entry_price, :signal_price, :tp_price, :sl_price,
-                    :tp_order_id, :sl_order_id, :opened_at)
+                    :tp_order_id, :sl_order_id, :opened_at, :fee_entry)
             """, pos)
             conn.commit()
             return True

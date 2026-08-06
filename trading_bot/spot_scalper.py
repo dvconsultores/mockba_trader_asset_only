@@ -76,13 +76,15 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
         pid=pd["id"]; tpid=pd.get("tp_order_id"); slid=pd.get("sl_order_id")
         ep=float(pd["entry_price"]); sp=float(pd["signal_price"]); q=float(pd["qty"])
         op=float(pd["opened_at"]); si=pd.get("signal_id")
+        fee_ep = float(pd.get("fee_entry") or 0.0)
         slp = float(pd["sl_price"]) if pd.get("sl_price") else 0.0
         # Exchange-side fills first: if TP/SL already filled the coins are gone, so
         # close the position instead of attempting a phantom market sell below.
         if tpid and exchange.get_order_status(sym,tpid)=="FILLED":
-            _close(asset,"binance","long",ep,float(pd["tp_price"]),sp,q,0.001,pid,si,"tp"); continue
+            xp, fee_xp = _real_fill(exchange, sym, tpid, float(pd["tp_price"]))
+            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp); continue
         if slid and exchange.get_order_status(sym,slid)=="FILLED":
-            _close(asset,"binance","long",ep,float(pd.get("sl_price",ep)),sp,q,0.001,pid,si,"sl"); continue
+            _close(asset,"binance","long",ep,float(pd.get("sl_price",ep)),sp,q,pid,si,"sl",fee_ep,0.0); continue
         if slp > 0 and live is not None and live <= slp:
             # Free the coins held by the open TP/SL orders first; only sell once the
             # balance is actually free, otherwise the market sell gets -2010.
@@ -95,12 +97,13 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
             if sell is None:
                 # Coins likely already gone (TP filled between checks) — close as TP if so.
                 if tpid and exchange.get_order_status(sym,tpid)=="FILLED":
-                    _close(asset,"binance","long",ep,float(pd["tp_price"]),sp,q,0.001,pid,si,"tp")
+                    xp, fee_xp = _real_fill(exchange, sym, tpid, float(pd["tp_price"]))
+                    _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp)
                 else:
                     logger.error(f"[EXIT] {asset} sl: market sell failed — keeping position to retry")
                 continue
             xp = sell.fill_price if sell.fill_price > 0 else slp
-            _close(asset,"binance","long",ep,xp,sp,q,0.001,pid,si,"sl")
+            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"sl",fee_ep,sell.fee_amount)
             continue
         if (now-op)>mh:
             if tpid: exchange.cancel_order(sym,tpid)
@@ -110,10 +113,21 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
                 logger.error(f"[EXIT] {asset} time_stop: market sell failed — keeping position to retry")
                 continue
             xp = sell.fill_price if sell.fill_price > 0 else ep
-            _close(asset,"binance","long",ep,xp,sp,q,0.001,pid,si,"time_stop")
+            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"time_stop",fee_ep,sell.fee_amount)
 
-def _close(a,v,s,ep,xp,sp,q,fr,pid,si,rsn):
-    fee_ep=ep*q*fr; fee_xp=xp*q*fr
+def _real_fill(exchange, sym, order_id, default_price):
+    """Real exit price + commission for a filled order, else (default_price, 0)."""
+    try:
+        res = exchange.get_order_fills(sym, order_id)
+        if res:
+            return res
+    except Exception:
+        pass
+    return float(default_price), 0.0
+
+def _close(a,v,s,ep,xp,sp,q,pid,si,rsn,fee_ep=0.0,fee_xp=0.0):
+    if fee_ep <= 0: fee_ep = ep*q*0.001
+    if fee_xp <= 0: fee_xp = xp*q*0.001
     record_closed_trade(asset=a,venue=v,side=s,entry_price=ep,exit_price=xp,signal_price=sp,qty=q,fee_entry=fee_ep,fee_exit=fee_xp,opened_at=0,closed_at=time.time(),exit_reason=rsn)
     delete_position(a,v,pid)
 
@@ -187,7 +201,7 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
 def _save_open(a,v,s,fill,sp,tp,sl,pid,si):
     tpp=fill.fill_price*(1+tp/100) if s=="long" else fill.fill_price*(1-tp/100)
     slp=fill.fill_price*(1-sl/100) if s=="long" else fill.fill_price*(1+sl/100)
-    save_position({"id":pid,"asset":a,"venue":v,"side":s,"qty":fill.sellable_qty,"entry_price":fill.fill_price,"signal_price":sp,"tp_price":tpp,"sl_price":slp if sl>0 else None,"tp_order_id":fill.tp_order_id,"sl_order_id":fill.sl_order_id,"opened_at":time.time(),"signal_id":si})
+    save_position({"id":pid,"asset":a,"venue":v,"side":s,"qty":fill.sellable_qty,"entry_price":fill.fill_price,"signal_price":sp,"tp_price":tpp,"sl_price":slp if sl>0 else None,"tp_order_id":fill.tp_order_id,"sl_order_id":fill.sl_order_id,"opened_at":time.time(),"signal_id":si,"fee_entry":fill.fee_amount})
 
 def _log(a,v,r,d,p,ex,th,at,ob,vl,dr,tx,act,rsn,tp=0.0,sl=0.0):
     try:

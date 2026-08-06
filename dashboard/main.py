@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import unquote, parse_qs
+import urllib.request
 
 from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -98,6 +99,18 @@ def _get_venue_deployed(venue: str) -> float:
     ).fetchone()
     db.close()
     return float(row["s"]) if row else 0.0
+
+
+def _fetch_live_price(asset: str, venue: str) -> float | None:
+    """Live price from the Binance public ticker (Orderly proxied via Binance)."""
+    try:
+        with urllib.request.urlopen(
+            f"https://api.binance.com/api/v3/ticker/price?symbol={asset}USDT",
+            timeout=4,
+        ) as resp:
+            return float(json.loads(resp.read().decode())["price"])
+    except Exception:
+        return None
 
 
 def _get_db() -> sqlite3.Connection:
@@ -842,10 +855,12 @@ def api_trades_closed(venue: str = Query("all")):
         args = [start, end]
 
         # Totals: full month, per venue (zero-filled so both cards always render)
-        totals = [{"venue": lbl, "label": lbl.upper(), "pnl_net": 0.0, "count": 0}
+        totals = [{"venue": lbl, "label": lbl.upper(), "pnl_net": 0.0, "count": 0, "wins": 0, "losses": 0}
                   for lbl, _ in VENUE_LABELS]
         for row in db.execute(
-            "SELECT venue, COUNT(*) AS c, COALESCE(SUM(pnl_net), 0) AS p "
+            "SELECT venue, COUNT(*) AS c, COALESCE(SUM(pnl_net), 0) AS p, "
+            "COALESCE(SUM(CASE WHEN pnl_net > 0 THEN 1 ELSE 0 END), 0) AS wins, "
+            "COALESCE(SUM(CASE WHEN pnl_net < 0 THEN 1 ELSE 0 END), 0) AS losses "
             f"FROM closed_trades WHERE {where} GROUP BY venue",
             args,
         ):
@@ -856,25 +871,41 @@ def api_trades_closed(venue: str = Query("all")):
                 if t["venue"] == lbl:
                     t["pnl_net"] = float(row["p"])
                     t["count"] = int(row["c"])
+                    t["wins"] = int(row["wins"])
+                    t["losses"] = int(row["losses"])
 
         # Rows: most recent first, LIMIT 201 to detect truncation in one pass
         limit = 201
         if venue != "all":
             db_venue = dict(VENUE_LABELS)[venue]
             rows = db.execute(
-                "SELECT id, asset, venue, side, pnl_net, exit_reason, closed_at "
+                "SELECT id, asset, venue, side, entry_price, exit_price, qty, "
+                "fee_entry, fee_exit, pnl_net, pnl_pct, exit_reason, closed_at "
                 f"FROM closed_trades WHERE {where} AND venue = ? "
                 "ORDER BY closed_at DESC LIMIT 201",
                 args + [db_venue],
             ).fetchall()
         else:
             rows = db.execute(
-                "SELECT id, asset, venue, side, pnl_net, exit_reason, closed_at "
+                "SELECT id, asset, venue, side, entry_price, exit_price, qty, "
+                "fee_entry, fee_exit, pnl_net, pnl_pct, exit_reason, closed_at "
                 f"FROM closed_trades WHERE {where} ORDER BY closed_at DESC LIMIT 201",
                 args,
             ).fetchall()
         truncated = len(rows) > 200
         rows = rows[:200]
+
+        # Running realized balance per venue (chronological) — the "account" line.
+        bal_map: dict[int, float] = {}
+        running: dict[str, float] = {}
+        for brow in db.execute(
+            "SELECT id, venue, pnl_net FROM closed_trades "
+            f"WHERE {where} ORDER BY closed_at ASC",
+            args,
+        ):
+            blbl = next((l for l, v in VENUE_LABELS if v == brow["venue"]), brow["venue"])
+            running[blbl] = running.get(blbl, 0.0) + float(brow["pnl_net"])
+            bal_map[brow["id"]] = running[blbl]
 
         trades = []
         for r in rows:
@@ -884,7 +915,14 @@ def api_trades_closed(venue: str = Query("all")):
                 "asset": r["asset"],
                 "venue": lbl,
                 "side": r["side"],
+                "qty": float(r["qty"]),
+                "entry_price": float(r["entry_price"]),
+                "exit_price": float(r["exit_price"]),
+                "fee_total": float(r["fee_entry"]) + float(r["fee_exit"]),
                 "pnl_net": float(r["pnl_net"]),
+                "pnl_pct": float(r["pnl_pct"]),
+                "win": float(r["pnl_net"]) > 0,
+                "balance": bal_map.get(r["id"], 0.0),
                 "reason": r["exit_reason"],
                 "reason_label": REASON_LABELS.get(r["exit_reason"], str(r["exit_reason"]).upper()),
                 "closed_at": float(r["closed_at"]),
@@ -901,6 +939,72 @@ def api_trades_closed(venue: str = Query("all")):
             "totals": totals,
             "trades": trades,
             "truncated": truncated,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Open Positions API (live unrealized PnL + current equity) ──────────────
+
+@app.get("/api/positions/open")
+def api_positions_open():
+    """Open positions with live unrealized PnL (real Binance prices) + equity.
+
+    Unrealized PnL is computed from the live ticker at request time, so it moves
+    with the market ("gain + balance can vary"). Equity comes from the venue_state
+    cache written by bot.py each cycle; realized_today is today's closed PnL.
+    """
+    try:
+        db = _get_db()
+        rows = db.execute("SELECT * FROM open_positions ORDER BY opened_at").fetchall()
+
+        positions = []
+        for r in rows:
+            asset = r["asset"]; venue = r["venue"]
+            entry = float(r["entry_price"]); qty = float(r["qty"])
+            side = r["side"] or "long"
+            price = _fetch_live_price(asset, venue)
+            upnl = 0.0; upnl_pct = 0.0
+            if price is not None and entry > 0:
+                if side == "long":
+                    upnl = (price - entry) * qty
+                else:
+                    upnl = (entry - price) * qty
+                upnl_pct = upnl / (entry * qty) * 100 if entry * qty > 0 else 0.0
+            positions.append({
+                "asset": asset,
+                "venue": next((l for l, v in VENUE_LABELS if v == venue), venue),
+                "side": side,
+                "qty": qty,
+                "entry_price": entry,
+                "tp_price": float(r["tp_price"]) if r["tp_price"] else None,
+                "sl_price": float(r["sl_price"]) if r["sl_price"] else None,
+                "live_price": price,
+                "unrealized_pnl": round(upnl, 6),
+                "pnl_pct": round(upnl_pct, 3),
+                "opened_at": float(r["opened_at"]),
+            })
+
+        # Live equity (venue_state cache) + today's realized PnL
+        equity = {}
+        realized = {}
+        for venue, lbl in (("binance", "cex"), ("orderly", "dex")):
+            st = _get_venue_equity(venue)
+            equity[lbl] = round(float(st["equity"]), 2) if st else 0.0
+            rrow = db.execute(
+                "SELECT COALESCE(SUM(pnl_net), 0) AS p FROM closed_trades WHERE venue=? "
+                "AND date(datetime(closed_at, 'unixepoch')) = date('now')",
+                (venue,),
+            ).fetchone()
+            realized[lbl] = round(float(rrow["p"]), 4) if rrow else 0.0
+        db.close()
+
+        return {
+            "ok": True,
+            "positions": positions,
+            "equity": equity,
+            "realized_today": realized,
+            "fetched_at": round(time.time(), 3),
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

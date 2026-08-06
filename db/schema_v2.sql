@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS open_positions (
     sl_price        REAL,
     tp_order_id     TEXT,
     sl_order_id     TEXT,
+    fee_entry       REAL NOT NULL DEFAULT 0,
     opened_at       REAL NOT NULL,
     signal_id       INTEGER,
     UNIQUE(asset, venue, id)

@@ -9,6 +9,8 @@ interface VenueTotal {
   label: string
   pnl_net: number
   count: number
+  wins: number
+  losses: number
 }
 
 interface ClosedTrade {
@@ -16,7 +18,14 @@ interface ClosedTrade {
   asset: string
   venue: string
   side: string
+  qty: number
+  entry_price: number
+  exit_price: number
+  fee_total: number
   pnl_net: number
+  pnl_pct: number
+  win: boolean
+  balance: number
   reason: string
   reason_label: string
   closed_at: number
@@ -28,6 +37,28 @@ interface TradesResponse {
   totals: VenueTotal[]
   trades: ClosedTrade[]
   truncated: boolean
+}
+
+interface OpenPosition {
+  asset: string
+  venue: string
+  side: string
+  qty: number
+  entry_price: number
+  tp_price: number | null
+  sl_price: number | null
+  live_price: number | null
+  unrealized_pnl: number
+  pnl_pct: number
+  opened_at: number
+}
+
+interface OpenPositionsResponse {
+  ok: boolean
+  positions: OpenPosition[]
+  equity: Record<string, number>
+  realized_today: Record<string, number>
+  fetched_at: number
 }
 
 const FILTERS: VenueFilter[] = ['all', 'dex', 'cex']
@@ -69,11 +100,30 @@ function formatClose(ts: number): string {
   return `${mm}-${dd} ${hh}:${mi}`
 }
 
+function formatMoney(v: number): string {
+  return v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+}
+
+function fmtPrice(v: number): string {
+  if (v >= 1000) return v.toFixed(0)
+  if (v >= 100) return v.toFixed(2)
+  if (v >= 1) return v.toFixed(4)
+  return v.toPrecision(4)
+}
+
+function formatOpenTime(ts: number): string {
+  const d = toCaracasTime(new Date(ts * 1000))
+  const hh = String(d.getUTCHours()).padStart(2, '0')
+  const mi = String(d.getUTCMinutes()).padStart(2, '0')
+  return `${hh}:${mi}`
+}
+
 export default function ClosedTrades() {
   const [filter, setFilter] = useState<VenueFilter>('all')
   const [data, setData] = useState<TradesResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
+  const [openData, setOpenData] = useState<OpenPositionsResponse | null>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -105,6 +155,25 @@ export default function ClosedTrades() {
     }
   }, [filter])
 
+  // Open positions — live unrealized PnL, refreshed frequently (gain/balance vary).
+  useEffect(() => {
+    let cancelled = false
+    const fetchOpen = () => {
+      fetch('/api/positions/open')
+        .then(r => r.json())
+        .then(d => {
+          if (!cancelled && d?.ok) setOpenData(d)
+        })
+        .catch(() => {})
+    }
+    fetchOpen()
+    const interval = setInterval(fetchOpen, 15000)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+    }
+  }, [])
+
   const totals = data?.totals ?? []
   const trades = data?.trades ?? []
   const monthEmpty = data !== null && !error && trades.length === 0 && totals.every(t => t.count === 0)
@@ -121,7 +190,7 @@ export default function ClosedTrades() {
           <span className="text-[10px] text-[#7a7090]">UTC-4</span>
         </div>
         <p className="text-[10px] text-[#7a7090] mt-0.5 leading-tight">
-          Net of estimated fees · funding not included
+          Net of fees · real Binance fills · funding not included
         </p>
       </div>
 
@@ -133,10 +202,44 @@ export default function ClosedTrades() {
             <div className={`text-xl sm:text-2xl font-bold tabular-nums ${pnlColor(t.pnl_net)}`}>
               {loading ? '…' : formatPnl(t.pnl_net)}
             </div>
-            <div className="text-[10px] text-[#7a7090] mt-0.5">{t.count} trades</div>
+            <div className="text-[10px] text-[#7a7090] mt-0.5">{t.wins}W · {t.losses}L · {t.count} trades</div>
           </div>
         ))}
       </div>
+
+      {/* Open positions — live unrealized PnL (updates with the market) */}
+      {openData && openData.positions.length > 0 && (
+        <div className="px-4 sm:px-6 pt-3 shrink-0">
+          <div className="flex items-baseline justify-between mb-1.5">
+            <span className="text-[10px] font-semibold uppercase tracking-wider text-[#7a7090]">Open positions</span>
+            <span className="text-[10px] text-[#7a7090] tabular-nums">
+              Equity {formatMoney(openData.equity.cex ?? 0)} · Realized {formatPnl(openData.realized_today.cex ?? 0)}
+            </span>
+          </div>
+          <div className="rounded-xl border border-[#2a2240] bg-[#1a1528] divide-y divide-[#2a2240] overflow-hidden">
+            {openData.positions.map(p => (
+              <div key={p.asset} className="px-3 py-2 flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-[#D0CFCC] flex items-center gap-2">
+                    <span className="truncate">{p.asset}</span>
+                    <span className="text-[10px] text-[#7a7090]">{p.venue.toUpperCase()}</span>
+                    <span className={`text-[10px] font-semibold ${p.side === 'short' ? 'text-red-400' : 'text-[#D0CFCC]'}`}>
+                      {formatSide(p.side)}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-[#7a7090] mt-0.5">
+                    {p.qty} @ {fmtPrice(p.entry_price)} → {p.live_price != null ? fmtPrice(p.live_price) : '—'} · {formatOpenTime(p.opened_at)}
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className={`text-sm font-semibold tabular-nums ${pnlColor(p.unrealized_pnl)}`}>{formatPnl(p.unrealized_pnl)}</div>
+                  <div className={`text-[10px] tabular-nums ${pnlColor(p.unrealized_pnl)}`}>{p.pnl_pct.toFixed(2)}%</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Filter — narrows the list only */}
       <div className="flex gap-1 px-4 sm:px-6 pt-3 shrink-0">
@@ -209,11 +312,14 @@ export default function ClosedTrades() {
                       </span>
                     </div>
                     <div className="text-[10px] text-[#7a7090] mt-0.5">
-                      {t.reason_label} · {formatClose(t.closed_at)}
+                      {t.reason_label} · {formatClose(t.closed_at)} · {t.qty} @ {fmtPrice(t.entry_price)}→{fmtPrice(t.exit_price)}
                     </div>
                   </div>
-                  <div className={`text-sm font-semibold tabular-nums shrink-0 ${pnlColor(t.pnl_net)}`}>
-                    {formatPnl(t.pnl_net)}
+                  <div className="text-right shrink-0">
+                    <div className={`text-sm font-semibold tabular-nums ${pnlColor(t.pnl_net)}`}>
+                      {formatPnl(t.pnl_net)} <span className="text-[10px] text-[#7a7090] font-normal">{t.pnl_pct.toFixed(2)}%</span>
+                    </div>
+                    <div className="text-[10px] tabular-nums text-[#7a7090]">bal {formatPnl(t.balance)}</div>
                   </div>
                 </div>
               ))}

@@ -307,9 +307,10 @@ class BinanceSpot:
         if quote_qty == 0 and filled_qty > 0:
             quote_qty = float(data.get("cummulativeQuoteQty", 0))
         fill_price = quote_qty / filled_qty if filled_qty > 0 else 0.0
+        fee_amount = sum(float(f.get("commission", 0)) for f in data.get("fills", []))
         return Fill(
             filled_qty=filled_qty, fill_price=fill_price if filled_qty > 0 else 0.0,
-            fee_amount=0.0, fee_asset="USDT", sellable_qty=filled_qty,
+            fee_amount=fee_amount, fee_asset="USDT", sellable_qty=filled_qty,
             order_id=str(data.get("orderId", "")), client_order_id=cid,
             raw=data,
         )
@@ -320,6 +321,21 @@ class BinanceSpot:
             return data.get("status", "UNKNOWN")
         except Exception:
             return "UNKNOWN"
+
+    def get_order_fills(self, symbol: str, order_id: str) -> tuple[float, float] | None:
+        """Real fill for a closed order: (average_price, total_commission)."""
+        try:
+            data = self._get("/api/v3/myTrades", {"symbol": symbol, "orderId": order_id}, signed=True)
+            if not isinstance(data, list) or not data:
+                return None
+            qty = sum(float(t["qty"]) for t in data)
+            notional = sum(float(t["price"]) * float(t["qty"]) for t in data)
+            comm = sum(float(t.get("commission", 0)) for t in data)
+            if qty <= 0:
+                return None
+            return (notional / qty, comm)
+        except Exception:
+            return None
 
     def cancel_order(self, symbol: str, order_id: str) -> bool:
         try:
