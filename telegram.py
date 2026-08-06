@@ -623,7 +623,7 @@ def callback_handler(call):
 
 
 # === Main Actions ===
-
+#
 def execute_trade_performance(m):
     if m.chat.type != 'private':
         return
