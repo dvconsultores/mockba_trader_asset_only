@@ -36,6 +36,10 @@ from trading_bot.futures_scalper import manage_open_positions as futures_manage,
 # Consecutive cycles a venue's universe has been majority-blocked by the
 # spread-degradation guard — used to trigger an early rescan of stale spreads.
 _degraded_streak: dict[str, int] = {}
+# Per-asset consecutive blocked cycles, and last forced-rescan time per venue
+# (cooldown prevents hammering the scanner when a rescan doesn't help).
+_asset_degraded_streak: dict[tuple[str, str], int] = {}
+_last_forced_rescan: dict[str, float] = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -378,8 +382,12 @@ def run():
                             mult = get_setting_float("universe_spread_degradation_multiple", 3.0)
                             if spread > scan_spread * mult:
                                 deg_blocked += 1
+                                _asset_degraded_streak[(venue, asset)] = _asset_degraded_streak.get((venue, asset), 0) + 1
                                 logger.warning(f"[UNIVERSE] {asset} {venue} live spread {spread:.3f}% exceeds scan spread {scan_spread:.3f}% × {mult} — skipping entries this cycle")
                                 continue
+                            _asset_degraded_streak.pop((venue, asset), None)
+                        else:
+                            _asset_degraded_streak.pop((venue, asset), None)
 
                         if obi is not None and price is not None:
                             if venue == "binance":
@@ -415,6 +423,22 @@ def run():
                             _degraded_streak[venue] = 0
                     else:
                         _degraded_streak[venue] = 0
+
+                # Per-asset persistent blocking → force a rescan too (covers a
+                # single asset whose stored scan spread is stale, e.g. SKHYB).
+                cycles_thr = get_setting_int("universe_degradation_rescan_cycles", 10)
+                cooldown = get_setting_float("universe_rescan_cooldown_min", 60) * 60
+                for key, streak in list(_asset_degraded_streak.items()):
+                    if key[0] != venue:
+                        continue
+                    if streak < cycles_thr:
+                        continue
+                    if time.time() - _last_forced_rescan.get(venue, 0.0) < cooldown:
+                        continue
+                    force_rescan(venue)
+                    _last_forced_rescan[venue] = time.time()
+                    logger.warning(f"[UNIVERSE] {venue}: {key[1]} blocked by spread degradation for {streak} consecutive cycles — forcing rescan")
+                    _asset_degraded_streak[key] = 0
 
             # ── Venue-level failure escalation (Constitution IV) ────
             for venue, fails in _venue_failures.items():
