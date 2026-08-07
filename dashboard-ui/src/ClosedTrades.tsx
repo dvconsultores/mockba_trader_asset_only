@@ -120,6 +120,7 @@ function formatOpenTime(ts: number): string {
 
 export default function ClosedTrades() {
   const [filter, setFilter] = useState<VenueFilter>('all')
+  const [todayOnly, setTodayOnly] = useState(false)
   const [data, setData] = useState<TradesResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
@@ -128,7 +129,7 @@ export default function ClosedTrades() {
   useEffect(() => {
     let cancelled = false
     const fetchTrades = () => {
-      fetch(`/api/trades/closed?venue=${filter}`)
+      fetch(`/api/trades/closed?venue=${filter}&today=${todayOnly ? 1 : 0}`)
         .then(r => {
           if (!r.ok) throw new Error(`HTTP ${r.status}`)
           return r.json()
@@ -153,7 +154,7 @@ export default function ClosedTrades() {
       cancelled = true
       clearInterval(interval)
     }
-  }, [filter])
+  }, [filter, todayOnly])
 
   // Open positions — live unrealized PnL, refreshed frequently (gain/balance vary).
   useEffect(() => {
@@ -185,7 +186,7 @@ export default function ClosedTrades() {
       <div className="px-4 sm:px-6 py-2.5 bg-[#1a1528] border-b border-[#2a2240] shrink-0">
         <div className="flex items-baseline justify-between">
           <h2 className="text-sm font-semibold text-[#D0CFCC]">
-            Trades <span className="text-[#7a7090] font-normal">{data ? formatMonth(data.month) : ''}</span>
+            Trades <span className="text-[#7a7090] font-normal">{todayOnly ? 'Today' : (data ? formatMonth(data.month) : '')}</span>
           </h2>
           <span className="text-[10px] text-[#7a7090]">UTC-4</span>
         </div>
@@ -258,6 +259,17 @@ export default function ClosedTrades() {
         </div>
       </div>
 
+      {/* Today filter */}
+      <label className="flex items-center gap-2 px-4 sm:px-6 pt-2.5 shrink-0 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={todayOnly}
+          onChange={e => setTodayOnly(e.target.checked)}
+          className="h-3.5 w-3.5 accent-[#8b5cf6]"
+        />
+        <span className={`text-xs ${todayOnly ? 'text-[#D0CFCC]' : 'text-[#7a7090]'}`}>Today only</span>
+      </label>
+
       {/* Body */}
       <div className="flex-1 overflow-y-auto mt-3">
         {loading && (
@@ -281,14 +293,14 @@ export default function ClosedTrades() {
 
         {!loading && !error && monthEmpty && (
           <div className="flex flex-col items-center justify-center py-16 text-[#7a7090]">
-            <span className="text-sm">No closed trades this month.</span>
+            <span className="text-sm">No closed trades {todayOnly ? 'today' : 'this month'}.</span>
           </div>
         )}
 
         {!loading && !error && venueEmpty && (
           <div className="flex flex-col items-center justify-center py-16 text-[#7a7090]">
             <span className="text-sm">
-              No {filter === 'all' ? '' : filter.toUpperCase() + ' '}trades this month.
+              No {filter === 'all' ? '' : filter.toUpperCase() + ' '}trades {todayOnly ? 'today' : 'this month'}.
             </span>
           </div>
         )}

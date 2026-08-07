@@ -837,19 +837,27 @@ def _caracas_month_bounds(now_ts: float | None = None) -> tuple[float, float, st
     return start.timestamp(), end.timestamp(), start.strftime("%Y-%m")
 
 
-@app.get("/api/trades/closed")
-def api_trades_closed(venue: str = Query("all")):
-    """Month-to-date closed trades (read-only).
+def _caracas_day_bounds(now_ts: float | None = None) -> tuple[float, float, str]:
+    """(start_epoch, end_epoch, label) for today in Caracas (UTC-4)."""
+    now = datetime.fromtimestamp(now_ts if now_ts is not None else time.time(), tz=CARACAS_TZ)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    return start.timestamp(), end.timestamp(), start.strftime("%Y-%m-%d")
 
-    - Window: current calendar month by close time, Caracas UTC-4 (server-side).
-    - Totals: per-venue pnl_net + count for the FULL month — filter-independent.
+
+@app.get("/api/trades/closed")
+def api_trades_closed(venue: str = Query("all"), today: bool = Query(False)):
+    """Closed trades (read-only).
+
+    - Window: current calendar month (or today when today=true), Caracas UTC-4.
+    - Totals: per-venue pnl_net + count for the whole window.
     - Trades: most-recent 200, optionally narrowed by venue (venue=all|dex|cex).
     - reason mapped to human labels; pnl_net returned raw (no rounding).
     """
     if venue not in ("all", "dex", "cex"):
         raise HTTPException(status_code=400, detail="venue must be 'all', 'dex' or 'cex'")
     try:
-        start, end, month = _caracas_month_bounds()
+        start, end, month = _caracas_day_bounds() if today else _caracas_month_bounds()
         db = _get_db()
         where = "closed_at >= ? AND closed_at < ?"
         args = [start, end]
@@ -934,7 +942,7 @@ def api_trades_closed(venue: str = Query("all")):
             "month": month,
             "window": {
                 "start": round(start, 3), "end": round(end, 3),
-                "tz": "UTC-4 (Caracas)", "by": "close_time",
+                "tz": "UTC-4 (Caracas)", "by": "today" if today else "close_time",
             },
             "totals": totals,
             "trades": trades,
