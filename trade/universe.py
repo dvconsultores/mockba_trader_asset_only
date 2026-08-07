@@ -646,11 +646,23 @@ def select_ranked(checked: list[dict], metrics: dict, min_signals: int,
     return rows
 
 
+# ── Forced rescans ──────────────────────────────────────────────────────────
+# The trading loop sets a venue here when persistent spread degradation is
+# detected (stale scan spreads), so the next scanner tick rescans immediately
+# instead of waiting for universe_scan_interval_hours.
+_force_rescan: set[str] = set()
+
+
+def force_rescan(venue: str) -> None:
+    """Request an immediate universe rescan for a venue on the next scanner tick."""
+    _force_rescan.add(venue)
+
+
 def run_scans_if_due(venues=("binance", "orderly"),
                      equity_fn: Callable[[str], float | None] | None = None,
                      notify: Callable[[str], None] | None = None) -> list[dict]:
-    """Scan each venue if the stored scan is absent or older than
-    universe_scan_interval_hours. Called by the bot's scanner thread.
+    """Scan each venue if the stored scan is absent, older than
+    universe_scan_interval_hours, or explicitly force-rescanned by the loop.
 
     Returns the list of scan summaries. Never raises.
     """
@@ -658,8 +670,10 @@ def run_scans_if_due(venues=("binance", "orderly"),
     for venue in venues:
         interval = get_setting_float("universe_scan_interval_hours", 24) * 3600
         age = get_universe_scan_age(venue)
-        if age is not None and (time.time() - age) < interval:
+        forced = venue in _force_rescan
+        if not forced and age is not None and (time.time() - age) < interval:
             continue
+        _force_rescan.discard(venue)
         equity = equity_fn(venue) if equity_fn else None
         try:
             res = scan_venue(venue, equity=equity)

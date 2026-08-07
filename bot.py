@@ -27,10 +27,15 @@ from db.db_ops import (
 from logs.log_config import apolo_trader_logger as logger
 from trade.regime import detect_regime, invalidate_cache
 from trade.pnl import is_entry_blocked, is_entry_blocked_per_pair, can_trade_venue, compute_slot_size, max_effective_slots, check_global_daily_loss
-from trade.universe import run_scans_if_due, is_universe_stale
+from trade.universe import run_scans_if_due, is_universe_stale, force_rescan
 from trading_bot.executor import BinanceSpot, OrderlyFutures
 from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle
 from trading_bot.futures_scalper import manage_open_positions as futures_manage, scalp_cycle as futures_cycle
+
+
+# Consecutive cycles a venue's universe has been majority-blocked by the
+# spread-degradation guard — used to trigger an early rescan of stale spreads.
+_degraded_streak: dict[str, int] = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -326,6 +331,8 @@ def run():
 
                 signal_only = (venue_mode == "Signal")
 
+                deg_blocked = 0  # assets blocked by the spread-degradation guard this cycle
+
                 for asset in assets:
                     try:
                         regime = detect_regime(asset, venue)
@@ -370,6 +377,7 @@ def run():
                         if scan_spread and spread is not None:
                             mult = get_setting_float("universe_spread_degradation_multiple", 3.0)
                             if spread > scan_spread * mult:
+                                deg_blocked += 1
                                 logger.warning(f"[UNIVERSE] {asset} {venue} live spread {spread:.3f}% exceeds scan spread {scan_spread:.3f}% × {mult} — skipping entries this cycle")
                                 continue
 
@@ -388,6 +396,25 @@ def run():
                         logger.error(f"[ERROR] {venue}:{asset} cycle failed: {e}")
                         _venue_failures[venue] = _venue_failures.get(venue, 0) + 1
                         # Continue to next asset — do not abort
+
+                # ── Persistent spread degradation → force a rescan ──
+                # If a large share of the venue universe is blocked by the
+                # spread-degradation guard for several consecutive cycles, the
+                # stored scan spreads are stale — request an immediate rescan
+                # instead of waiting for universe_scan_interval_hours.
+                uv_size = len(universe_by_asset)
+                if uv_size > 0:
+                    share_thr = get_setting_float("universe_degradation_rescan_share", 0.5)
+                    cycles_thr = get_setting_int("universe_degradation_rescan_cycles", 10)
+                    if deg_blocked >= max(1, int(uv_size * share_thr)):
+                        streak = _degraded_streak.get(venue, 0) + 1
+                        _degraded_streak[venue] = streak
+                        if streak >= cycles_thr:
+                            force_rescan(venue)
+                            logger.warning(f"[UNIVERSE] {venue}: {deg_blocked}/{uv_size} assets blocked by spread degradation for {streak} cycles — forcing rescan")
+                            _degraded_streak[venue] = 0
+                    else:
+                        _degraded_streak[venue] = 0
 
             # ── Venue-level failure escalation (Constitution IV) ────
             for venue, fails in _venue_failures.items():
