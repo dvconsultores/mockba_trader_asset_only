@@ -12,6 +12,7 @@ import sys
 import time
 import math
 import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Ensure project root is importable
@@ -40,6 +41,9 @@ _degraded_streak: dict[str, int] = {}
 # (cooldown prevents hammering the scanner when a rescan doesn't help).
 _asset_degraded_streak: dict[tuple[str, str], int] = {}
 _last_forced_rescan: dict[str, float] = {}
+# Venue -> UTC date string last warned about the consecutive-losses kill switch
+# (logs once per venue per day, showing when entries will reset).
+_consec_loss_warned: dict[str, str] = {}
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -365,6 +369,14 @@ def run():
                                 blocked = True
                                 reason = f"max_concurrent_positions={max_positions} reached"
                         if blocked:
+                            if "max_consecutive_losses" in reason:
+                                today = time.strftime("%Y-%m-%d", time.gmtime())
+                                if _consec_loss_warned.get(venue) != today:
+                                    reset_dt = datetime.now(timezone.utc).replace(
+                                        hour=0, minute=0, second=0, microsecond=0
+                                    ) + timedelta(days=1)
+                                    logger.warning(f"[KILL] {venue}: consecutive losses reached ({reason}) — entries will start over on {reset_dt:%Y-%m-%d %H:%M} UTC")
+                                    _consec_loss_warned[venue] = today
                             logger.debug(f"[SKIP] {venue}:{asset} {reason}")
                             continue
                         if regime == "UNKNOWN":

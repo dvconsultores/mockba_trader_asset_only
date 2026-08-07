@@ -24,6 +24,7 @@ replay can never diverge from the strategy actually running.
 from __future__ import annotations
 import time
 from collections import deque
+from datetime import datetime, timedelta, timezone
 from statistics import median
 from typing import Callable, Optional
 
@@ -32,6 +33,7 @@ import requests
 from db.db_ops import (
     get_setting, get_setting_float, get_setting_int,
     get_universe_scan_age, replace_universe, get_venue_equity,
+    get_consecutive_losses,
 )
 from trade.regime import _fetch_ohlcv
 
@@ -681,16 +683,34 @@ def force_rescan(venue: str) -> None:
     _force_rescan.add(venue)
 
 
+# Venue -> UTC date when the kill-switch scan pause was last logged (once/day).
+_scan_pause_warned: dict[str, str] = {}
+
+
 def run_scans_if_due(venues=("binance", "orderly"),
                      equity_fn: Callable[[str], float | None] | None = None,
                      notify: Callable[[str], None] | None = None) -> list[dict]:
     """Scan each venue if the stored scan is absent, older than
     universe_scan_interval_hours, or explicitly force-rescanned by the loop.
 
+    Scans are paused while a venue's consecutive-losses kill switch is active
+    (entries blocked) — no point refreshing the universe until the next UTC day.
     Returns the list of scan summaries. Never raises.
     """
     results = []
     for venue in venues:
+        # Kill-switch pause: don't scan/refresh while consecutive losses block entries.
+        max_consec = get_setting_int("max_consecutive_losses", 4)
+        consec = get_consecutive_losses(venue)
+        if max_consec > 0 and consec >= max_consec:
+            today = time.strftime("%Y-%m-%d", time.gmtime())
+            if _scan_pause_warned.get(venue) != today:
+                _scan_pause_warned[venue] = today
+                reset_dt = (datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                            + timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
+                results.append({"venue": venue, "ok": False,
+                                "reason": f"consecutive-losses kill switch active ({consec} >= {max_consec}) — scans paused until {reset_dt} UTC"})
+            continue
         interval = get_setting_float("universe_scan_interval_hours", 24) * 3600
         age = get_universe_scan_age(venue)
         forced = venue in _force_rescan
