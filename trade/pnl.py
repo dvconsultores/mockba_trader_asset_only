@@ -178,13 +178,14 @@ def _get_asset_daily_pnl(asset: str, venue: str) -> float:
 
 
 def _get_asset_consecutive_losses(asset: str, venue: str) -> int:
-    """Consecutive losses for a specific (asset, venue) pair."""
+    """Consecutive losses for a specific (asset, venue) pair since UTC day start."""
+    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     from db.db_ops import get_db_connection
     with get_db_connection() as conn:
         rows = conn.execute(
-            "SELECT pnl_net FROM closed_trades WHERE asset=? AND venue=? "
+            "SELECT pnl_net FROM closed_trades WHERE asset=? AND venue=? AND closed_at >= ? "
             "ORDER BY closed_at DESC LIMIT 20",
-            (asset, venue),
+            (asset, venue, day_start),
         ).fetchall()
     count = 0
     for row in rows:

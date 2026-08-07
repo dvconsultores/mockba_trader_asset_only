@@ -512,11 +512,18 @@ def get_daily_pnl(venue: str, date_str: str | None = None) -> float:
 
 
 def get_consecutive_losses(venue: str) -> int:
+    """Consecutive losing trades since the start of the current UTC day.
+
+    Resets at the day boundary so a losing streak that ends a day cannot
+    deadlock the bot the next day (when there are no open positions to reset
+    the streak via a win).
+    """
+    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
     with get_db_connection() as conn:
         rows = conn.execute(
-            "SELECT pnl_net FROM closed_trades WHERE venue=? "
+            "SELECT pnl_net FROM closed_trades WHERE venue=? AND closed_at >= ? "
             "ORDER BY closed_at DESC LIMIT 20",
-            (venue,),
+            (venue, day_start),
         ).fetchall()
     count = 0
     for row in rows:
