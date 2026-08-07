@@ -507,6 +507,18 @@ def _slot_size_for(venue: str, equity: float | None) -> float | None:
     return equity * pct / 100
 
 
+# ── Stale-spread rotation ──────────────────────────────────────────────────
+# Assets persistently blocked by the spread-degradation guard are excluded
+# from universe scans for a TTL, so the scan can surface alternative tokens
+# instead of re-selecting the same stale-spread names.
+_degraded_exclusions: dict[tuple[str, str], float] = {}
+
+
+def add_degraded_exclusion(venue: str, asset: str, ttl_hours: float) -> None:
+    """Exclude an asset from universe scans for ttl_hours (stale-spread rotation)."""
+    _degraded_exclusions[(venue, asset)] = time.time() + ttl_hours * 3600
+
+
 def scan_venue(venue: str, equity: float | None = None,
                depth_budget: int | None = None) -> dict:
     """Run the full scan pipeline for one venue and store the result.
@@ -526,6 +538,17 @@ def scan_venue(venue: str, equity: float | None = None,
     if not candidates:
         summary["reason"] = "no candidates (exchange data unavailable or empty)"
         return summary
+
+    # Drop assets temporarily excluded by the degradation guard (stale spread),
+    # purging expired entries, so the scan can pick alternative candidates.
+    now = time.time()
+    for key, expiry in list(_degraded_exclusions.items()):
+        if key[0] != venue:
+            continue
+        if now >= expiry:
+            _degraded_exclusions.pop(key, None)
+            continue
+        candidates = [c for c in candidates if c["asset"] != key[1]]
 
     # ── Stage 2 — hard filters (no ranking yet) ─────────────────────────
     tp_min = get_setting_float("tp_min_pct", 0.8)

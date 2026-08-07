@@ -27,7 +27,7 @@ from db.db_ops import (
 from logs.log_config import apolo_trader_logger as logger
 from trade.regime import detect_regime, invalidate_cache
 from trade.pnl import is_entry_blocked, is_entry_blocked_per_pair, can_trade_venue, compute_slot_size, max_effective_slots, check_global_daily_loss
-from trade.universe import run_scans_if_due, is_universe_stale, force_rescan
+from trade.universe import run_scans_if_due, is_universe_stale, force_rescan, add_degraded_exclusion
 from trading_bot.executor import BinanceSpot, OrderlyFutures
 from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle
 from trading_bot.futures_scalper import manage_open_positions as futures_manage, scalp_cycle as futures_cycle
@@ -424,8 +424,9 @@ def run():
                     else:
                         _degraded_streak[venue] = 0
 
-                # Per-asset persistent blocking → force a rescan too (covers a
-                # single asset whose stored scan spread is stale, e.g. SKHYB).
+                # Per-asset persistent blocking → force a rescan AND rotate the
+                # stale-spread asset out of the next scan (covers a single asset
+                # whose stored scan spread is stale, e.g. SKHYB).
                 cycles_thr = get_setting_int("universe_degradation_rescan_cycles", 10)
                 cooldown = get_setting_float("universe_rescan_cooldown_min", 60) * 60
                 for key, streak in list(_asset_degraded_streak.items()):
@@ -436,8 +437,10 @@ def run():
                     if time.time() - _last_forced_rescan.get(venue, 0.0) < cooldown:
                         continue
                     force_rescan(venue)
+                    ttl = get_setting_float("universe_degradation_exclude_hours", 6)
+                    add_degraded_exclusion(venue, key[1], ttl)
                     _last_forced_rescan[venue] = time.time()
-                    logger.warning(f"[UNIVERSE] {venue}: {key[1]} blocked by spread degradation for {streak} consecutive cycles — forcing rescan")
+                    logger.warning(f"[UNIVERSE] {venue}: {key[1]} blocked by spread degradation for {streak} consecutive cycles — forcing rescan and excluding for {ttl:.0f}h")
                     _asset_degraded_streak[key] = 0
 
             # ── Venue-level failure escalation (Constitution IV) ────
