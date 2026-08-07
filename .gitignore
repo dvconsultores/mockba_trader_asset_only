@@ -1,6 +1,12 @@
 /.env
+.env
+.env.*
 data/
 data/trading.db
+
+# Local-only scripts (may contain secrets)
+start-local.sh
+*.local.sh
 
 # Python
 __pycache__/
