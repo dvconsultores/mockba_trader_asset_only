@@ -55,7 +55,7 @@ export default function App() {
     if (!isTelegram || !TG?.BackButton) return
 
     const backBtn = TG.BackButton
-    const mainTabIds: Tab[] = ['live', 'signals', 'capital']
+    const mainTabIds: Tab[] = ['live', 'signals', 'closed']
     const isHome = tab === 'live' && !moreOpen
 
     // Remove previous handler if any
@@ -73,7 +73,7 @@ export default function App() {
           setMoreOpen(false)
           return
         }
-        if (tab === 'status' || tab === 'settings' || tab === 'closed') {
+        if (tab === 'status' || tab === 'settings' || tab === 'capital') {
           setTab('live')
           return
         }
@@ -98,12 +98,12 @@ export default function App() {
   const mainTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'live', label: 'Live', icon: TerminalSquare },
     { id: 'signals', label: 'Signals', icon: BarChart3 },
-    { id: 'capital', label: 'Capital', icon: Banknote },
+    { id: 'closed', label: 'Trades', icon: History },
   ]
 
   const moreTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'status', label: 'Status', icon: Radio },
-    { id: 'closed', label: 'Trades', icon: History },
+    { id: 'capital', label: 'Capital', icon: Banknote },
     { id: 'settings', label: 'Settings', icon: Settings2 },
   ]
 
