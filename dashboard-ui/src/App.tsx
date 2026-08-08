@@ -55,7 +55,7 @@ export default function App() {
     if (!isTelegram || !TG?.BackButton) return
 
     const backBtn = TG.BackButton
-    const mainTabIds: Tab[] = ['live', 'signals', 'closed']
+    const mainTabIds: Tab[] = ['live', 'closed', 'signals']
     const isHome = tab === 'live' && !moreOpen
 
     // Remove previous handler if any
@@ -97,8 +97,8 @@ export default function App() {
 
   const mainTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'live', label: 'Live', icon: TerminalSquare },
-    { id: 'signals', label: 'Signals', icon: BarChart3 },
     { id: 'closed', label: 'Trades', icon: History },
+    { id: 'signals', label: 'Signals', icon: BarChart3 },
   ]
 
   const moreTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
