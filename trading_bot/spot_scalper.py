@@ -56,9 +56,15 @@ def _extreme_pct(a: str, p: float) -> float:
     return -d if d>u else u
 
 _last_entry: dict[str,float]={}
+_last_sl: dict[str,float]={}
+# After a stop-loss, block re-entry into the same (asset, side) for this many × cooldown_sec
+SL_COOLDOWN_MULT = 10
 
 def _cooldown_ok(a: str, s: str, cs: float) -> bool:
-    return time.time()-_last_entry.get(f"binance:{a}:{s}",0)>=cs
+    now=time.time()
+    if now-_last_entry.get(f"binance:{a}:{s}",0)<cs: return False
+    if now-_last_sl.get(f"binance:{a}:{s}",0)<cs*SL_COOLDOWN_MULT: return False
+    return True
 
 def _spacing_ok(a: str, p: float, sp: float) -> bool:
     for pos in load_all_positions(asset=a, venue="binance"):
@@ -156,6 +162,8 @@ def _real_fill(exchange, sym, order_id, default_price):
     return float(default_price), 0.0
 
 def _close(a,v,s,ep,xp,sp,q,pid,si,rsn,fee_ep=0.0,fee_xp=0.0):
+    if rsn == "sl":
+        _last_sl[f"{v}:{a}:{s}"]=time.time()
     if fee_ep <= 0: fee_ep = ep*q*0.001
     if fee_xp <= 0: fee_xp = xp*q*0.001
     record_closed_trade(asset=a,venue=v,side=s,entry_price=ep,exit_price=xp,signal_price=sp,qty=q,fee_entry=fee_ep,fee_exit=fee_xp,opened_at=0,closed_at=time.time(),exit_reason=rsn)

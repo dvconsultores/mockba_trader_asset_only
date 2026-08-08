@@ -219,10 +219,16 @@ class BinanceSpot:
                 fee_amount += float(f.get("commission", 0))
                 fee_asset = f.get("commissionAsset", "USDT")
 
-            # sellable_qty = filled - base fee
+            # sellable_qty = filled - base fee (fee_amount still in base units here)
             sellable = filled_qty
             if fee_asset != "USDT":
                 sellable = filled_qty - fee_amount
+
+            # Convert a base-asset commission to quote (USDT) value so recorded
+            # fees are in dollars (constitution V: PnL from actual fills).
+            if fee_asset not in ("USDT", "USDC") and fill_price > 0:
+                fee_amount = fee_amount * fill_price
+                fee_asset = "USDT"
 
             fill = Fill(
                 filled_qty=filled_qty, fill_price=fill_price if filled_qty > 0 else price,
@@ -321,7 +327,15 @@ class BinanceSpot:
         if quote_qty == 0 and filled_qty > 0:
             quote_qty = float(data.get("cummulativeQuoteQty", 0))
         fill_price = quote_qty / filled_qty if filled_qty > 0 else 0.0
-        fee_amount = sum(float(f.get("commission", 0)) for f in data.get("fills", []))
+        fee_asset = "USDT"
+        fee_amount = 0.0
+        for f in data.get("fills", []):
+            fee_amount += float(f.get("commission", 0))
+            fee_asset = f.get("commissionAsset", "USDT")
+        # Convert a base-asset commission to quote (USDT) value
+        if fee_asset not in ("USDT", "USDC") and fill_price > 0:
+            fee_amount = fee_amount * fill_price
+            fee_asset = "USDT"
         return Fill(
             filled_qty=filled_qty, fill_price=fill_price if filled_qty > 0 else 0.0,
             fee_amount=fee_amount, fee_asset="USDT", sellable_qty=filled_qty,
@@ -344,10 +358,18 @@ class BinanceSpot:
                 return None
             qty = sum(float(t["qty"]) for t in data)
             notional = sum(float(t["price"]) * float(t["qty"]) for t in data)
-            comm = sum(float(t.get("commission", 0)) for t in data)
+            comm = 0.0
+            comm_asset = "USDT"
+            for t in data:
+                comm += float(t.get("commission", 0))
+                comm_asset = t.get("commissionAsset", "USDT")
             if qty <= 0:
                 return None
-            return (notional / qty, comm)
+            avg = notional / qty
+            # Convert a base-asset commission to quote (USDT) value
+            if comm_asset not in ("USDT", "USDC") and avg > 0:
+                comm = comm * avg
+            return (avg, comm)
         except Exception:
             return None
 
