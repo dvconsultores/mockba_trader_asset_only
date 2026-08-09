@@ -120,11 +120,27 @@ function formatOpenTime(ts: number): string {
 
 export default function ClosedTrades() {
   const [filter, setFilter] = useState<VenueFilter>('all')
-  const [todayOnly, setTodayOnly] = useState(false)
+  const [todayOnly, setTodayOnly] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('mt.trades.today') === '1'
+    } catch {
+      return false
+    }
+  })
   const [data, setData] = useState<TradesResponse | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(false)
   const [openData, setOpenData] = useState<OpenPositionsResponse | null>(null)
+
+  // Persist the "Today only" toggle across visits (localStorage).
+  const toggleToday = (v: boolean) => {
+    setTodayOnly(v)
+    try {
+      localStorage.setItem('mt.trades.today', v ? '1' : '0')
+    } catch {
+      /* storage unavailable — non-fatal */
+    }
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -264,7 +280,7 @@ export default function ClosedTrades() {
         <input
           type="checkbox"
           checked={todayOnly}
-          onChange={e => setTodayOnly(e.target.checked)}
+          onChange={e => toggleToday(e.target.checked)}
           className="h-3.5 w-3.5 accent-[#8b5cf6]"
         />
         <span className={`text-xs ${todayOnly ? 'text-[#D0CFCC]' : 'text-[#7a7090]'}`}>Today only</span>
