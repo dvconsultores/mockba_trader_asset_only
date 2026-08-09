@@ -135,6 +135,17 @@ def _reconcile_startup(binance, orderly):
                         continue
                     exchange_ids.add(str(pid))
 
+                # Binance spot has no positions endpoint — infer live positions
+                # from open orders whose clientOrderId embeds the position-UUID
+                # prefix (see _client_order_id in executor.py). Without this,
+                # every binance record is wrongly closed as stale on startup.
+                if venue == "binance" and not exchange_positions:
+                    open_orders = ex.get_open_orders(asset) if hasattr(ex, "get_open_orders") else []
+                    for pid in local_ids:
+                        short = pid.replace("-", "")[:10]
+                        if any(short in str(o.get("clientOrderId", "")) for o in open_orders):
+                            exchange_ids.add(pid)
+
                     # Adopt exchange position with no local DB record
                     if str(pid) not in local_ids:
                         logger.warning(
