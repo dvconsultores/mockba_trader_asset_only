@@ -64,7 +64,37 @@ def command_list(m):
         return
     markup = InlineKeyboardMarkup()
     markup.add(InlineKeyboardButton(translate("🚀 Open Mini App", cid), web_app=WebAppInfo(url=mini_app_url)))
+    markup.add(InlineKeyboardButton(translate("Market check", cid), callback_data="market"))
     bot.send_message(cid, translate("Open the Mockba mini app:", cid), reply_markup=markup)
+
+
+@bot.message_handler(commands=['market'])
+def command_market(m):
+    """Manual market-health report (feature 005): live-snapshot mode of the
+    shared check. Operator escape hatch / override view — same verdict shape
+    the automatic gate uses, on demand."""
+    if m.chat.type != 'private': return
+    cid = m.chat.id
+    if str(os.getenv("TELEGRAM_CHAT_ID")) != str(cid):
+        bot.send_message(cid, translate("🔍 Not authorized", cid))
+        return
+
+    from trade.market_check import check_venue_live, format_report
+    labels = {k: translate(v, cid) for k, v in {
+        "market": "Market", "verdict": "Verdict", "reasons": "Reasons",
+        "scan": "Scan", "liquidity": "Liquidity",
+        "thresholds": "Thresholds (diag)",
+        "regime_mix": "regime mix", "assets_pass": "assets pass",
+    }.items()}
+    parts = []
+    for venue in ("binance", "orderly"):
+        try:
+            parts.append(format_report(check_venue_live(venue), labels))
+        except Exception as e:
+            parts.append(f"[{venue}] market check failed: {str(e)[:200]}")
+    text = "\n\n".join(parts)
+    for i in range(0, len(text), TELEGRAM_MAX_MESSAGE_LEN):
+        bot.send_message(cid, text[i:i + TELEGRAM_MAX_MESSAGE_LEN])
 
 
 def _dispatch_callback(call, cid):
@@ -81,6 +111,7 @@ def _dispatch_callback(call, cid):
 
     options = {
         'List': command_list,
+        'market': command_market,
     }
     func = options.get(call.data)
     if func:

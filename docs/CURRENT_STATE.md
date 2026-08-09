@@ -1,6 +1,114 @@
 # MockbaV4 — Current State Analysis
 
 > Generated: 2026-07-26 | Phase 1, Section 1.1
+> Updated: 2026-08-09 | Feature 005 — Market Conditions Check & Auto-Gate
+
+---
+
+## 0. Market Conditions Check & Auto-Gate (feature 005, 2026-08-09)
+
+One shared, structured per-venue market-health check powers two consumers:
+the automatic gate in `bot.py` (observed mode) and the manual `/market`
+Telegram report (live mode).
+
+### `trade/market_check.py` — the shared check
+
+- **One verdict contract, two modes** (`check_venue_live` / `check_venue_observed`):
+  both return the identical structured dict — `venue, mode, timestamp,
+  scan_fresh, scan_age_hours, verdict (PASS|WARN|FAIL), reasons, regime_mix,
+  assets{passes_liquidity, volume_ok, depth_ok, spread_ok,
+  live_spread_degraded, regime}, thresholds`. Only `mode` and the freshness of
+  the per-asset facts differ (AC2).
+- **Freshness first (AC3)**: `_ensure_fresh_scan` triggers
+  `run_scans_if_due(venues=(venue,))` before evaluating if the stored scan is
+  stale/due; if still stale after refresh (e.g. kill-switch paused) the verdict
+  is **FAIL `scan_stale`** — the check never judges on stale data (Constitution IV).
+- **Non-divergence (hard rule, AC1)**: every threshold/depth/regime/sizing call
+  goes through the live functions — `trade.universe.compute_thresholds`,
+  `trade.universe._fetch_binance_book_ticker`/`_24hr`/`_exchange_info`,
+  `trade.universe._fetch_depth`, `trade.universe._TokenBucket`,
+  `trade.universe.is_universe_stale`/`run_scans_if_due`,
+  `trade.regime.detect_regime`, `trade.pnl.compute_slot_size`, `db.db_ops`
+  settings. Nothing is reimplemented. `compute_thresholds` runs as a
+  **non-gating diagnostic** `thresholds` field (from the stored median ATR).
+- **Verdict rules** (data-model.md §2, first hit wins): stale ⇒ FAIL; venue
+  share of assets failing liquidity ≥ `market_gate_fail_share` ⇒ FAIL
+  `liquidity_fail_share=…`; any failing asset ⇒ WARN `liquidity_partial=…`;
+  TREND_UP+TREND_DOWN share ≥ `market_gate_trend_share` or UNKNOWN share ≥
+  `market_gate_unknown_share` downgrade PASS→WARN; else PASS. UNKNOWN never
+  counts toward a good verdict.
+- **Observed mode = zero API load (AC9)**: consumes only the per-cycle rolling
+  observations bot.py records at its two existing call sites (after
+  `detect_regime` and after `_get_obi_and_spread`); no `_fetch_*` calls.
+- **Live mode**: whole-exchange bookTicker + 24hr + exchangeInfo, then
+  per-survivor depth through a token bucket (`capacity=max(1, len(universe))`,
+  refill 60/s — the scanner's own class/rate). Whole-exchange failure ⇒ FAIL
+  `data_unavailable` (never partial).
+- **`format_report(report)`**: compact per-venue text, no emoji, verdict
+  tokens rendered verbatim; static labels localized by `telegram.py` via
+  `translate()`.
+
+### The automatic gate (`bot.py`, opt-in)
+
+- **Opt-in**: `market_gate_enabled` defaults to `false` — when off the gate
+  block is skipped entirely (a single startup `[GATE] disabled …` INFO log),
+  with zero behavior change: no entry blocking, no notifications, no state
+  writes (AC5).
+- **Cadence**: evaluated in the existing main loop every
+  `market_gate_interval_min` (default 5), mirroring the periodic mode-log
+  block — no thread/process. Settings are read fresh each cycle, so
+  Telegram/UI changes take effect without restart.
+- **Debounce state machine (per venue)**: pure `update_gate_state(state,
+  verdict, settings)` — suspend new entries only after `market_gate_bad_streak`
+  (default 2) consecutive FAIL; resume only after `market_gate_good_streak`
+  (default 2) consecutive PASS; **WARN = neutral hold** (resets both streaks,
+  never suspends/resumes → no flapping). State is in-memory only
+  (`_gate_state`, `_last_gate_eval`, `_gate_observations`), per-venue
+  independent; on restart it starts unsuspended and re-establishes within
+  `bad_streak × interval`.
+- **Entries only (Constitution III, AC7)**: the gate guard sits after exit
+  management (`spot_manage`/`futures_manage`) and after observation recording,
+  just before the scalper entry call. Open positions always run to
+  TP/SL/time-stop/regime exit. Observations keep flowing during a suspension,
+  so resume is never deadlocked.
+- **Notifications (AC8)**: exactly ONE debounced `send_message` on suspend
+  (`[GATE] DEX (orderly) suspended — poor market conditions`) and ONE on
+  resume, via `trading_bot.send_bot_message.send_message` (the same mechanism
+  `_notify_entry` uses). Structured single-line INFO logs, no emoji:
+  `[GATE] venue=… verdict=… reason=… action=suspend|resume|hold`.
+- The gate is an **additional venue-level layer** — it does NOT replace the
+  stale-universe guard, per-asset regime gating, spread-degradation guard, or
+  kill switches.
+
+### Manual Telegram report (`telegram.py`)
+
+- `/market` command + a **Market check** button in `/list`
+  (`callback_data="market"`, routed through `_dispatch_callback`) — the
+  operator's escape hatch / override view.
+- Runs `check_venue_live("binance")` and `check_venue_live("orderly")`
+  (live-snapshot mode; `_ensure_fresh_scan` first), renders each via
+  `format_report` with `translate()` applied to static labels (verdict tokens
+  verbatim), concatenates and chunks at `TELEGRAM_MAX_MESSAGE_LEN = 4096`.
+- Same private-chat + `TELEGRAM_CHAT_ID` authorization as `/list`
+  (unauthorized → `🔍 Not authorized`).
+
+### Settings (`market_gate_*`, new `"gate"` group in `trade/settings_schema.py`)
+
+| Key | Type | Default | Hard range | Soft range |
+|---|---|---|---|---|
+| `market_gate_enabled` | bool | false | — | — |
+| `market_gate_interval_min` | int | 5 | 1–1440 | 2–60 |
+| `market_gate_bad_streak` | int | 2 | 1–100 | 1–20 |
+| `market_gate_good_streak` | int | 2 | 1–100 | 1–20 |
+| `market_gate_fail_share` | float | 0.5 | 0.0–1.0 | 0.25–0.75 |
+| `market_gate_trend_share` | float | 0.6 | 0.0–1.0 | 0.3–0.8 |
+| `market_gate_unknown_share` | float | 0.5 | 0.0–1.0 | 0.2–0.7 |
+
+Defaults are deliberately lenient (Constitution VIII): a healthy RANGE venue
+evaluates PASS. Hard ranges enforce `interval/streak >= 1` in the schema — no
+`trade/settings_rules.py` change was needed (Amendment 002 validator passes
+unchanged; AC12). Defaults live in the `get_setting_*` fallbacks — no DB
+migration.
 
 ---
 

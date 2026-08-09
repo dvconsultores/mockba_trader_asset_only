@@ -12,6 +12,7 @@ import sys
 import time
 import math
 import threading
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -23,7 +24,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from db.db_ops import (
     get_setting, get_setting_float, get_setting_int, get_setting_bool,
     upsert_setting, initialize_database_tables,
-    get_tradeable_universe, set_venue_equity, load_all_positions,
+    get_tradeable_universe, set_venue_equity, get_venue_equity, load_all_positions,
 )
 from logs.log_config import apolo_trader_logger as logger
 from trade.regime import detect_regime, invalidate_cache
@@ -32,6 +33,7 @@ from trade.universe import run_scans_if_due, is_universe_stale, force_rescan, ad
 from trading_bot.executor import BinanceSpot, OrderlyFutures
 from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle
 from trading_bot.futures_scalper import manage_open_positions as futures_manage, scalp_cycle as futures_cycle
+from trade.market_check import check_venue_observed, update_gate_state
 
 
 # Consecutive cycles a venue's universe has been majority-blocked by the
@@ -44,6 +46,13 @@ _last_forced_rescan: dict[str, float] = {}
 # Venue -> UTC date string last warned about the consecutive-losses kill switch
 # (logs once per venue per day, showing when entries will reset).
 _consec_loss_warned: dict[str, str] = {}
+
+
+# ── Market gate (feature 005) — in-memory only; logic in trade/market_check.py ──
+_gate_state: dict[str, dict] = {}                    # venue -> {"suspended", "bad_streak", "good_streak"}
+_last_gate_eval: dict[str, float] = {}               # venue -> last evaluation time.time()
+_gate_observations: dict[str, dict[str, deque]] = {} # venue -> asset -> deque(maxlen=40)
+_gate_disabled_logged = False
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -235,6 +244,25 @@ def run():
                             f"universe_cex={len(get_tradeable_universe('binance'))}")
                 _last_mode_log = time.time()
 
+            # ── Periodic market-gate evaluation (feature 005, observed mode) ──
+            # Mirrors the mode-log pattern (same loop, no thread); settings read
+            # fresh each cycle. Disabled ⇒ skip the whole block (single log).
+            if not get_setting_bool("market_gate_enabled", False):
+                if not _gate_disabled_logged:
+                    logger.info("[GATE] disabled — set market_gate_enabled=true to activate (default: inactive, zero behavior change)")
+                    _gate_disabled_logged = True
+            else:
+                _gate_interval = get_setting_int("market_gate_interval_min", 5) * 60
+                for gv, gm in (("binance", _normalize_venue_mode(get_setting("auto_trade_binance"))),
+                               ("orderly", _normalize_venue_mode(get_setting("auto_trade_orderly")))):
+                    if gm == "False":
+                        continue  # venue not trading — gate inactive
+                    if time.time() - _last_gate_eval.get(gv, 0.0) < _gate_interval:
+                        continue
+                    _gate_apply(gv, check_venue_observed(
+                        gv, _gate_observations.get(gv, {}), equity=_cached_gate_equity(gv)))
+                    _last_gate_eval[gv] = time.time()
+
             # Refresh settings
             current = {k: get_setting(k) or "" for k in [
                 "tp_min_pct", "sl_min_pct", "dip_min_pct", "pump_min_pct",
@@ -321,6 +349,7 @@ def run():
                 for asset in assets:
                     try:
                         regime = detect_regime(asset, venue)
+                        _gate_observations.setdefault(venue, {}).setdefault(asset, deque(maxlen=40)).append({"ts": time.time(), "regime": regime})
 
                         # ── Manage exits FIRST (always) ──────────
                         if venue == "binance":
@@ -360,6 +389,7 @@ def run():
                             continue
 
                         obi, spread = _get_obi_and_spread(asset, venue)
+                        _gate_observations.setdefault(venue, {}).setdefault(asset, deque(maxlen=40)).append({"ts": time.time(), "spread": spread, "obi": obi})
                         price = _get_live_price_orderly(asset) if venue == "orderly" else _get_live_price_binance(asset)
 
                         # ── Live spread degradation guard (Amendment 003) ──
@@ -377,6 +407,11 @@ def run():
                             _asset_degraded_streak.pop((venue, asset), None)
                         else:
                             _asset_degraded_streak.pop((venue, asset), None)
+
+                        # Market gate: entries only — exits ran above; obs keep flowing
+                        if _gate_state.get(venue, {}).get("suspended"):
+                            logger.debug(f"[SKIP] {venue}:{asset} market gate suspended")
+                            continue
 
                         if obi is not None and price is not None:
                             if venue == "binance":
@@ -519,6 +554,38 @@ def _price_decimals(price: float) -> int:
     if magnitude >= -4:   # $0.0001–$0.0099
         return 7
     return 8              # sub-penny tokens
+
+
+def _cached_gate_equity(venue: str) -> float:
+    """Cached venue equity from the DB (bot.py writes it each cycle) — zero API."""
+    st = get_venue_equity(venue)
+    return float(st["equity"]) if st else 0.0
+
+
+def _gate_apply(venue: str, report: dict) -> dict:
+    """Apply one gate evaluation: update the per-venue debounce state and send
+    exactly ONE debounced Telegram notification on a suspend/resume transition
+    (AC8) — no per-evaluation messages. Logs a structured [GATE] line."""
+    settings = {
+        "market_gate_bad_streak": get_setting_int("market_gate_bad_streak", 2),
+        "market_gate_good_streak": get_setting_int("market_gate_good_streak", 2),
+    }
+    state = _gate_state.get(venue, {"suspended": False, "bad_streak": 0, "good_streak": 0})
+    new_state, transition = update_gate_state(state, report["verdict"], settings)
+    label = "DEX (orderly)" if venue == "orderly" else "CEX (binance)"
+    reason = ",".join(report["reasons"]) if report["reasons"] else "none"
+    if transition == {"type": "suspend"}:
+        from trading_bot.send_bot_message import send_message
+        send_message(f"[GATE] {label} suspended — poor market conditions")
+        logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=suspend")
+    elif transition == {"type": "resume"}:
+        from trading_bot.send_bot_message import send_message
+        send_message(f"[GATE] {label} recovered — market conditions normal")
+        logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=resume")
+    else:
+        logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=hold")
+    _gate_state[venue] = new_state
+    return new_state
 
 
 def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, price: float,

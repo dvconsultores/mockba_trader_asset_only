@@ -181,6 +181,26 @@ ALL: list[SettingSpec] = [
     SettingSpec("universe_spread_degradation_multiple", float, "universe", "x", 1.0, 50, 1.5, 10,
                 "Skip entries when live spread exceeds scan-time spread by this multiple"),
 
+    # ── Market gate (feature 005) ─────────────────────────────────────────
+    # Opt-in venue-level gate: suspends NEW entries only after bad_streak
+    # consecutive FAIL verdicts; resumes after good_streak consecutive PASS.
+    # Hard minima enforce interval/streak >= 1 in the schema — no
+    # settings_rules.py cross-check is necessary (Amendment 002 validator).
+    SettingSpec("market_gate_enabled", bool, "gate", None, None, None, None, None,
+                "Opt-in master switch for the market-conditions gate (default off — zero behavior change)"),
+    SettingSpec("market_gate_interval_min", int, "gate", "min", 1, 1440, 2, 60,
+                "Market-gate evaluation cadence (minutes)"),
+    SettingSpec("market_gate_bad_streak", int, "gate", None, 1, 100, 1, 20,
+                "Consecutive FAIL evaluations before the gate suspends new entries"),
+    SettingSpec("market_gate_good_streak", int, "gate", None, 1, 100, 1, 20,
+                "Consecutive PASS evaluations before the gate resumes new entries"),
+    SettingSpec("market_gate_fail_share", float, "gate", None, 0.0, 1.0, 0.25, 0.75,
+                "Universe share failing liquidity that FAILs the gate verdict"),
+    SettingSpec("market_gate_trend_share", float, "gate", None, 0.0, 1.0, 0.3, 0.8,
+                "Universe share in TREND_UP/DOWN that downgrades PASS to WARN"),
+    SettingSpec("market_gate_unknown_share", float, "gate", None, 0.0, 1.0, 0.2, 0.7,
+                "Universe share UNKNOWN that downgrades PASS to WARN"),
+
     # ── Mode ───────────────────────────────────────────────────────────────
     SettingSpec("trading_enabled", bool, "mode", None, None, None, None, None,
                 "Global trading on/off (kill switch sets this to false)"),
