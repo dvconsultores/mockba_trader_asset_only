@@ -44,6 +44,9 @@ _last_forced_rescan: dict[str, float] = {}
 # Venue -> UTC date string last warned about the consecutive-losses kill switch
 # (logs once per venue per day, showing when entries will reset).
 _consec_loss_warned: dict[str, str] = {}
+# Whether the global daily loss [KILL] warning has been logged for the current
+# blocked episode (avoid 30s-cycle spam — reset when the block clears).
+_global_loss_warned: bool = False
 
 
 # ── Market gate (feature 005) — in-memory only; logic in trade/market_check.py ──
@@ -323,8 +326,12 @@ def run():
             # Breached ⇒ every venue stops new entries for the rest of the UTC
             # day; resets automatically at midnight (never a hard disable).
             g_blocked, g_reason = check_global_daily_loss()
-            if g_blocked:
-                logger.warning(f"[KILL] global_daily_loss_limit breached: {g_reason} — all entries blocked until UTC midnight")
+            g_block_onset = g_blocked and not _global_loss_warned
+            if g_block_onset:
+                logger.warning(f"[KILL] {g_reason} — all entries blocked until UTC midnight")
+                _global_loss_warned = True
+            elif not g_blocked:
+                _global_loss_warned = False
 
             _venue_failures: dict[str, int] = {}
 
@@ -404,7 +411,7 @@ def run():
                                 blocked = True
                                 reason = f"max_concurrent_positions={max_positions} reached"
                         if blocked:
-                            if g_blocked:
+                            if g_blocked and g_block_onset:
                                 _record_global_block(venue, asset, regime, reason)
                             elif "max_consecutive_losses" in reason:
                                 today = time.strftime("%Y-%m-%d", time.gmtime())
@@ -504,13 +511,6 @@ def run():
                 if fails >= 5:
                     logger.warning(f"[KILL] {venue} disabled after {fails} consecutive failures")
                     upsert_setting(f"auto_trade_{venue}", "false")
-
-            # ── Global daily loss check ────────────────────────────
-            # Soft per-cycle block (above) already stops entries; never hard-
-            # disable trading_enabled — the daily loss resets at UTC midnight.
-            should_halt, g_reason = check_global_daily_loss()
-            if should_halt:
-                logger.warning(f"[KILL] global_daily_loss_limit breached: {g_reason} — entries blocked, resumes at UTC midnight")
 
             time.sleep(30)
 
@@ -665,9 +665,11 @@ def _record_gate_skip(venue: str, asset: str, regime: str, obi, price):
 
 def _record_global_block(venue: str, asset: str, regime: str, reason: str):
     """Record a global-daily-loss entry skip in `signals` (Constitution VIII) —
-    same mechanism as _record_gate_skip, no OBI/price known at the guard."""
+    same mechanism as _record_gate_skip. Runs before the per-asset price
+    snapshot, so it fetches the price itself (signals.price is NOT NULL)."""
     log = _spot_log if venue == "binance" else _futures_log
-    log(asset, venue, regime, None, None, 0, 0, 0, None, 0, None, {},
+    price = _get_live_price_binance(asset)
+    log(asset, venue, regime, None, price, 0, 0, 0, None, 0, None, {},
         "skipped", reason)
 
 

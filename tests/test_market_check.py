@@ -762,3 +762,39 @@ def test_gate_suspended_records_signal(db):
     src = inspect.getsource(botmod)
     guard = src[src.index("market gate suspended"):]
     assert "_record_gate_skip(venue, asset, regime, obi, price)" in guard
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Constitution VIII — a global-daily-loss skip is recorded with a REAL price
+# (regression: passing price=None raised NOT NULL constraint on signals.price)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_global_block_records_signal(db):
+    """A global-daily-loss entry skip writes a valid `signals` row — the guard
+    runs before the per-asset price snapshot, so the recorder must fetch the
+    price itself (signals.price is NOT NULL; None previously caused
+    sqlite3.IntegrityError spam on every blocked cycle)."""
+    import bot as botmod
+    from db.db_ops import get_db_connection
+
+    with mock.patch.object(botmod, "_get_live_price_binance",
+                           return_value=0.6253) as m_price:
+        botmod._record_global_block(
+            "binance", "EPIC", "RANGE",
+            "global_daily_loss_limit breached: -1.69 <= -1.61")
+    m_price.assert_called_once_with("EPIC")
+
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT asset, venue, regime, direction, price, action, reason FROM signals"
+        ).fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["asset"] == "EPIC"
+    assert row["venue"] == "binance"
+    assert row["regime"] == "RANGE"
+    assert row["direction"] is None
+    assert row["price"] == pytest.approx(0.6253)
+    assert row["action"] == "skipped"
+    assert row["reason"].startswith("global_daily_loss_limit breached")
+    assert "global_daily_loss_limit breached:" in row["reason"]
