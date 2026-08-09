@@ -15,6 +15,11 @@
 #     Stop the bot (or its DB writes) before pushing, and ensure the server
 #     target directory exists (default ${SRVDB_LOCATION:-/opt/Mockba/data}).
 #
+# Re-exec under bash if invoked via `sh` (script uses bash-isms: [[ ]], ${var:-}).
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
