@@ -376,12 +376,3 @@ def get_consecutive_losses(venue: str) -> int:
     return count
 
 
-# ── signals ───────────────────────────────────────────────────────────────────
-
-def save_signal(sig: dict):
-    with get_db_connection() as conn:
-        conn.execute("""
-            INSERT INTO signals (timestamp, asset, venue, regime, obi, extreme_pct, action, reason)
-            VALUES (:timestamp, :asset, :venue, :regime, :obi, :extreme_pct, :action, :reason)
-        """, sig)
-        conn.commit()

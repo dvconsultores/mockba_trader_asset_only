@@ -7,10 +7,8 @@ dry_run stays true throughout Phase 2.
 """
 
 from __future__ import annotations
-import os
 import sys
 import time
-import math
 import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -27,8 +25,8 @@ from db.db_ops import (
     get_tradeable_universe, set_venue_equity, get_venue_equity, load_all_positions,
 )
 from logs.log_config import apolo_trader_logger as logger
-from trade.regime import detect_regime, invalidate_cache
-from trade.pnl import is_entry_blocked, is_entry_blocked_per_pair, can_trade_venue, compute_slot_size, max_effective_slots, check_global_daily_loss
+from trade.regime import detect_regime
+from trade.pnl import is_entry_blocked_per_pair, check_global_daily_loss
 from trade.universe import run_scans_if_due, is_universe_stale, force_rescan, add_degraded_exclusion
 from trading_bot.executor import BinanceSpot, OrderlyFutures
 from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle, _log as _spot_log
@@ -258,6 +256,13 @@ def run():
                     if gm == "False":
                         continue  # venue not trading — gate inactive
                     if time.time() - _last_gate_eval.get(gv, 0.0) < _gate_interval:
+                        continue
+                    # Cold start: no observations recorded yet (venue just became
+                    # active, or bot restarted). With an empty window every asset
+                    # counts as UNKNOWN → misleading regime_unknown=1.00 WARN.
+                    # Skip until at least one round of observations exists.
+                    if not _gate_observations.get(gv):
+                        _last_gate_eval[gv] = time.time()  # re-check after interval
                         continue
                     _gate_apply(gv, check_venue_observed(
                         gv, _gate_observations.get(gv, {}), equity=_cached_gate_equity(gv)))

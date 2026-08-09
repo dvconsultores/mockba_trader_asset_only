@@ -58,6 +58,11 @@ Telegram report (live mode).
   `market_gate_interval_min` (default 5), mirroring the periodic mode-log
   block — no thread/process. Settings are read fresh each cycle, so
   Telegram/UI changes take effect without restart.
+- **Cold start**: on bot restart / venue-activation the gate skips its first
+  evaluation until at least one round of per-cycle observations exists
+  (otherwise every asset counts as UNKNOWN and the verdict is a misleading
+  `regime_unknown=1.00` WARN). Entries are still protected meanwhile by the
+  per-asset guards.
 - **Debounce state machine (per venue)**: pure `update_gate_state(state,
   verdict, settings)` — suspend new entries only after `market_gate_bad_streak`
   (default 2) consecutive FAIL; resume only after `market_gate_good_streak`
@@ -89,6 +94,9 @@ Telegram report (live mode).
   (live-snapshot mode; `_ensure_fresh_scan` first), renders each via
   `format_report` with `translate()` applied to static labels (verdict tokens
   verbatim), concatenates and chunks at `TELEGRAM_MAX_MESSAGE_LEN = 4096`.
+- Immediate feedback: sends an "Analyzing market conditions…" message first
+  and replaces it with the report when the live-snapshot API calls finish,
+  so the button never appears to hang.
 - Same private-chat + `TELEGRAM_CHAT_ID` authorization as `/list`
   (unauthorized → `🔍 Not authorized`).
 
@@ -424,8 +432,11 @@ Read-only month view of `closed_trades` (Amendment 004).
   is not included**. The page discloses this ("Net of estimated fees · funding not
   included"). Values are returned raw (no rounding); the UI formats with up to 4
   decimals.
-- `asset_configs` remains in the DB as legacy data but is no longer read by the
-  bot loop, Telegram, or the Capital view.
+- The legacy `asset_configs` table and the never-used `settings_proposals`
+  table, the never-written `signals.position_id` column, and the unread
+  `assets` setting were **dropped** by migration
+  `db/migrations/008_cleanup_unused.sql` (2026-08-09). `sqlite_sequence`
+  remains (internal AUTOINCREMENT counter).
 
 ## Status
 

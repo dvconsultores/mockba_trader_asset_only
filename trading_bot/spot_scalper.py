@@ -22,7 +22,7 @@ from trade.universe import compute_thresholds  # shared with universe replay (Am
 from db.db_ops import (
     get_setting_float, get_setting_int, get_setting_bool,
     save_position, load_all_positions, update_position, delete_position,
-    save_signal, get_db_connection,
+    get_db_connection,
 )
 
 _price_memory: dict[str, deque] = {}

@@ -208,11 +208,11 @@ def api_daily_stats():
         db = _get_db()
         today = time.strftime("%Y-%m-%d")
         total = db.execute(
-            "SELECT COUNT(*) as c FROM signals WHERE date(datetime(timestamp, 'unixepoch')) = ?",
+            "SELECT COUNT(*) as c FROM signals WHERE date(datetime(ts, 'unixepoch')) = ?",
             (today,)
         ).fetchone()["c"]
         entered = db.execute(
-            "SELECT COUNT(*) as c FROM signals WHERE date(datetime(timestamp, 'unixepoch')) = ? AND action = 'entered'",
+            "SELECT COUNT(*) as c FROM signals WHERE date(datetime(ts, 'unixepoch')) = ? AND action = 'entered'",
             (today,)
         ).fetchone()["c"]
         trades = db.execute(

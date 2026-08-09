@@ -4,6 +4,34 @@ Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
 ## 2026-08-09
 
+- `chore:` DB + code cleanup (unused schema and dead code removed).
+  - New migration `db/migrations/008_cleanup_unused.sql` (idempotent): drops the
+    legacy `asset_configs` table (unused since Amendment 003 — no code reads it),
+    drops `settings_proposals` (never written/read, 0 rows), drops the
+    `signals.position_id` column (never written by any INSERT path), and removes
+    the unread `assets` setting. `db/schema_v2.sql` updated to match.
+  - Removed dead code: `save_signal` in `db/db_ops.py` (wrote a non-existent
+    `signals.timestamp` column — broken), its import in `trading_bot/spot_scalper.py`,
+    unused imports in `bot.py` (`os`, `math`, `invalidate_cache`,
+    `is_entry_blocked`, `can_trade_venue`, `compute_slot_size`,
+    `max_effective_slots`) and `telegram.py` (`re`, `threading`,
+    `importlib.util`, `io`, `redirect_stdout`, `html`, `json`, `timedelta`,
+    `upsert_setting`), and the unreferenced standalone files
+    `trade/discover_chains.py`, `trade/asset_chains_discovered.py`,
+    `test_dex_signal.py`.
+  - `fix:` dashboard `/api/stats/daily` queried the non-existent
+    `signals.timestamp` column → now uses `signals.ts`.
+- `feat:` `push-db.sh` — mirror of `fetch-db.sh` to upload the local DB to the
+  server (same `.env` config, sshpass fallback, sidecar upload, 3s abort warning
+  before overwriting a live server DB).
+- `fix:` market gate cold-start — the gate skipped its first evaluation only
+  when a venue is `"False"`; on startup/venue-activation it evaluated with empty
+  observations and logged a misleading `regime_unknown=1.00` WARN. Now it waits
+  until at least one round of observations exists (entries are still protected
+  by the per-asset guards meanwhile).
+- `ux:` `/market` (and the Market check button) now sends an immediate
+  "Analyzing market conditions…" message and replaces it with the report,
+  instead of appearing to do nothing during the live-snapshot API calls.
 - `feat:` Market conditions check & auto-gate (feature 005).
   - New shared core `trade/market_check.py`: one per-venue market-health verdict
     (PASS/WARN/FAIL + reasons + per-asset liquidity + regime mix + scan

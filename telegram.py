@@ -1,23 +1,12 @@
 import os
-import re
 import sys
 import time
-import threading
-import importlib.util
-import io
-from contextlib import redirect_stdout
-import re
-import html
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), 'machine_learning')))
 from dotenv import load_dotenv
 from deep_translator import GoogleTranslator
 import telebot
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
-from db.db_ops import (
-    upsert_setting, initialize_database_tables,
-)
-import json
-from datetime import timedelta
+from db.db_ops import initialize_database_tables
 # Load environment variables
 load_dotenv()
 initialize_database_tables()
@@ -86,6 +75,9 @@ def command_market(m):
         "thresholds": "Thresholds (diag)",
         "regime_mix": "regime mix", "assets_pass": "assets pass",
     }.items()}
+    # Immediate feedback — the live snapshot makes several API calls and takes
+    # a few seconds; tell the operator work is in progress, then replace it.
+    sent = bot.send_message(cid, translate("🔍 Analyzing market conditions...", cid))
     parts = []
     for venue in ("binance", "orderly"):
         try:
@@ -93,7 +85,13 @@ def command_market(m):
         except Exception as e:
             parts.append(f"[{venue}] market check failed: {str(e)[:200]}")
     text = "\n\n".join(parts)
-    for i in range(0, len(text), TELEGRAM_MAX_MESSAGE_LEN):
+    # Replace the "analyzing..." message with the report (first chunk);
+    # any overflow goes in extra messages.
+    try:
+        bot.edit_message_text(text[:TELEGRAM_MAX_MESSAGE_LEN], chat_id=cid, message_id=sent.message_id)
+    except Exception:
+        bot.send_message(cid, text[:TELEGRAM_MAX_MESSAGE_LEN])
+    for i in range(TELEGRAM_MAX_MESSAGE_LEN, len(text), TELEGRAM_MAX_MESSAGE_LEN):
         bot.send_message(cid, text[i:i + TELEGRAM_MAX_MESSAGE_LEN])
 
 

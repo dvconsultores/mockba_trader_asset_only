@@ -13,7 +13,6 @@ CREATE TABLE IF NOT EXISTS settings (
 DELETE FROM settings WHERE key IN ('obi_buy_threshold','obi_sell_threshold','dip_pct','pump_pct');
 
 -- Core
-INSERT OR IGNORE INTO settings (key, value) VALUES ('assets', 'NEAR');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('max_slots', '9');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('cooldown_sec', '60');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('min_entry_spacing_pct', '0.3');
@@ -70,21 +69,6 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('max_extreme_velocity_pct', 
 INSERT OR IGNORE INTO settings (key, value) VALUES ('spread_z_max', '2.5');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('depth_ratio_min', '0.5');
 INSERT OR IGNORE INTO settings (key, value) VALUES ('obi_z_max', '2.5');
-
--- ── asset_configs (Amendment 004) ────────────────────────────────────────────
--- Per-asset capital and venue activation. Replaces global %-based capital
--- and global auto_trade_* booleans.
--- LEGACY since Amendment 003 — no longer read by the bot loop, Telegram,
--- or the Capital view. Kept for data preservation only.
-CREATE TABLE IF NOT EXISTS asset_configs (
-    symbol      TEXT PRIMARY KEY,
-    capital_dex REAL NOT NULL DEFAULT 0.0,
-    capital_cex REAL NOT NULL DEFAULT 0.0,
-    active_dex  INTEGER NOT NULL DEFAULT 0,
-    active_cex  INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-    updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-);
 
 -- ── asset_universe (Amendment 003) ───────────────────────────────────────────
 -- One row per venue per asset, replaced wholesale on each scan.
