@@ -191,29 +191,6 @@ def run():
     binance = BinanceSpot()
     orderly = OrderlyFutures()
 
-    # ── Legacy migration (Amendment 004) ───────────────────────────
-    try:
-        from db.db_ops import migrate_legacy_assets
-        dex_eq = orderly.get_equity() if not dry else 0.0
-        cex_eq = binance.get_equity() if not dry else 0.0
-        mig_result = migrate_legacy_assets(dex_eq, cex_eq)
-        if mig_result.get("migrated"):
-            logger.info(f"[MIGRATE] legacy→multi-asset: {len(mig_result.get('assets', []))} assets migrated, "
-                        f"legacy keys removed: {mig_result.get('legacy_keys_removed')}")
-            # Telegram notification — best-effort
-            try:
-                from trading_bot.send_bot_message import send_message
-                assets_str = ", ".join(a["symbol"] for a in mig_result.get("assets", []))
-                send_message(f"🔄 Migration complete: {len(mig_result.get('assets', []))} assets migrated to per-asset model.\n"
-                             f"Primary asset: {mig_result['assets'][0]['symbol'] if mig_result.get('assets') else 'none'}\n"
-                             f"Legacy keys removed.")
-            except Exception:
-                pass
-        elif mig_result.get("reason"):
-            logger.info(f"[MIGRATE] skipped: {mig_result['reason']}")
-    except Exception as e:
-        logger.error(f"[MIGRATE] migration failed: {e}")
-
     # ── Startup reconciliation (Amendment 004, Constitution VI) ──────────
     _reconcile_startup(binance, orderly)
 

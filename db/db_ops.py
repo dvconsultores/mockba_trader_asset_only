@@ -5,8 +5,7 @@ Four tables: settings (legacy, preserved), open_positions, closed_trades, signal
 All writes are parameterized. Settings read fresh each cycle.
 
 Backward-compatible with telegram.py imports: get_setting, upsert_setting,
-get_all_settings, initialize_database_tables, get_asset_list, add_asset,
-remove_asset.
+get_all_settings, initialize_database_tables.
 """
 
 import os
@@ -121,103 +120,6 @@ def get_setting_bool(key: str, default: bool) -> bool:
     if val is None:
         return default
     return str(val).strip().lower() in ("true", "1", "yes")
-
-
-# ── Asset list helpers (backward-compatible) ──────────────────────────────────
-
-def get_asset_list() -> list:
-    val = get_setting("assets") or get_setting("asset") or ""
-    return [x.strip() for x in val.split(",") if x.strip()]
-
-
-def add_asset(asset: str):
-    assets = get_asset_list()
-    if asset not in assets:
-        assets.append(asset)
-        upsert_setting("assets", ",".join(assets))
-
-
-def remove_asset(asset: str):
-    assets = get_asset_list()
-    if asset in assets:
-        assets.remove(asset)
-        upsert_setting("assets", ",".join(assets))
-
-
-# ── asset_configs CRUD (Amendment 004) ────────────────────────────────────────
-
-def get_all_asset_configs() -> list[dict]:
-    """Return all asset_configs rows as list of dicts."""
-    with get_db_connection() as conn:
-        rows = conn.execute(
-            "SELECT symbol, capital_dex, capital_cex, active_dex, active_cex, "
-            "created_at, updated_at FROM asset_configs ORDER BY symbol"
-        ).fetchall()
-        return [dict(row) for row in rows]
-
-
-def get_asset_config(symbol: str) -> dict | None:
-    """Return one asset_config row or None."""
-    with get_db_connection() as conn:
-        row = conn.execute(
-            "SELECT symbol, capital_dex, capital_cex, active_dex, active_cex, "
-            "created_at, updated_at FROM asset_configs WHERE symbol = ?",
-            (symbol,),
-        ).fetchone()
-        return dict(row) if row else None
-
-
-def upsert_asset_config(
-    symbol: str,
-    capital_dex: float = 0.0,
-    capital_cex: float = 0.0,
-    active_dex: bool = False,
-    active_cex: bool = False,
-):
-    """Insert or update an asset_config row. Returns True on success."""
-    with get_db_connection() as conn:
-        conn.execute(
-            "INSERT INTO asset_configs (symbol, capital_dex, capital_cex, "
-            "active_dex, active_cex) VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(symbol) DO UPDATE SET "
-            "capital_dex = excluded.capital_dex, "
-            "capital_cex = excluded.capital_cex, "
-            "active_dex = excluded.active_dex, "
-            "active_cex = excluded.active_cex, "
-            "updated_at = datetime('now')",
-            (symbol, capital_dex, capital_cex, int(active_dex), int(active_cex)),
-        )
-        conn.commit()
-    return True
-
-
-def delete_asset_config(symbol: str):
-    """Remove an asset_config row. No-op if not found."""
-    with get_db_connection() as conn:
-        conn.execute("DELETE FROM asset_configs WHERE symbol = ?", (symbol,))
-        conn.commit()
-
-
-def get_active_pairs() -> list[tuple[str, str, float]]:
-    """Return (asset, venue, capital) tuples for all active pairs.
-    Active means active_<venue>=true. Capital may be 0 for signal-only pairs.
-
-    LEGACY since Amendment 003 — the bot loop now derives pairs from the
-    asset_universe table via get_tradeable_universe(). Kept for backward
-    compatibility with telegram.py / startup validation.
-    """
-    pairs: list[tuple[str, str, float]] = []
-    with get_db_connection() as conn:
-        rows = conn.execute(
-            "SELECT symbol, capital_dex, capital_cex, active_dex, active_cex "
-            "FROM asset_configs ORDER BY symbol"
-        ).fetchall()
-    for row in rows:
-        if row["active_dex"]:
-            pairs.append((row["symbol"], "orderly", float(row["capital_dex"])))
-        if row["active_cex"]:
-            pairs.append((row["symbol"], "binance", float(row["capital_cex"])))
-    return pairs
 
 
 # ── asset_universe CRUD (Amendment 003) ───────────────────────────────────────
@@ -358,66 +260,6 @@ def get_capital_pool(venue: str) -> float:
     """
     key = "capital_cex_usdt" if venue == "binance" else "capital_dex_usdc"
     return get_setting_float(key, 0.0)
-
-
-# ── Migration: legacy global settings → per-asset configs (Amendment 004) ─────
-
-def migrate_legacy_assets(dex_equity: float = 0.0, cex_equity: float = 0.0) -> dict:
-    """Migrate legacy global capital settings to asset_configs table.
-
-    Detects legacy keys (dex_slot_pct, cex_slot_pct, auto_trade_binance,
-    auto_trade_orderly). Computes absolute capital from percentages × equity.
-    Returns dict with migration summary.
-
-    Idempotent: skips if asset_configs already has rows.
-    """
-    # Check if migration already ran
-    with get_db_connection() as conn:
-        count = conn.execute("SELECT COUNT(*) as c FROM asset_configs").fetchone()["c"]
-        if count > 0:
-            return {"migrated": False, "reason": "asset_configs already populated", "asset_count": count}
-
-    # Detect legacy keys
-    legacy_dex_pct = get_setting_float("dex_slot_pct", 0.0)
-    legacy_cex_pct = get_setting_float("cex_slot_pct", 0.0)
-    legacy_auto_dex = get_setting_bool("auto_trade_orderly", False)
-    legacy_auto_cex = get_setting_bool("auto_trade_binance", False)
-
-    if legacy_dex_pct == 0.0 and legacy_cex_pct == 0.0:
-        return {"migrated": False, "reason": "no legacy capital settings found"}
-
-    # Get legacy asset list
-    assets = get_asset_list()
-    primary = assets[0] if assets else None
-
-    migrated = []
-    for i, asset in enumerate(assets):
-        is_primary = (i == 0)
-        capital_dex = (legacy_dex_pct / 100.0 * dex_equity) if (is_primary and dex_equity > 0) else 0.0
-        capital_cex = (legacy_cex_pct / 100.0 * cex_equity) if (is_primary and cex_equity > 0) else 0.0
-        active_dex = legacy_auto_dex if is_primary else False
-        active_cex = legacy_auto_cex if is_primary else False
-
-        upsert_asset_config(asset, round(capital_dex, 2), round(capital_cex, 2), active_dex, active_cex)
-        migrated.append({
-            "symbol": asset,
-            "capital_dex": round(capital_dex, 2),
-            "capital_cex": round(capital_cex, 2),
-            "active_dex": active_dex,
-            "active_cex": active_cex,
-            "primary": is_primary,
-        })
-
-    # Remove legacy keys from settings
-    legacy_keys = ["dex_slot_pct", "cex_slot_pct", "max_slots",
-                   "auto_trade_binance", "auto_trade_orderly", "capital"]
-    with get_db_connection() as conn:
-        for key in legacy_keys:
-            conn.execute("DELETE FROM settings WHERE key = ?", (key,))
-        conn.commit()
-
-    return {"migrated": True, "assets": migrated, "legacy_keys_removed": legacy_keys,
-            "dex_equity": dex_equity, "cex_equity": cex_equity}
 
 
 # ── open_positions CRUD ──────────────────────────────────────────────────────
