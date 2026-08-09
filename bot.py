@@ -270,9 +270,11 @@ def run():
                         continue
                     # Cold start: no observations recorded yet (venue just became
                     # active, or bot restarted). With an empty window every asset
-                    # counts as UNKNOWN → misleading regime_unknown=1.00 WARN.
-                    # Skip until at least one round of observations exists.
-                    if not _gate_observations.get(gv):
+                    # counts as UNKNOWN → misleading regime_unknown=1.00 WARN,
+                    # and a partial first round produced FAIL→PASS flips. Skip
+                    # until a full observation round (live spread per asset)
+                    # exists for most of the universe.
+                    if not _gate_observations_warm(gv, get_tradeable_universe(gv)):
                         _last_gate_eval[gv] = time.time()  # re-check after interval
                         continue
                     _gate_apply(gv, check_venue_observed(
@@ -316,6 +318,13 @@ def run():
             all_open = load_all_positions()
             if len(all_open) >= max_positions:
                 logger.info(f"[LIMIT] max_concurrent_positions={max_positions} reached ({len(all_open)} open) — no new entries this cycle")
+
+            # ── Global daily loss (sums ALL venues) — soft entry block ─────
+            # Breached ⇒ every venue stops new entries for the rest of the UTC
+            # day; resets automatically at midnight (never a hard disable).
+            g_blocked, g_reason = check_global_daily_loss()
+            if g_blocked:
+                logger.warning(f"[KILL] global_daily_loss_limit breached: {g_reason} — all entries blocked until UTC midnight")
 
             _venue_failures: dict[str, int] = {}
 
@@ -386,12 +395,18 @@ def run():
                         blocked = False
                         reason = ""
                         if not signal_only:
-                            blocked, reason = is_entry_blocked_per_pair(asset, venue, equity)
+                            if g_blocked:
+                                blocked = True
+                                reason = g_reason
+                            else:
+                                blocked, reason = is_entry_blocked_per_pair(asset, venue, equity)
                             if len(all_open) >= max_positions:
                                 blocked = True
                                 reason = f"max_concurrent_positions={max_positions} reached"
                         if blocked:
-                            if "max_consecutive_losses" in reason:
+                            if g_blocked:
+                                _record_global_block(venue, asset, regime, reason)
+                            elif "max_consecutive_losses" in reason:
                                 today = time.strftime("%Y-%m-%d", time.gmtime())
                                 if _consec_loss_warned.get(venue) != today:
                                     reset_dt = datetime.now(timezone.utc).replace(
@@ -491,10 +506,11 @@ def run():
                     upsert_setting(f"auto_trade_{venue}", "false")
 
             # ── Global daily loss check ────────────────────────────
+            # Soft per-cycle block (above) already stops entries; never hard-
+            # disable trading_enabled — the daily loss resets at UTC midnight.
             should_halt, g_reason = check_global_daily_loss()
             if should_halt:
-                logger.warning(f"[KILL] global_daily_loss_limit breached: {g_reason}")
-                upsert_setting("trading_enabled", "0")
+                logger.warning(f"[KILL] global_daily_loss_limit breached: {g_reason} — entries blocked, resumes at UTC midnight")
 
             time.sleep(30)
 
@@ -573,6 +589,26 @@ def _price_decimals(price: float) -> int:
     return 8              # sub-penny tokens
 
 
+def _gate_observations_warm(venue: str, universe_rows) -> bool:
+    """True once a full observation round exists: a confirmed live spread for
+    at least market_gate_warm_share of the venue's universe assets. Prevents
+    evaluating the gate on a partial first cycle (cold-start FAIL→PASS flips)
+    or on a venue that has not completed one full asset pass."""
+    if not universe_rows:
+        return False
+    obs = _gate_observations.get(venue, {})
+    if not obs:
+        return False
+    share = get_setting_float("market_gate_warm_share", 0.8)
+    need = max(1, int(len(universe_rows) * share))
+    have = 0
+    for u in universe_rows:
+        q = obs.get(u["asset"])
+        if q and any(o.get("spread") is not None for o in q):
+            have += 1
+    return have >= need
+
+
 def _cached_gate_equity(venue: str) -> float:
     """Cached venue equity from the DB (bot.py writes it each cycle) — zero API."""
     st = get_venue_equity(venue)
@@ -582,7 +618,9 @@ def _cached_gate_equity(venue: str) -> float:
 def _gate_apply(venue: str, report: dict) -> dict:
     """Apply one gate evaluation: update the per-venue debounce state and send
     exactly ONE debounced Telegram notification on a suspend/resume transition
-    (AC8) — no per-evaluation messages. Logs a structured [GATE] line."""
+    (AC8) — no per-evaluation messages. WARN also notifies once when it starts
+    and once when it clears, always with the reason (005 follow-up). Logs a
+    structured [GATE] line."""
     settings = {
         "market_gate_bad_streak": get_setting_int("market_gate_bad_streak", 2),
         "market_gate_good_streak": get_setting_int("market_gate_good_streak", 2),
@@ -591,16 +629,26 @@ def _gate_apply(venue: str, report: dict) -> dict:
     new_state, transition = update_gate_state(state, report["verdict"], settings)
     label = "DEX (orderly)" if venue == "orderly" else "CEX (binance)"
     reason = ",".join(report["reasons"]) if report["reasons"] else "none"
+    from trading_bot.send_bot_message import send_message
     if transition == {"type": "suspend"}:
-        from trading_bot.send_bot_message import send_message
-        send_message(f"[GATE] {label} suspended — poor market conditions")
+        send_message(f"🛑 [GATE] {label} suspended — {reason}")
         logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=suspend")
     elif transition == {"type": "resume"}:
-        from trading_bot.send_bot_message import send_message
-        send_message(f"[GATE] {label} recovered — market conditions normal")
+        send_message(f"✅ [GATE] {label} recovered — {reason}")
         logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=resume")
     else:
         logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=hold")
+    # WARN lifecycle — one notification when a WARN starts, one when it clears.
+    # FAIL silently clears the flag (its own suspend/hold message covers it).
+    if report["verdict"] == "WARN" and not state.get("warn_active"):
+        new_state["warn_active"] = True
+        send_message(f"⚠️ [GATE] {label} WARNING — {reason}")
+        logger.info(f"[GATE] venue={venue} verdict=WARN reason={reason} action=warn_start")
+    elif report["verdict"] != "WARN" and state.get("warn_active"):
+        new_state["warn_active"] = False
+        if report["verdict"] == "PASS":
+            send_message(f"✅ [GATE] {label} warning cleared — {reason}")
+            logger.info(f"[GATE] venue={venue} verdict=PASS reason={reason} action=warn_clear")
     _gate_state[venue] = new_state
     return new_state
 
@@ -613,6 +661,14 @@ def _record_gate_skip(venue: str, asset: str, regime: str, obi, price):
     log = _spot_log if venue == "binance" else _futures_log
     log(asset, venue, regime, None, price, 0, 0, 0, obi, 0, None, {},
         "skipped", "market_gate_suspended")
+
+
+def _record_global_block(venue: str, asset: str, regime: str, reason: str):
+    """Record a global-daily-loss entry skip in `signals` (Constitution VIII) —
+    same mechanism as _record_gate_skip, no OBI/price known at the guard."""
+    log = _spot_log if venue == "binance" else _futures_log
+    log(asset, venue, regime, None, None, 0, 0, 0, None, 0, None, {},
+        "skipped", reason)
 
 
 def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, price: float,

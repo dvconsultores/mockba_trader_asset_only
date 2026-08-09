@@ -130,6 +130,10 @@ def _asset_facts_observed(venue, universe_rows, slot, observations, window_sec):
             "live_spread_degraded": degraded,
             "regime": regime_seen or "UNKNOWN",
         })
+        # A confirmed live spread blowout is a real liquidity failure — the
+        # observed gate must see it (005 follow-up), not just the stored scan.
+        if degraded is True:
+            facts[asset]["passes_liquidity"] = False
     return facts
 
 
@@ -311,7 +315,10 @@ def update_gate_state(state, verdict, settings):
            good_streak >= market_gate_good_streak.
     FAIL → bad_streak+1, good_streak=0, suspend when not suspended and
            bad_streak >= market_gate_bad_streak.
-    WARN → both streaks reset (neutral hold — never suspends, never resumes).
+    WARN → bad_streak+1, good_streak=0, suspends like FAIL once the streak
+           reaches market_gate_bad_streak (005 follow-up: WARN used to reset
+           streaks and never suspend, so the gate never protected during
+           partial-liquidity / trending conditions).
     transition: None | {"type": "suspend"} | {"type": "resume"} (AC6).
     """
     new_state = dict(state)
@@ -332,8 +339,12 @@ def update_gate_state(state, verdict, settings):
             new_state["suspended"] = True
             transition = {"type": "suspend"}
     elif verdict == "WARN":
-        new_state["bad_streak"] = 0
+        # Mild failure — counts toward suspension (see docstring).
+        new_state["bad_streak"] += 1
         new_state["good_streak"] = 0
+        if not new_state["suspended"] and new_state["bad_streak"] >= settings["market_gate_bad_streak"]:
+            new_state["suspended"] = True
+            transition = {"type": "suspend"}
     return new_state, transition
 
 

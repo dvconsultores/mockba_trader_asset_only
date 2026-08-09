@@ -367,6 +367,35 @@ def test_not_near_zero_trade(db):
     assert "liquidity_fail_share" in report2["reasons"][0]
 
 
+def test_observed_live_spread_degradation_fails(db):
+    """A confirmed live spread blowout must fail the asset's liquidity in
+    observed mode (005 follow-up) — the gate can no longer be blind to an
+    intraday deterioration hidden by the stored scan."""
+    _healthy_settings(db)
+    _seed_universe(db, spread=0.05)
+    from trade.market_check import _asset_facts_observed, check_venue_observed
+    from db.db_ops import get_tradeable_universe
+
+    # live spread 0.5% vs stored 0.05% × 3.0 → degraded True → fails liquidity
+    obs = _mk_observations(["A0", "A1", "A2", "A3"], spread=0.5)
+    facts = _asset_facts_observed("binance", get_tradeable_universe("binance"),
+                                  10_000, obs, 300)
+    assert facts["A0"]["live_spread_degraded"] is True
+    assert facts["A0"]["passes_liquidity"] is False
+
+    # healthy live spread keeps the stored-scan verdict
+    obs2 = _mk_observations(["A0", "A1", "A2", "A3"], spread=0.05)
+    facts2 = _asset_facts_observed("binance", get_tradeable_universe("binance"),
+                                   10_000, obs2, 300)
+    assert facts2["A0"]["live_spread_degraded"] is False
+    assert facts2["A0"]["passes_liquidity"] is True
+
+    # full check: all assets degraded → fail_share=1.00 ⇒ FAIL
+    report = check_venue_observed("binance", obs, equity=100_000)
+    assert report["verdict"] == "FAIL"
+    assert "liquidity_fail_share" in report["reasons"][0]
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # AC6 — debounce state machine
 # ═════════════════════════════════════════════════════════════════════════════
@@ -392,12 +421,21 @@ def test_debounce_transitions():
     state, t = update_gate_state(state, "PASS", settings)
     assert t == {"type": "resume"} and not state["suspended"] and state["good_streak"] == 2
 
-    # WARN = neutral hold: resets both streaks, never suspends
+    # WARN = mild failure: counts toward bad_streak, suspends like FAIL
+    # (005 follow-up — a WARN used to reset streaks and never suspend, so the
+    # gate never protected during partial-liquidity / trending conditions)
     state, t = update_gate_state(state, "WARN", settings)
-    assert t is None and state["bad_streak"] == 0 and state["good_streak"] == 0
-    state, t = update_gate_state(state, "FAIL", settings)  # 1 fail
-    state, t = update_gate_state(state, "WARN", settings)  # reset before threshold
-    assert t is None and state["bad_streak"] == 0 and not state["suspended"]
+    assert t is None and state["bad_streak"] == 1 and state["good_streak"] == 0
+    state, t = update_gate_state(state, "WARN", settings)
+    assert t == {"type": "suspend"} and state["suspended"] and state["bad_streak"] == 2
+    # WARN while suspended → no additional transition
+    state, t = update_gate_state(state, "WARN", settings)
+    assert t is None and state["suspended"] and state["bad_streak"] == 3
+    # two PASSes → resume only on the 2nd
+    state, t = update_gate_state(state, "PASS", settings)
+    assert t is None and state["good_streak"] == 1 and state["suspended"]
+    state, t = update_gate_state(state, "PASS", settings)
+    assert t == {"type": "resume"} and not state["suspended"] and state["good_streak"] == 2
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -458,6 +496,7 @@ def test_transition_notifications_once(db):
     botmod._gate_state.clear()
     botmod._last_gate_eval.clear()
     fail = {"venue": "binance", "verdict": "FAIL", "reasons": ["liquidity_fail_share=1.00"]}
+    warn = {"venue": "binance", "verdict": "WARN", "reasons": ["liquidity_partial=0.25"]}
     ok = {"venue": "binance", "verdict": "PASS", "reasons": []}
 
     with mock.patch("trading_bot.send_bot_message.send_message") as sm:
@@ -467,12 +506,99 @@ def test_transition_notifications_once(db):
         assert sm.call_count == 1
         botmod._gate_apply("binance", fail)   # FAIL while suspended — none
         assert sm.call_count == 1
-        botmod._gate_apply("binance", ok)     # PASS #1 — none
-        assert sm.call_count == 1
+        botmod._gate_apply("binance", warn)   # WARN while suspended → WARNING notify
+        assert sm.call_count == 2
+        botmod._gate_apply("binance", ok)     # PASS #1 → warning cleared
+        assert sm.call_count == 3
         botmod._gate_apply("binance", ok)     # PASS #2 → resume — exactly one
-        assert sm.call_count == 2
+        assert sm.call_count == 4
         botmod._gate_apply("binance", ok)     # PASS after resume — none
+        assert sm.call_count == 4
+
+    # WARN now suspends like FAIL (005 follow-up): WARN #1 notifies WARNING,
+    # WARN #2 suspends — exactly one message each
+    botmod._gate_state.clear()
+    botmod._last_gate_eval.clear()
+    with mock.patch("trading_bot.send_bot_message.send_message") as sm:
+        botmod._gate_apply("binance", warn)   # WARN #1 → WARNING notification
+        assert sm.call_count == 1
+        botmod._gate_apply("binance", warn)   # WARN #2 → suspend
         assert sm.call_count == 2
+        assert botmod._gate_state["binance"]["suspended"] is True
+
+
+def test_warn_lifecycle_notifications(db):
+    """A WARN sends exactly one notification when it starts and one when it
+    clears, each carrying the reason (005 follow-up)."""
+    import bot as botmod
+    # high bad_streak so this test exercises the WARN lifecycle, not suspension
+    db.upsert_setting("market_gate_bad_streak", "10")
+    botmod._gate_state.clear()
+    botmod._last_gate_eval.clear()
+    warn = {"venue": "binance", "verdict": "WARN", "reasons": ["liquidity_partial=0.33"]}
+    ok = {"venue": "binance", "verdict": "PASS", "reasons": []}
+
+    with mock.patch("trading_bot.send_bot_message.send_message") as sm:
+        botmod._gate_apply("binance", warn)      # WARN starts — notify
+        assert sm.call_count == 1
+        assert "WARNING" in sm.call_args[0][0]
+        assert "liquidity_partial=0.33" in sm.call_args[0][0]
+        assert botmod._gate_state["binance"].get("warn_active") is True
+        botmod._gate_apply("binance", warn)      # still WARN — no new message
+        assert sm.call_count == 1
+        botmod._gate_apply("binance", ok)        # WARN clears — notify
+        assert sm.call_count == 2
+        assert "cleared" in sm.call_args[0][0]
+        assert botmod._gate_state["binance"].get("warn_active") is False
+        botmod._gate_apply("binance", ok)        # still PASS — no new message
+        assert sm.call_count == 2
+
+    # WARN → FAIL clears the flag silently (its own message covers it)
+    fail = {"venue": "binance", "verdict": "FAIL", "reasons": ["liquidity_fail_share=1.00"]}
+    botmod._gate_state.clear()
+    botmod._last_gate_eval.clear()
+    with mock.patch("trading_bot.send_bot_message.send_message") as sm:
+        botmod._gate_apply("binance", warn)      # WARN starts
+        assert sm.call_count == 1
+        botmod._gate_apply("binance", fail)      # FAIL — flag cleared, no WARN message
+        assert sm.call_count == 1
+        assert botmod._gate_state["binance"].get("warn_active") is False
+
+
+def test_global_daily_loss_pct(db):
+    """Global daily loss sums PnL across ALL venues and the percentage limit
+    now actually blocks (was a no-op pass). Resets naturally per UTC day."""
+    from trade.pnl import check_global_daily_loss, record_closed_trade
+
+    db.upsert_setting("global_daily_loss_limit", "0")
+    db.upsert_setting("global_daily_loss_limit_pct", "3")
+    db.set_venue_equity("binance", 100.0)
+    db.set_venue_equity("orderly", 100.0)
+
+    # both limits off → never blocks
+    db.upsert_setting("global_daily_loss_limit_pct", "0")
+    assert check_global_daily_loss() == (False, "")
+
+    # 3% of total equity (200) = 6 — small losses across venues stay under
+    db.upsert_setting("global_daily_loss_limit_pct", "3")
+    record_closed_trade("A0", "binance", "long", 10, 9.5, 10, 1, 0, 0, 0, time.time(), "sl")
+    record_closed_trade("A1", "orderly", "long", 10, 9.7, 10, 1, 0, 0, 0, time.time(), "sl")
+    assert check_global_daily_loss() == (False, "")
+
+    # enough summed loss (across venues) → blocked
+    record_closed_trade("A0", "binance", "long", 10, 4.0, 10, 1, 0, 0, 0, time.time(), "sl")
+    blocked, reason = check_global_daily_loss()
+    assert blocked
+    assert "global_daily_loss_limit" in reason
+
+    # absolute limit still works (pct disabled)
+    db.upsert_setting("global_daily_loss_limit_pct", "0")
+    db.upsert_setting("global_daily_loss_limit", "50")
+    blocked, reason = check_global_daily_loss()
+    assert not blocked
+    db.upsert_setting("global_daily_loss_limit", "0.1")
+    blocked, reason = check_global_daily_loss()
+    assert blocked and "global_daily_loss_limit" in reason
 
 
 # ═════════════════════════════════════════════════════════════════════════════

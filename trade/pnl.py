@@ -148,7 +148,12 @@ def get_global_daily_pnl() -> float:
 
 
 def check_global_daily_loss() -> tuple[bool, str]:
-    """Check global daily loss limit. Returns (should_disable, reason)."""
+    """Check global daily loss limit. Returns (blocked, reason).
+
+    Sums PnL across ALL venues for the current UTC day. Supports both the
+    absolute ($) limit and the percentage-of-total-equity limit (0 disables
+    that limit). Soft block — entries only, resets at UTC midnight.
+    """
     limit_abs = get_setting_float("global_daily_loss_limit", 0.0)
     limit_pct = get_setting_float("global_daily_loss_limit_pct", 0.0)
     if limit_abs <= 0 and limit_pct <= 0:
@@ -158,8 +163,16 @@ def check_global_daily_loss() -> tuple[bool, str]:
     if limit_abs > 0 and total_pnl <= -limit_abs:
         return True, f"global_daily_loss_limit breached: {total_pnl:.2f} <= -{limit_abs:.2f}"
     if limit_pct > 0:
-        # Percentage requires total equity — skip if not available
-        pass  # Percentage check delegated to startup validation
+        # Percentage of total live equity across all venues
+        from db.db_ops import get_venue_equity
+        total_eq = 0.0
+        for v in ("binance", "orderly"):
+            st = get_venue_equity(v)
+            total_eq += float(st["equity"]) if st else 0.0
+        if total_eq > 0:
+            limit = total_eq * limit_pct / 100
+            if total_pnl <= -limit:
+                return True, f"global_daily_loss_limit breached: {total_pnl:.2f} <= -{limit:.2f}"
 
     return False, ""
 
