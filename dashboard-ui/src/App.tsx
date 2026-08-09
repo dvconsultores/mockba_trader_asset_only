@@ -96,8 +96,8 @@ export default function App() {
   }, [tab, moreOpen])
 
   const mainTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
-    { id: 'closed', label: 'Trades', icon: History },
     { id: 'live', label: 'Live', icon: TerminalSquare },
+    { id: 'closed', label: 'Trades', icon: History },
     { id: 'signals', label: 'Signals', icon: BarChart3 },
   ]
 
