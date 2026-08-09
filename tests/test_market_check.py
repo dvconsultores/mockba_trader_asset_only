@@ -594,3 +594,45 @@ def test_observations_flow_during_suspension(db):
     assert facts["A0"]["regime"] == "RANGE"
     # live spread 0.04 vs stored 0.05 × 3.0 → not degraded
     assert facts["A0"]["live_spread_degraded"] is False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Constitution VIII — a gate-suspended entry skip is recorded in `signals`
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_gate_suspended_records_signal(db):
+    """A market-gate-suspended entry skip writes a `signals` row with the gate
+    reason (Constitution VIII — every skipped entry recorded with its reason so
+    filter strictness is measurable). Reuses the scalpers' `_log` INSERT."""
+    import bot as botmod
+    from db.db_ops import get_db_connection
+
+    botmod._record_gate_skip("binance", "PUMP", "RANGE", 1.0, 0.0023)
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT asset, venue, regime, direction, price, action, reason FROM signals"
+        ).fetchall()
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["asset"] == "PUMP"
+    assert row["venue"] == "binance"
+    assert row["regime"] == "RANGE"
+    assert row["direction"] is None
+    assert row["price"] == pytest.approx(0.0023)
+    assert row["action"] == "skipped"
+    assert row["reason"] == "market_gate_suspended"
+
+    # orderly venue records through the futures scalper's identical mechanism
+    botmod._record_gate_skip("orderly", "PUMP", "RANGE", 1.0, 0.0023)
+    with get_db_connection() as conn:
+        rows = conn.execute(
+            "SELECT venue, action, reason FROM signals WHERE reason = 'market_gate_suspended'"
+        ).fetchall()
+    assert len(rows) == 2
+    assert {r["venue"] for r in rows} == {"binance", "orderly"}
+
+    # structural: the per-asset guard invokes the recorder before `continue`
+    import inspect
+    src = inspect.getsource(botmod)
+    guard = src[src.index("market gate suspended"):]
+    assert "_record_gate_skip(venue, asset, regime, obi, price)" in guard

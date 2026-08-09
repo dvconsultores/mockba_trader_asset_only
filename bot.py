@@ -31,8 +31,8 @@ from trade.regime import detect_regime, invalidate_cache
 from trade.pnl import is_entry_blocked, is_entry_blocked_per_pair, can_trade_venue, compute_slot_size, max_effective_slots, check_global_daily_loss
 from trade.universe import run_scans_if_due, is_universe_stale, force_rescan, add_degraded_exclusion
 from trading_bot.executor import BinanceSpot, OrderlyFutures
-from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle
-from trading_bot.futures_scalper import manage_open_positions as futures_manage, scalp_cycle as futures_cycle
+from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle, _log as _spot_log
+from trading_bot.futures_scalper import manage_open_positions as futures_manage, scalp_cycle as futures_cycle, _log as _futures_log
 from trade.market_check import check_venue_observed, update_gate_state
 
 
@@ -411,6 +411,7 @@ def run():
                         # Market gate: entries only — exits ran above; obs keep flowing
                         if _gate_state.get(venue, {}).get("suspended"):
                             logger.debug(f"[SKIP] {venue}:{asset} market gate suspended")
+                            _record_gate_skip(venue, asset, regime, obi, price)
                             continue
 
                         if obi is not None and price is not None:
@@ -586,6 +587,16 @@ def _gate_apply(venue: str, report: dict) -> dict:
         logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=hold")
     _gate_state[venue] = new_state
     return new_state
+
+
+def _record_gate_skip(venue: str, asset: str, regime: str, obi, price):
+    """Record a market-gate-suspended entry skip in `signals` (Constitution VIII:
+    every skipped entry is recorded with its reason so filter strictness is
+    measurable). Reuses the scalpers' `_log` INSERT — the same mechanism that
+    records regime/cooldown/toxicity skips inside the scalper entry paths."""
+    log = _spot_log if venue == "binance" else _futures_log
+    log(asset, venue, regime, None, price, 0, 0, 0, obi, 0, None, {},
+        "skipped", "market_gate_suspended")
 
 
 def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, price: float,

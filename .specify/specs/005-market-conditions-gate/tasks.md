@@ -219,3 +219,33 @@ Task: "T015–T016 — /market command + /list button in telegram.py"
 - Do NOT touch executor/scalpers/DB schema/PUMP #65 (see Out of Scope)
 - Settings defaults live in `get_setting_*` fallbacks — no migration
 - After implementation: run quickstart.md Scenarios 1–5
+
+---
+
+## Phase 6: Converge — Remaining Work
+
+**Assessment date**: 2026-08-09 (converge run after T001–T020, commit `5bc24c7`).
+**Outcome**: AC1–AC13 all satisfied; 15/15 `tests/test_market_check.py` green; full suite 47 passed + 18 pre-existing errors. The three items below are the only genuinely remaining, in-repo follow-ups. Production enablement (`market_gate_enabled=true`) is an OPERATOR action, not a code task.
+
+- [X] T021 Investigate the PUMP closed-trade #65 fee anomaly — read-only diagnosis first: audit `closed_trades` id=65 (`PUMP/binance/long`, entry 0.00229 ≈ exit 0.00227855, `fee_entry=4.76` on ~$10.88 notional ≈ 43.7%, `pnl_net=−4.83` / −44.35%, `exit_reason=sl`) against the fill/fee path in `trading_bot/executor.py` + `trading_bot/spot_scalper.py` per Constitution V (real fills only); propose a fix only after the root cause is confirmed; do not modify trading code in the diagnosis phase per spec Q8 / plan Out of Scope — **DONE: no code change — root cause = raw base-commission recorded pre-2026-08-08 fee-conversion fix (see T021 findings below); already fixed in `b601f60`**
+- [X] T022 Clean up `tests/test_spot_grid_scalper.py` — 18 pre-existing `ModuleNotFoundError` collection errors because it targets the deleted legacy `trading_bot/spot_grid_scalper` module (fails identically on clean HEAD, unrelated to 005); delete the stale tests or mark them `skip`/`xfail` with a comment referencing the module removal so the full suite is green — **DONE: file deleted (module truly dead — no live code/imports reference it); full suite 0 errors**
+- [X] T023 Record market-gate suspension skips in the `signals` table (or explicitly document the deviation) — spec Part 2 Constraints and quickstart Scenario 3 state gate skip reasons are "recorded in signals" (Constitution VIII: filter strictness measurable), but the gate guard at `bot.py` (before the scalper call) only logs DEBUG `[SKIP] … market gate suspended` and never reaches the scalpers' `signals` INSERT (`spot_scalper.py`, `futures_scalper.py`); add a `signals` row with `action='skipped'`, `reason='market gate suspended'` at the guard, or document why the deviation is acceptable — **DONE: `bot.py` `_record_gate_skip` records `action='skipped'`, `reason='market_gate_suspended'` via the scalpers' `_log` INSERT before `continue`; test added in `tests/test_market_check.py`**
+
+---
+
+## T021 findings — PUMP closed-trade #65 fee anomaly (2026-08-09)
+
+**Conclusion: NO code change needed — the anomaly came from already-fixed pre-2026-08-08 code.** The fill/fee path in the CURRENT `trading_bot/executor.py` cannot reproduce it. No regression test added (there is no live bug to pin).
+
+### Evidence
+
+- **Record**: `closed_trades` id=65 — PUMP/binance/long, entry 0.00229, exit 0.00227855, qty 4751, `fee_entry=4.76`, `fee_exit=0.010825`, `pnl_net=-4.825224`, `pnl_pct=-44.35`, `exit_reason='sl'`, `opened_at=0`, **`closed_at=1786138437.845` = 2026-08-07 21:33:57 UTC**.
+- **Root cause (unit error, not a real $4.76 fee)**: Binance charged the entry fee in the **base asset (PUMP)** — 0.1% × 4751 = **4.751 PUMP**. The code running on 2026-08-07 (`BinanceSpot.place_entry` at commit `e834a96`) summed the raw `fills[].commission` and stored it directly as `fee_amount`, **without converting a non-USDT commission to quote value**. `_save_open` persisted it as `fee_entry=4.76` (interpreted as USDT). The real fee was 4.751 PUMP × $0.00229 ≈ **$0.0109**.
+- **Arithmetic confirms it**: recorded `pnl_net` = `(exit−entry)×qty − fee_entry − fee_exit` = `−0.0544 − 4.76 − 0.0108` = `−4.825224` (matches DB exactly). With true fees the trade was `−0.0544 − 0.0109 − 0.0108 ≈ −$0.076` (−0.7%, not −44%). `fee_exit=0.010825` = 0.1% × exit notional (charged in USDT on the sell side) — the exit side was recorded correctly, which is why only `fee_entry` is anomalous.
+- **Fix already landed**: the base→quote fee conversion (`if fee_asset not in ("USDT", "USDC") and fill_price > 0: fee_amount = fee_amount * fill_price`) was added to `place_entry`, `market_sell`, and `get_order_fills` in commit **`b601f60` (2026-08-08)** — one day AFTER trade #65 closed. The 2026-08-05 fill_price fix (`bad5bfb`, divide `sum(price×qty)` by `filled_qty`) predates #65 and was not the cause.
+- **Current-code check**: `place_entry` / `market_sell` / `get_order_fills` all convert base-commission to USDT today; the `_save_open` → `_close` → `record_closed_trade` fee path is unchanged and correct. A real Binance fill today records `fee_entry ≈ $0.011` on a ~$10.9 notional — the anomaly cannot recur.
+
+### Action taken
+
+- No changes to `trading_bot/executor.py` / `trading_bot/spot_scalper.py` (Constitution V / spec Q8 Out of Scope). Historical row #65 remains as-is (already-recorded data; not corrected to avoid rewriting audit history).
+- This note documents the conclusion; see repo memory `binance-oco-notes.md` / `codebase-overview.md` for the surrounding fix history.
