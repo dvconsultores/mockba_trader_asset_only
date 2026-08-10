@@ -421,21 +421,37 @@ def test_debounce_transitions():
     state, t = update_gate_state(state, "PASS", settings)
     assert t == {"type": "resume"} and not state["suspended"] and state["good_streak"] == 2
 
-    # WARN = mild failure: counts toward bad_streak, suspends like FAIL
-    # (005 follow-up — a WARN used to reset streaks and never suspend, so the
-    # gate never protected during partial-liquidity / trending conditions)
-    state, t = update_gate_state(state, "WARN", settings)
+    # STRONG WARN (broad liquidity failure) counts toward bad_streak and
+    # suspends like FAIL (005 follow-up)
+    strong = ["liquidity_partial=0.33"]
+    state, t = update_gate_state(state, "WARN", settings, strong)
     assert t is None and state["bad_streak"] == 1 and state["good_streak"] == 0
-    state, t = update_gate_state(state, "WARN", settings)
+    state, t = update_gate_state(state, "WARN", settings, strong)
     assert t == {"type": "suspend"} and state["suspended"] and state["bad_streak"] == 2
     # WARN while suspended → no additional transition
-    state, t = update_gate_state(state, "WARN", settings)
+    state, t = update_gate_state(state, "WARN", settings, strong)
     assert t is None and state["suspended"] and state["bad_streak"] == 3
     # two PASSes → resume only on the 2nd
     state, t = update_gate_state(state, "PASS", settings)
     assert t is None and state["good_streak"] == 1 and state["suspended"]
     state, t = update_gate_state(state, "PASS", settings)
     assert t == {"type": "resume"} and not state["suspended"] and state["good_streak"] == 2
+
+    # MILD WARN (a lone bad asset) never suspends — informational only, so a
+    # single weak symbol can't block the whole venue on a small universe
+    mild = ["liquidity_partial=0.11"]
+    state2 = {"suspended": False, "bad_streak": 0, "good_streak": 0}
+    for _ in range(5):
+        state2, t = update_gate_state(state2, "WARN", settings, mild)
+        assert t is None and not state2["suspended"]
+        assert state2["bad_streak"] == 0 and state2["good_streak"] == 0
+
+    # regime WARNs (trending/unknown) are always strong
+    state3 = {"suspended": False, "bad_streak": 0, "good_streak": 0}
+    state3, t = update_gate_state(state3, "WARN", settings, ["regime_trending=1.00"])
+    assert t is None and state3["bad_streak"] == 1
+    state3, t = update_gate_state(state3, "WARN", settings, ["regime_unknown=1.00"])
+    assert t == {"type": "suspend"} and state3["suspended"]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -648,7 +664,7 @@ def test_settings_validation(db):
     assert keys == sorted([
         "market_gate_enabled", "market_gate_interval_min", "market_gate_bad_streak",
         "market_gate_good_streak", "market_gate_fail_share", "market_gate_trend_share",
-        "market_gate_unknown_share",
+        "market_gate_unknown_share", "market_gate_warn_liquidity_share",
     ])
     for k in keys:
         assert BY_KEY[k].group == "gate"
@@ -661,6 +677,7 @@ def test_settings_validation(db):
     assert validate("market_gate_fail_share", 0.5).level == "ok"
     assert validate("market_gate_trend_share", 0.6).level == "ok"
     assert validate("market_gate_unknown_share", 0.5).level == "ok"
+    assert validate("market_gate_warn_liquidity_share", 0.25).level == "ok"
 
     # hard-range violations rejected with clear messages
     assert validate("market_gate_interval_min", 0).level == "error"
@@ -673,6 +690,8 @@ def test_settings_validation(db):
     assert validate("market_gate_fail_share", 1.5).level == "error"
     assert validate("market_gate_trend_share", 1.1).level == "error"
     assert validate("market_gate_unknown_share", 1.5).level == "error"
+    assert validate("market_gate_warn_liquidity_share", -0.1).level == "error"
+    assert validate("market_gate_warn_liquidity_share", 1.5).level == "error"
 
     # Amendment 002 deterministic validator accepts the 7 settings unchanged
     for k, v in {
@@ -768,6 +787,49 @@ def test_gate_suspended_records_signal(db):
 # Constitution VIII — a global-daily-loss skip is recorded with a REAL price
 # (regression: passing price=None raised NOT NULL constraint on signals.price)
 # ═════════════════════════════════════════════════════════════════════════════
+
+def test_universe_rotate_inactive(db):
+    """Universe members with no recent actionable signal (entered/signaled)
+    are flagged for rotation so the scan can surface fresh tokens; assets with
+    a recent signal stay. 0 disables rotation."""
+    _healthy_settings(db)
+    _seed_universe(db)  # A0..A3 in the stored universe
+    from db.db_ops import get_db_connection
+    now = time.time()
+    with get_db_connection() as conn:
+        conn.execute("INSERT INTO signals (ts,asset,venue,regime,price,action,reason) "
+                     "VALUES (?,?,?,?,?,?,?)",
+                     (now - 3600, "A0", "binance", "RANGE", 1.0, "entered", "recent"))
+        conn.execute("INSERT INTO signals (ts,asset,venue,regime,price,action,reason) "
+                     "VALUES (?,?,?,?,?,?,?)",
+                     (now - 50 * 3600, "A1", "binance", "RANGE", 1.0, "entered", "old"))
+        conn.commit()
+
+    from trade.universe import _inactive_universe_assets, _gate_suspending
+    inactive = _inactive_universe_assets("binance", 12)
+    assert "A0" not in inactive          # active signal 1h ago → stays
+    assert inactive == {"A1", "A2", "A3"}  # quiet 50h / never → rotated
+    # disabled → nothing rotated
+    assert _inactive_universe_assets("binance", 0) == set()
+
+    # gate suspended recently → rotation guard trips (never wipe during a gate)
+    with get_db_connection() as conn:
+        conn.execute("INSERT INTO signals (ts,asset,venue,regime,price,action,reason) "
+                     "VALUES (?,?,?,?,?,?,?)",
+                     (time.time(), "A0", "binance", "RANGE", 1.0, "skipped",
+                      "market_gate_suspended"))
+        conn.commit()
+    assert _gate_suspending("binance", 12) is True
+
+
+def test_universe_rotate_paused_venue(db):
+    """A venue with no recent signal rows at all (auto-trade off / paused)
+    is never rotated — inactivity can't be judged on a stopped venue."""
+    _healthy_settings(db)
+    _seed_universe(db)
+    from trade.universe import _inactive_universe_assets
+    assert _inactive_universe_assets("binance", 12) == set()
+
 
 def test_global_block_records_signal(db):
     """A global-daily-loss entry skip writes a valid `signals` row — the guard

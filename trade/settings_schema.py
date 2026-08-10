@@ -180,6 +180,8 @@ ALL: list[SettingSpec] = [
                 "'auto' = implied breakeven win rate from current settings; a literal rate (0-1) overrides"),
     SettingSpec("universe_spread_degradation_multiple", float, "universe", "x", 1.0, 50, 1.5, 10,
                 "Skip entries when live spread exceeds scan-time spread by this multiple"),
+    SettingSpec("universe_rotate_inactive_hours", float, "universe", "hours", 0, 168, 6, 24,
+                "Rotate universe members with no actionable signal within N hours out of the next scan (0=off)"),
 
     # ── Market gate (feature 005) ─────────────────────────────────────────
     # Opt-in venue-level gate: suspends NEW entries only after bad_streak
@@ -200,6 +202,8 @@ ALL: list[SettingSpec] = [
                 "Universe share in TREND_UP/DOWN that downgrades PASS to WARN"),
     SettingSpec("market_gate_unknown_share", float, "gate", None, 0.0, 1.0, 0.2, 0.7,
                 "Universe share UNKNOWN that downgrades PASS to WARN"),
+    SettingSpec("market_gate_warn_liquidity_share", float, "gate", None, 0.0, 1.0, 0.1, 0.5,
+                "WARN liquidity_partial suspends only when fail_share is at/above this (a lone bad asset is mild)"),
 
     # ── Mode ───────────────────────────────────────────────────────────────
     SettingSpec("trading_enabled", bool, "mode", None, None, None, None, None,

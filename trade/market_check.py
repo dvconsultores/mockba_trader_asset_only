@@ -308,17 +308,37 @@ def check_venue_observed(venue, observations, equity=None):
 # Gate debounce state machine (data-model.md §3)
 # ═════════════════════════════════════════════════════════════════════════════
 
-def update_gate_state(state, verdict, settings):
+def _warn_is_strong(reasons, settings):
+    """A WARN escalates to suspension only for a BROAD problem: a liquidity
+    fail_share at/above market_gate_warn_liquidity_share, or a trending /
+    unknown regime mix (those verdicts only fire at high shares already). A
+    lone bad asset (small liquidity_partial) is mild — it must not block the
+    whole venue on a small universe (005 follow-up: gate was too strict)."""
+    if not reasons:
+        return False
+    share_thr = settings.get("market_gate_warn_liquidity_share", 0.25)
+    for r in reasons:
+        if r.startswith("liquidity_partial="):
+            try:
+                return float(r.split("=", 1)[1]) >= share_thr
+            except ValueError:
+                return False
+        if r.startswith("regime_trending=") or r.startswith("regime_unknown="):
+            return True
+    return False
+
+
+def update_gate_state(state, verdict, settings, reasons=None):
     """Pure debounce state machine per venue. Returns (new_state, transition).
 
     PASS → good_streak+1, bad_streak=0, resume when suspended and
            good_streak >= market_gate_good_streak.
     FAIL → bad_streak+1, good_streak=0, suspend when not suspended and
            bad_streak >= market_gate_bad_streak.
-    WARN → bad_streak+1, good_streak=0, suspends like FAIL once the streak
-           reaches market_gate_bad_streak (005 follow-up: WARN used to reset
-           streaks and never suspend, so the gate never protected during
-           partial-liquidity / trending conditions).
+    WARN → strong (broad) warnings count toward bad_streak and suspend like
+           FAIL once the streak reaches market_gate_bad_streak; mild warnings
+           (a lone bad asset) reset both streaks and never suspend, so a
+           single weak symbol can't block the venue (005 follow-up).
     transition: None | {"type": "suspend"} | {"type": "resume"} (AC6).
     """
     new_state = dict(state)
@@ -339,12 +359,18 @@ def update_gate_state(state, verdict, settings):
             new_state["suspended"] = True
             transition = {"type": "suspend"}
     elif verdict == "WARN":
-        # Mild failure — counts toward suspension (see docstring).
-        new_state["bad_streak"] += 1
-        new_state["good_streak"] = 0
-        if not new_state["suspended"] and new_state["bad_streak"] >= settings["market_gate_bad_streak"]:
-            new_state["suspended"] = True
-            transition = {"type": "suspend"}
+        # Strong (broad) WARN → counts toward suspension like FAIL. Mild WARN
+        # (a lone bad asset) → informational only, resets streaks so a blip
+        # never trips the gate (see _warn_is_strong).
+        if _warn_is_strong(reasons, settings):
+            new_state["bad_streak"] += 1
+            new_state["good_streak"] = 0
+            if not new_state["suspended"] and new_state["bad_streak"] >= settings["market_gate_bad_streak"]:
+                new_state["suspended"] = True
+                transition = {"type": "suspend"}
+        else:
+            new_state["bad_streak"] = 0
+            new_state["good_streak"] = 0
     return new_state, transition
 
 

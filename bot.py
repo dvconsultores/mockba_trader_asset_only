@@ -624,9 +624,11 @@ def _gate_apply(venue: str, report: dict) -> dict:
     settings = {
         "market_gate_bad_streak": get_setting_int("market_gate_bad_streak", 2),
         "market_gate_good_streak": get_setting_int("market_gate_good_streak", 2),
+        "market_gate_warn_liquidity_share": get_setting_float("market_gate_warn_liquidity_share", 0.25),
     }
     state = _gate_state.get(venue, {"suspended": False, "bad_streak": 0, "good_streak": 0})
-    new_state, transition = update_gate_state(state, report["verdict"], settings)
+    new_state, transition = update_gate_state(state, report["verdict"], settings,
+                                              report.get("reasons"))
     label = "DEX (orderly)" if venue == "orderly" else "CEX (binance)"
     reason = ",".join(report["reasons"]) if report["reasons"] else "none"
     from trading_bot.send_bot_message import send_message

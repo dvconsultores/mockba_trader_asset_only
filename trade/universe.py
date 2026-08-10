@@ -33,7 +33,7 @@ import requests
 from db.db_ops import (
     get_setting, get_setting_float, get_setting_int,
     get_universe_scan_age, replace_universe, get_venue_equity,
-    get_consecutive_losses,
+    get_consecutive_losses, get_db_connection, get_tradeable_universe,
 )
 from trade.regime import _fetch_ohlcv
 
@@ -521,6 +521,46 @@ def add_degraded_exclusion(venue: str, asset: str, ttl_hours: float) -> None:
     _degraded_exclusions[(venue, asset)] = time.time() + ttl_hours * 3600
 
 
+def _inactive_universe_assets(venue: str, inactive_hours: float) -> set[str]:
+    """Current universe members with no actionable signal (entered/signaled)
+    within the last inactive_hours — rotated out so the next scan surfaces
+    alternative tokens instead of re-selecting the same quiet names.
+
+    Returns empty when the venue produced no signal rows at all in the window
+    (auto-trade off / paused) — never rotate a universe that isn't running."""
+    if inactive_hours <= 0:
+        return set()
+    cutoff = time.time() - inactive_hours * 3600
+    current = {u["asset"] for u in get_tradeable_universe(venue)}
+    if not current:
+        return set()
+    with get_db_connection() as conn:
+        any_row = conn.execute(
+            "SELECT 1 FROM signals WHERE venue=? AND ts>=? LIMIT 1",
+            (venue, cutoff)).fetchone()
+        if any_row is None:
+            return set()
+        rows = conn.execute(
+            "SELECT DISTINCT asset FROM signals WHERE venue=? AND action IN "
+            "('entered','signaled') AND ts >= ?",
+            (venue, cutoff),
+        ).fetchall()
+    active = {r["asset"] for r in rows}
+    return current - active
+
+
+def _gate_suspending(venue: str, window_hours: float) -> bool:
+    """True if the market gate recently suspended entries for the venue —
+    rotation is skipped then, since the gate (not inactivity) is blocking."""
+    cutoff = time.time() - window_hours * 3600
+    with get_db_connection() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM signals WHERE venue=? AND reason='market_gate_suspended' "
+            "AND ts>=? LIMIT 1",
+            (venue, cutoff)).fetchone()
+    return row is not None
+
+
 def scan_venue(venue: str, equity: float | None = None,
                depth_budget: int | None = None) -> dict:
     """Run the full scan pipeline for one venue and store the result.
@@ -551,6 +591,17 @@ def scan_venue(venue: str, equity: float | None = None,
             _degraded_exclusions.pop(key, None)
             continue
         candidates = [c for c in candidates if c["asset"] != key[1]]
+
+    # Rotate out current-universe members with no recent actionable signal —
+    # the same quiet names would otherwise re-rank at the top every scan
+    # (user-requested rotation: surface fresh tokens when a slot goes quiet).
+    # Skipped while the market gate is suspending entries (the gate, not
+    # inactivity, is blocking then — rotation would wipe the whole universe).
+    inactive_hours = get_setting_float("universe_rotate_inactive_hours", 12)
+    if inactive_hours > 0 and not _gate_suspending(venue, inactive_hours):
+        inactive = _inactive_universe_assets(venue, inactive_hours)
+        if inactive:
+            candidates = [c for c in candidates if c["asset"] not in inactive]
 
     # ── Stage 2 — hard filters (no ranking yet) ─────────────────────────
     tp_min = get_setting_float("tp_min_pct", 0.8)
