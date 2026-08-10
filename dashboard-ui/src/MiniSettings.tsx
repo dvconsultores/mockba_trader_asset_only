@@ -60,6 +60,16 @@ const PRESETS: PresetDef[] = [
     rec: (_c) => '0.5',
   },
   {
+    key: 'sl_min_pct_spot', label: 'Spot Stop Loss', hint: 'Spot-only SL floor — more room to correct (futures keeps the tight one). Must stay below Take Profit', suffix: '%',
+    options: [
+      { label: '0.5% — Same as futures', value: '0.5' },
+      { label: '0.6% — Cushion (default)', value: '0.6' },
+      { label: '0.7% — Wider', value: '0.7' },
+      { label: '0.8% — Max for 0.8 TP', value: '0.8' },
+    ],
+    rec: (_c) => '0.6',
+  },
+  {
     key: 'cooldown_sec', label: 'Cooldown', hint: 'Seconds between entries', suffix: 's',
     options: [
       { label: '30s — Rapid', value: '30' },
