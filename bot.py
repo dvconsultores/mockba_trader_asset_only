@@ -200,6 +200,9 @@ def _reconcile_startup(binance, orderly):
 
 def run():
     """Main autotrade loop. Never returns unless killed."""
+    # Module-level flags reassigned inside the loop must be declared global,
+    # otherwise Python treats them as locals → UnboundLocalError on first read.
+    global _gate_disabled_logged, _global_loss_warned, _market_filter_warned
     initialize_database_tables()
 
     dry = get_setting_bool("dry_run", True)
