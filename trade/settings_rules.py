@@ -101,6 +101,18 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
             sug = round(slk * 1.5, 2)
             return Verdict("warn", f"tp_k ({value}) <= sl_k ({slk}) — TP may not clear SL during volatile periods", sug)
 
+    # Spot-only SL overrides must stay below the TP (mirror the shared checks)
+    if key == "sl_min_pct_spot":
+        tp = get_setting_float("tp_min_pct", 0.8)
+        if isinstance(value, (int, float)) and tp <= value:
+            sug = round(tp * 0.66, 2)
+            return Verdict("error", f"sl_min_pct_spot ({value}) must be below tp_min_pct ({tp})", sug)
+    if key == "sl_k_spot":
+        tkp = get_setting_float("tp_k", 1.0)
+        if isinstance(value, (int, float)) and tkp <= value:
+            sug = round(tkp * 0.8, 2)
+            return Verdict("warn", f"sl_k_spot ({value}) >= tp_k ({tkp}) — TP may not clear SL during volatile periods", sug)
+
     # Net edge: tp_min - fee - slippage < min_net_edge
     if key in ("tp_min_pct", "assumed_slippage_pct", "min_net_edge_pct"):
         tp = get_setting_float("tp_min_pct", 0.8)

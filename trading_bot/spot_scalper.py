@@ -189,7 +189,10 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
     dk=get_setting_float("dip_k",0.5); dm=get_setting_float("dip_min_pct",0.15)
     pk=get_setting_float("pump_k",0.5); pm=get_setting_float("pump_min_pct",0.15)
     tk=get_setting_float("tp_k",1.0); tm=get_setting_float("tp_min_pct",0.8)
-    sk=get_setting_float("sl_k",0.6); sm=get_setting_float("sl_min_pct",0.5)
+    # Spot-only SL — wider room for a correction (spot cannot be liquidated);
+    # falls back to the shared sl_k/sl_min_pct when the spot overrides are unset.
+    sk=get_setting_float("sl_k_spot", get_setting_float("sl_k",0.6))
+    sm=get_setting_float("sl_min_pct_spot", get_setting_float("sl_min_pct",0.5))
 
     dn, pn, te, se = compute_thresholds(atr, dk, dm, pk, pm, tk, tm, sk, sm)
 
