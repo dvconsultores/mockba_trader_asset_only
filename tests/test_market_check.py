@@ -831,6 +831,46 @@ def test_universe_rotate_paused_venue(db):
     assert _inactive_universe_assets("binance", 12) == set()
 
 
+def test_broad_market_downtrend_gate(db):
+    """Broad-market gate: blocks entries while the majors' average 24h change
+    is a downtrend, allows in a green/neutral market, and fails closed on API
+    errors. Disabled = no blocking (2026-08-10)."""
+    import bot as botmod
+    botmod._market_filter_cache["ts"] = 0.0
+    db.upsert_setting("market_filter_enabled", "false")
+    assert botmod._broad_market_downtrend() == (False, "")
+
+    db.upsert_setting("market_filter_enabled", "true")
+    db.upsert_setting("market_filter_max_downtrend_pct", "-1.0")
+    db.upsert_setting("market_filter_assets", "BTC,ETH,SOL")
+
+    class _R:
+        def __init__(self, pct):
+            self.pct = pct
+        def json(self):
+            return {"priceChangePercent": self.pct}
+
+    # red market: avg −1.7 < −1.0 → blocked
+    botmod._market_filter_cache["ts"] = 0.0
+    vals = iter([_R(-2.0), _R(-1.5), _R(-1.6)])
+    with mock.patch("requests.get", side_effect=lambda *a, **k: next(vals)):
+        blocked, reason = botmod._broad_market_downtrend()
+    assert blocked and "broad market" in reason
+
+    # green/neutral market: avg +0.5 ≥ −1.0 → allowed
+    botmod._market_filter_cache["ts"] = 0.0
+    vals = iter([_R(0.5), _R(0.6), _R(0.4)])
+    with mock.patch("requests.get", side_effect=lambda *a, **k: next(vals)):
+        blocked, reason = botmod._broad_market_downtrend()
+    assert not blocked and reason == ""
+
+    # API failure → fail closed (don't trade blind)
+    botmod._market_filter_cache["ts"] = 0.0
+    with mock.patch("requests.get", side_effect=Exception("boom")):
+        blocked, reason = botmod._broad_market_downtrend()
+    assert blocked and "unavailable" in reason
+
+
 def test_global_block_records_signal(db):
     """A global-daily-loss entry skip writes a valid `signals` row — the guard
     runs before the per-asset price snapshot, so the recorder must fetch the

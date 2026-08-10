@@ -47,6 +47,10 @@ _consec_loss_warned: dict[str, str] = {}
 # Whether the global daily loss [KILL] warning has been logged for the current
 # blocked episode (avoid 30s-cycle spam — reset when the block clears).
 _global_loss_warned: bool = False
+# Broad-market trend gate (2026-08-10): blocks entries while the majors'
+# average 24h change is a downtrend. Cached result + one-time warn flag.
+_market_filter_cache: dict = {"ts": 0.0, "res": (False, "")}
+_market_filter_warned: bool = False
 
 
 # ── Market gate (feature 005) — in-memory only; logic in trade/market_check.py ──
@@ -333,6 +337,17 @@ def run():
             elif not g_blocked:
                 _global_loss_warned = False
 
+            # ── Broad-market trend gate (2026-08-10) ──────────────────────
+            # A global red day drags every altcoin down — block new entries
+            # while the majors' average 24h change is a downtrend.
+            mkt_blocked, mkt_reason = _broad_market_downtrend()
+            mkt_onset = mkt_blocked and not _market_filter_warned
+            if mkt_onset:
+                logger.warning(f"[MARKET] {mkt_reason} — new entries blocked until majors recover")
+                _market_filter_warned = True
+            elif not mkt_blocked:
+                _market_filter_warned = False
+
             _venue_failures: dict[str, int] = {}
 
             # ── Read per-venue mode (False / Signal / Automatic) ──
@@ -402,7 +417,10 @@ def run():
                         blocked = False
                         reason = ""
                         if not signal_only:
-                            if g_blocked:
+                            if mkt_blocked:
+                                blocked = True
+                                reason = mkt_reason
+                            elif g_blocked:
                                 blocked = True
                                 reason = g_reason
                             else:
@@ -411,7 +429,9 @@ def run():
                                 blocked = True
                                 reason = f"max_concurrent_positions={max_positions} reached"
                         if blocked:
-                            if g_blocked and g_block_onset:
+                            if mkt_blocked and mkt_onset:
+                                _record_global_block(venue, asset, regime, "broad_market_downtrend")
+                            elif g_blocked and g_block_onset:
                                 _record_global_block(venue, asset, regime, reason)
                             elif "max_consecutive_losses" in reason:
                                 today = time.strftime("%Y-%m-%d", time.gmtime())
@@ -609,6 +629,41 @@ def _gate_observations_warm(venue: str, universe_rows) -> bool:
     return have >= need
 
 
+def _broad_market_downtrend() -> tuple[bool, str]:
+    """(blocked, reason) — a global red day (BTC/ETH/SOL all down) drags every
+    altcoin down, so dip-buying loses. Blocks ALL new entries while the average
+    24h change of the configured majors is below market_filter_max_downtrend_pct.
+    Fails closed on API errors. Cached (market_filter_cache_min)."""
+    if not get_setting_bool("market_filter_enabled", False):
+        return False, ""
+    cache_min = get_setting_int("market_filter_cache_min", 5) * 60
+    if time.time() - _market_filter_cache["ts"] < cache_min:
+        return _market_filter_cache["res"]
+    assets = [a.strip().upper() for a in
+              (get_setting("market_filter_assets") or "BTC,ETH,SOL,BNB").split(",")
+              if a.strip()]
+    changes = []
+    for a in assets:
+        try:
+            import requests
+            r = requests.get("https://api.binance.com/api/v3/ticker/24hr",
+                             params={"symbol": f"{a}USDT"}, timeout=5)
+            changes.append(float(r.json().get("priceChangePercent", 0.0)))
+        except Exception:
+            changes = []
+            break  # API failure → fail closed, don't trade blind
+    if not changes:
+        res = (True, "broad market data unavailable")
+    else:
+        avg = sum(changes) / len(changes)
+        thr = get_setting_float("market_filter_max_downtrend_pct", -1.0)
+        res = ((True, f"broad market {avg:+.2f}% (< {thr:+.2f}%)")
+               if avg < thr else (False, ""))
+    _market_filter_cache["ts"] = time.time()
+    _market_filter_cache["res"] = res
+    return res
+
+
 def _cached_gate_equity(venue: str) -> float:
     """Cached venue equity from the DB (bot.py writes it each cycle) — zero API."""
     st = get_venue_equity(venue)
@@ -666,11 +721,14 @@ def _record_gate_skip(venue: str, asset: str, regime: str, obi, price):
 
 
 def _record_global_block(venue: str, asset: str, regime: str, reason: str):
-    """Record a global-daily-loss entry skip in `signals` (Constitution VIII) —
-    same mechanism as _record_gate_skip. Runs before the per-asset price
-    snapshot, so it fetches the price itself (signals.price is NOT NULL)."""
+    """Record a global (daily-loss / broad-market) entry skip in `signals`
+    (Constitution VIII) — same mechanism as _record_gate_skip. Runs before the
+    per-asset price snapshot, so it fetches the price itself (signals.price is
+    NOT NULL); 0.0 guards the rare case where the snapshot fails."""
     log = _spot_log if venue == "binance" else _futures_log
     price = _get_live_price_binance(asset)
+    if price is None:
+        price = 0.0
     log(asset, venue, regime, None, price, 0, 0, 0, None, 0, None, {},
         "skipped", reason)
 
