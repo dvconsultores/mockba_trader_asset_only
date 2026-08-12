@@ -310,10 +310,13 @@ def check_venue_observed(venue, observations, equity=None):
 
 def _warn_is_strong(reasons, settings):
     """A WARN escalates to suspension only for a BROAD problem: a liquidity
-    fail_share at/above market_gate_warn_liquidity_share, or a trending /
-    unknown regime mix (those verdicts only fire at high shares already). A
-    lone bad asset (small liquidity_partial) is mild — it must not block the
-    whole venue on a small universe (005 follow-up: gate was too strict)."""
+    fail_share at/above market_gate_warn_liquidity_share. Regime WARNs
+    (trending/unknown) escalate only when market_gate_regime_escalates is true
+    (default false — the broad-market filter and the per-asset regime filters
+    already own macro trends; feature 008 makes the gate liquidity-only by
+    default). A lone bad asset (small liquidity_partial) is mild — it must not
+    block the whole venue on a small universe (005 follow-up: gate was too
+    strict)."""
     if not reasons:
         return False
     share_thr = settings.get("market_gate_warn_liquidity_share", 0.25)
@@ -324,7 +327,8 @@ def _warn_is_strong(reasons, settings):
             except ValueError:
                 return False
         if r.startswith("regime_trending=") or r.startswith("regime_unknown="):
-            return True
+            if settings.get("market_gate_regime_escalates", False):
+                return True
     return False
 
 
@@ -360,8 +364,9 @@ def update_gate_state(state, verdict, settings, reasons=None):
             transition = {"type": "suspend"}
     elif verdict == "WARN":
         # Strong (broad) WARN → counts toward suspension like FAIL. Mild WARN
-        # (a lone bad asset) → informational only, resets streaks so a blip
-        # never trips the gate (see _warn_is_strong).
+        # (a lone bad asset, or a regime WARN when market_gate_regime_escalates
+        # is false — feature 008) → informational only, resets streaks so a
+        # blip never trips the gate (see _warn_is_strong).
         if _warn_is_strong(reasons, settings):
             new_state["bad_streak"] += 1
             new_state["good_streak"] = 0

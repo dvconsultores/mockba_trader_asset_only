@@ -4,6 +4,15 @@ Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
 ## 2026-08-12
 
+- `fix:` Market gate is now liquidity-only by default (feature 008). Regime
+    WARNs (`regime_trending`/`regime_unknown`) are informational — they no longer
+    count toward suspension nor fire the ⚠️ Telegram warning; the broad-market
+    filter and per-asset regime filters already own macro trends (08-11's 3,709
+    gate skips were regime-WARN over-blocking). New setting
+    `market_gate_regime_escalates` (default false) re-enables regime suspension;
+    liquidity FAIL / strong `liquidity_partial` still suspend. `_gate_apply`
+    notifies ⚠️/✅ only for escalating WARNs.
+
 - `ux:` Dashboard settings are now read-only (feature 007). The Settings page
     displays values but no longer edits them (operator manages settings via local
     DB + `push-db.sh`); `POST /api/miniapp` rejects any non-capital settings key

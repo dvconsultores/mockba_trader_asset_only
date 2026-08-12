@@ -446,12 +446,25 @@ def test_debounce_transitions():
         assert t is None and not state2["suspended"]
         assert state2["bad_streak"] == 0 and state2["good_streak"] == 0
 
-    # regime WARNs (trending/unknown) are always strong
+    # regime WARNs (trending/unknown) are mild by default (feature 008 —
+    # liquidity-only suspension); they escalate only when
+    # market_gate_regime_escalates is true
+    mild_settings = dict(settings, market_gate_regime_escalates=False)
     state3 = {"suspended": False, "bad_streak": 0, "good_streak": 0}
-    state3, t = update_gate_state(state3, "WARN", settings, ["regime_trending=1.00"])
-    assert t is None and state3["bad_streak"] == 1
-    state3, t = update_gate_state(state3, "WARN", settings, ["regime_unknown=1.00"])
-    assert t == {"type": "suspend"} and state3["suspended"]
+    for _ in range(5):
+        state3, t = update_gate_state(state3, "WARN", mild_settings, ["regime_trending=1.00"])
+        assert t is None and not state3["suspended"]
+        assert state3["bad_streak"] == 0 and state3["good_streak"] == 0
+    state3, t = update_gate_state(state3, "WARN", mild_settings, ["regime_unknown=1.00"])
+    assert t is None and not state3["suspended"]
+
+    # re-enable path: market_gate_regime_escalates=True restores escalation
+    esc_settings = dict(settings, market_gate_regime_escalates=True)
+    state4 = {"suspended": False, "bad_streak": 0, "good_streak": 0}
+    state4, t = update_gate_state(state4, "WARN", esc_settings, ["regime_trending=1.00"])
+    assert t is None and state4["bad_streak"] == 1
+    state4, t = update_gate_state(state4, "WARN", esc_settings, ["regime_unknown=1.00"])
+    assert t == {"type": "suspend"} and state4["suspended"]
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -581,6 +594,41 @@ def test_warn_lifecycle_notifications(db):
         assert botmod._gate_state["binance"].get("warn_active") is False
 
 
+def test_warn_notifications_strong_only(db):
+    """AC11 — ⚠️/✅ notifications fire only for strong/escalating WARNs; mild
+    regime WARNs (feature 008) are log-only."""
+    import bot as botmod
+    botmod._gate_state.clear()
+    botmod._last_gate_eval.clear()
+    mild = {"venue": "binance", "verdict": "WARN", "reasons": ["regime_trending=0.80"]}
+    ok = {"venue": "binance", "verdict": "PASS", "reasons": []}
+
+    with mock.patch("trading_bot.send_bot_message.send_message") as sm:
+        botmod._gate_apply("binance", mild)      # mild regime WARN → no notification
+        assert sm.call_count == 0
+        botmod._gate_apply("binance", mild)      # still mild → none
+        assert sm.call_count == 0
+        botmod._gate_apply("binance", ok)        # PASS → no cleared notification
+        assert sm.call_count == 0
+        assert botmod._gate_state["binance"].get("warn_active") is not True
+
+    # re-enable path: regime escalation on → ⚠️ fires, ✅ on clear
+    db.upsert_setting("market_gate_regime_escalates", "true")
+    db.upsert_setting("market_gate_bad_streak", "10")  # lifecycle only, no suspend
+    botmod._gate_state.clear()
+    botmod._last_gate_eval.clear()
+    with mock.patch("trading_bot.send_bot_message.send_message") as sm:
+        botmod._gate_apply("binance", mild)      # escalating WARN → ⚠️ once
+        assert sm.call_count == 1
+        assert "WARNING" in sm.call_args[0][0]
+        assert botmod._gate_state["binance"].get("warn_active") is True
+        botmod._gate_apply("binance", mild)      # still WARN → no new message
+        assert sm.call_count == 1
+        botmod._gate_apply("binance", ok)        # PASS → ✅ cleared once
+        assert sm.call_count == 2
+        assert "cleared" in sm.call_args[0][0]
+
+
 def test_global_daily_loss_pct(db):
     """Global daily loss sums PnL across ALL venues and the percentage limit
     now actually blocks (was a no-op pass). Resets naturally per UTC day."""
@@ -665,6 +713,7 @@ def test_settings_validation(db):
         "market_gate_enabled", "market_gate_interval_min", "market_gate_bad_streak",
         "market_gate_good_streak", "market_gate_fail_share", "market_gate_trend_share",
         "market_gate_unknown_share", "market_gate_warn_liquidity_share",
+        "market_gate_regime_escalates",
     ])
     for k in keys:
         assert BY_KEY[k].group == "gate"
@@ -678,6 +727,8 @@ def test_settings_validation(db):
     assert validate("market_gate_trend_share", 0.6).level == "ok"
     assert validate("market_gate_unknown_share", 0.5).level == "ok"
     assert validate("market_gate_warn_liquidity_share", 0.25).level == "ok"
+    assert validate("market_gate_regime_escalates", True).level == "ok"
+    assert validate("market_gate_regime_escalates", False).level == "ok"
 
     # hard-range violations rejected with clear messages
     assert validate("market_gate_interval_min", 0).level == "error"
@@ -698,7 +749,7 @@ def test_settings_validation(db):
         "market_gate_enabled": "false", "market_gate_interval_min": "5",
         "market_gate_bad_streak": "2", "market_gate_good_streak": "2",
         "market_gate_fail_share": "0.5", "market_gate_trend_share": "0.6",
-        "market_gate_unknown_share": "0.5",
+        "market_gate_unknown_share": "0.5", "market_gate_regime_escalates": "false",
     }.items():
         db.upsert_setting(k, v)
     results = validate_all()

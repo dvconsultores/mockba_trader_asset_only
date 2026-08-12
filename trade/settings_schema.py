@@ -212,6 +212,8 @@ ALL: list[SettingSpec] = [
                 "Universe share UNKNOWN that downgrades PASS to WARN"),
     SettingSpec("market_gate_warn_liquidity_share", float, "gate", None, 0.0, 1.0, 0.1, 0.5,
                 "WARN liquidity_partial suspends only when fail_share is at/above this (a lone bad asset is mild)"),
+    SettingSpec("market_gate_regime_escalates", bool, "gate", None, None, None, None, None,
+                "Regime-trending/unknown WARNs escalate to suspension when true (default false — liquidity-only suspension; the broad-market filter owns macro trends)"),
     SettingSpec("market_filter_enabled", bool, "gate", None, None, None, None, None,
                 "Broad-market gate: block entries while the majors' average 24h change is a downtrend"),
     SettingSpec("market_filter_assets", str, "gate", None, None, None, None, None,

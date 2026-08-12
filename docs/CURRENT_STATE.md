@@ -1,7 +1,28 @@
 # MockbaV4 — Current State Analysis
 
 > Generated: 2026-07-26 | Phase 1, Section 1.1
-> Updated: 2026-08-12 | Features 006 & 007
+> Updated: 2026-08-12 | Features 006, 007 & 008
+
+---
+
+## 0. Market Gate: Liquidity-Only Suspension (feature 008, 2026-08-12)
+
+The automatic market gate (feature 005) now suspends on **liquidity only** by
+default. Regime-based WARNs (`regime_trending`, `regime_unknown`) remain
+visible as informational PASS→WARN downgrades in the `[GATE]` log but no
+longer count toward suspension and no longer fire the ⚠️ Telegram warning —
+the broad-market filter (BTC/ETH/SOL/BNB) and the per-asset `regime` filters
+already own macro-trend protection, and the regime WARN over-blocked on small
+universes (08-11: 3,709 gate skips).
+
+- `trade/market_check.py` `_warn_is_strong` — regime reasons escalate only
+  when `market_gate_regime_escalates` is `true`; `liquidity_partial ≥
+  market_gate_warn_liquidity_share` and `liquidity_fail_share` (FAIL) still
+  escalate (aggregate liquidity collapse is the gate's unique value).
+- `bot.py` `_gate_apply` — the ⚠️/✅ WARN notification lifecycle fires only for
+  strong/escalating WARNs (reuses `_warn_is_strong` on the report reasons).
+- New setting `market_gate_regime_escalates` (bool, group `gate`, default
+  `false`) lets the operator re-enable regime suspension from the DB.
 
 ---
 

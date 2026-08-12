@@ -31,7 +31,7 @@ from trade.universe import run_scans_if_due, is_universe_stale, force_rescan, ad
 from trading_bot.executor import BinanceSpot, OrderlyFutures
 from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle, _log as _spot_log
 from trading_bot.futures_scalper import manage_open_positions as futures_manage, scalp_cycle as futures_cycle, _log as _futures_log
-from trade.market_check import check_venue_observed, update_gate_state
+from trade.market_check import check_venue_observed, update_gate_state, _warn_is_strong
 
 
 # Consecutive cycles a venue's universe has been majority-blocked by the
@@ -683,6 +683,7 @@ def _gate_apply(venue: str, report: dict) -> dict:
         "market_gate_bad_streak": get_setting_int("market_gate_bad_streak", 2),
         "market_gate_good_streak": get_setting_int("market_gate_good_streak", 2),
         "market_gate_warn_liquidity_share": get_setting_float("market_gate_warn_liquidity_share", 0.25),
+        "market_gate_regime_escalates": get_setting_bool("market_gate_regime_escalates", False),
     }
     state = _gate_state.get(venue, {"suspended": False, "bad_streak": 0, "good_streak": 0})
     new_state, transition = update_gate_state(state, report["verdict"], settings,
@@ -698,9 +699,11 @@ def _gate_apply(venue: str, report: dict) -> dict:
         logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=resume")
     else:
         logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=hold")
-    # WARN lifecycle — one notification when a WARN starts, one when it clears.
-    # FAIL silently clears the flag (its own suspend/hold message covers it).
-    if report["verdict"] == "WARN" and not state.get("warn_active"):
+    # WARN lifecycle — one notification when an ESCALATING WARN starts, one
+    # when it clears. Mild regime WARNs (feature 008) are log-only. FAIL
+    # silently clears the flag (its own suspend/hold message covers it).
+    strong_warn = report["verdict"] == "WARN" and _warn_is_strong(report.get("reasons"), settings)
+    if strong_warn and not state.get("warn_active"):
         new_state["warn_active"] = True
         send_message(f"⚠️ [GATE] {label} WARNING — {reason}")
         logger.info(f"[GATE] venue={venue} verdict=WARN reason={reason} action=warn_start")
