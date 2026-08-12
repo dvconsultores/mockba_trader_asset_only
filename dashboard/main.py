@@ -547,6 +547,11 @@ async def api_miniapp_get(request: Request):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Capital keys CapitalManager writes through this same endpoint (there is no
+# separate /api/capital POST). Every other key is a settings key → read-only.
+CAPITAL_SETTING_KEYS = {"capital_cex_usdt", "capital_dex_usdc", "cex_slot_pct", "dex_slot_pct"}
+
+
 # ── Mini App: Update a setting ───────────────────────────────────
 @app.post("/api/miniapp")
 async def api_miniapp_update(request: Request):
@@ -569,6 +574,13 @@ async def api_miniapp_update(request: Request):
         if not valid:
             raise HTTPException(status_code=403, detail="Invalid auth")
         return {"ok": True}
+
+    # Settings are read-only from the dashboard — the operator manages them
+    # locally via the DB (push-db.sh) or the Telegram bot. Only the declared
+    # capital / slot keys remain editable here (CapitalManager writes them).
+    if key not in CAPITAL_SETTING_KEYS:
+        raise HTTPException(status_code=403,
+                            detail="settings are read-only — manage via local DB push")
 
     init_data = request.headers.get("X-Telegram-InitData", "")
     telegram_ok = False

@@ -1,7 +1,27 @@
 # MockbaV4 — Current State Analysis
 
 > Generated: 2026-07-26 | Phase 1, Section 1.1
-> Updated: 2026-08-12 | Feature 006 — Spot Exit Hardening
+> Updated: 2026-08-12 | Features 006 & 007
+
+---
+
+## 0. Dashboard Settings Read-Only (feature 007, 2026-08-12)
+
+The dashboard Settings page is **read-only**: it still displays every setting
+(via the unchanged `GET /api/miniapp`) but can no longer edit them. The
+operator manages settings locally (AI assistant + `push-db.sh`), so the
+editing path was locked to prevent config drift (e.g. `cex_slot_pct` had
+drifted to 90 via UI/Telegram edits).
+
+- `dashboard-ui/src/MiniSettings.tsx` — settings always read-only (`editable` is
+  permanently `false`; the Telegram/browser edit-enablement was removed).
+- `dashboard/main.py` `POST /api/miniapp` — any key not in
+  `CAPITAL_SETTING_KEYS` (`capital_cex_usdt`, `capital_dex_usdc`, `cex_slot_pct`,
+  `dex_slot_pct`) returns 403 "settings are read-only — manage via local DB push"
+  with no DB write. The `__ping__` auth probe and the capital-key write path are
+  kept (the Capital page still manages declared capital/slots).
+- `telegram.py` setting commands remain the operator's auth-gated remote
+  control (including toggling `auto_trade_*` on/off).
 
 ---
 

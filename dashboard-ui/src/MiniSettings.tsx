@@ -4,9 +4,6 @@ import { Settings2, Save, Check, AlertCircle, Star, ChevronDown, X } from 'lucid
 interface SettingsData { [key: string]: string }
 
 const TG = (window as any).TelegramWebApp ?? (window as any).Telegram?.WebApp
-const isTelegram = !!TG?.initData
-let browserSessionChecked = false
-let browserSessionValid = false
 
 // ── Preset options (mirrors telegram bot grid setters) ──────────
 interface PresetDef {
@@ -347,7 +344,7 @@ function MiniSettingsComponent() {
   const [saving, setSaving] = useState<Set<string>>(new Set())
   const [errors, setErrors] = useState<Set<string>>(new Set())
   const [loaded, setLoaded] = useState(false)
-  const [editable, setEditable] = useState(isTelegram)
+  const editable = false  // settings are read-only — managed via local DB
   const timers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   // Per-asset capital is managed via asset_configs table (Amendment 004).
   // Use a fixed default for preset recommendations (no longer derived from legacy slot_pct).
@@ -362,14 +359,6 @@ function MiniSettingsComponent() {
       })
       .catch(() => setLoaded(true))
     if (TG) { TG.ready(); TG.expand() }
-  }, [])
-
-  useEffect(() => {
-    if (isTelegram || browserSessionChecked) return
-    browserSessionChecked = true
-    fetch('/api/miniapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key: '__ping__', value: '' }) })
-      .then(r => { browserSessionValid = r.ok; setEditable(r.ok) })
-      .catch(() => setEditable(false))
   }, [])
 
   const saveSetting = useCallback(async (key: string, value: string) => {
@@ -450,11 +439,11 @@ function MiniSettingsComponent() {
         <div>
           <h1 className="text-base sm:text-lg font-bold text-[#D0CFCC]">⚙️ Settings</h1>
           <p className="text-xs text-[#7a7090] mt-0.5">
-            {editable ? 'Tap a value to change it' : 'Read-only outside Telegram'}
+            Read-only — settings are managed via the local database
           </p>
         </div>
-        <span className={`text-[10px] px-2.5 py-1 rounded-full border ${editable ? 'text-[#D0CFCC] border-[#D0CFCC]/20 bg-[#D0CFCC]/10' : 'text-[#4a4060] border-[#2a2240] bg-[#1a1528]'}`}>
-          {editable ? '⚡ auto-save' : 'read-only'}
+        <span className="text-[10px] px-2.5 py-1 rounded-full border text-[#4a4060] border-[#2a2240] bg-[#1a1528]">
+          read-only
         </span>
       </div>
 
@@ -512,7 +501,7 @@ function MiniSettingsComponent() {
 
 
       <div className="text-center text-[10px] text-[#4a4060] pb-6">
-        {editable ? 'Changes save automatically on selection or after typing' : 'Open via Telegram bot to edit'}
+        Settings are read-only — managed via local DB (push-db.sh)
       </div>
     </div>
   )

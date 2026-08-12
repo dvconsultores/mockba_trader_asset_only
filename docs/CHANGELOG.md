@@ -4,6 +4,15 @@ Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
 ## 2026-08-12
 
+- `ux:` Dashboard settings are now read-only (feature 007). The Settings page
+    displays values but no longer edits them (operator manages settings via local
+    DB + `push-db.sh`); `POST /api/miniapp` rejects any non-capital settings key
+    with 403 "settings are read-only — manage via local DB push". The declared
+    capital / slot keys (`capital_cex_usdt`, `capital_dex_usdc`, `cex_slot_pct`,
+    `dex_slot_pct`) stay editable so the Capital page still works; `__ping__`
+    probe, `GET /api/miniapp` and `telegram.py` (operator remote control) unchanged.
+    New `tests/test_dashboard_settings_readonly.py`.
+
 - `feat:` Spot exit hardening — universe max-ATR cap + crash-guard floor (feature 006).
   - New `universe_max_atr_pct` (default 1.5) — spot-only, strictly-additive cap in
     `trade/universe.py` `scan_venue` (post-replay, pre-rank, pinned to `atr_pct_median`);
