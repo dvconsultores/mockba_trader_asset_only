@@ -73,12 +73,6 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
     if spec.hard_max is not None and isinstance(value, (int, float)) and value > spec.hard_max:
         return Verdict("error", f"{key} = {value} above maximum {spec.hard_max}", spec.hard_max)
 
-    # ── Soft range ─────────────────────────────────────────────────────────
-    if spec.soft_min is not None and isinstance(value, (int, float)) and value < spec.soft_min:
-        return Verdict("warn", f"{key} = {value} below recommended {spec.soft_min}", spec.soft_min)
-    if spec.soft_max is not None and isinstance(value, (int, float)) and value > spec.soft_max:
-        return Verdict("warn", f"{key} = {value} above recommended {spec.soft_max}", spec.soft_max)
-
     # ── Cross-setting checks ───────────────────────────────────────────────
     # Only run if ctx has the needed data and the key participates in cross-checks
 
@@ -100,6 +94,18 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
         if isinstance(value, (int, float)) and value <= slk:
             sug = round(slk * 1.5, 2)
             return Verdict("warn", f"tp_k ({value}) <= sl_k ({slk}) — TP may not clear SL during volatile periods", sug)
+
+    # Crash-guard floor must not sit strictly inside the spot SL floor — an
+    # inside floor would pre-empt and cancel the working spot stop (Constitution
+    # III). Equality is allowed: the guard and the static floor trigger at the
+    # same level, so the guard stays a pure gap-catcher (AC10, clarified Q4).
+    if key == "max_loss_per_position_pct":
+        sl_spot = get_setting_float("sl_min_pct_spot", get_setting_float("sl_min_pct", 0.5))
+        if isinstance(value, (int, float)) and value < sl_spot:
+            sug = round(sl_spot + 0.1, 2)
+            return Verdict("error",
+                f"max_loss_per_position_pct ({value}) is strictly inside the spot SL floor ({sl_spot}) — "
+                f"the guard would pre-empt and cancel the spot stop", sug)
 
     # Spot-only SL overrides must stay below the TP (mirror the shared checks)
     if key == "sl_min_pct_spot":
@@ -209,6 +215,25 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
             sug = round(100 / slots, 2)
             return Verdict("error", f"max_slots_dex ({slots}) × dex_slot_pct ({value}%) = {slots*value:.0f}% of equity — exceeds 100%", sug)
 
+    # universe_max_atr_pct so low it would empty the stored spot universe
+    # (Constitution VIII guardrail — mirrors the depth-multiple empty-universe warn).
+    if key == "universe_max_atr_pct":
+        if isinstance(value, (int, float)):
+            try:
+                from db.db_ops import get_db_connection
+                with get_db_connection() as conn:
+                    row = conn.execute(
+                        "SELECT MIN(atr_pct_median) AS mn FROM asset_universe "
+                        "WHERE venue = 'binance' AND atr_pct_median IS NOT NULL"
+                    ).fetchone()
+                mn = float(row["mn"]) if row and row["mn"] is not None else None
+                if mn is not None and value < mn:
+                    return Verdict("warn",
+                        f"universe_max_atr_pct ({value}) is below the lowest stored binance ATR ({mn:.2f}) — universe will be empty",
+                        round(mn, 2))
+            except Exception:
+                pass
+
     # universe_size vs stored universe (warn — universe will be short)
     if key == "universe_size":
         if isinstance(value, int):
@@ -269,6 +294,14 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
                         return Verdict("warn", f"{key}=true but {base_key} baseline is unvalidated — no evidence this threshold is correct", None)
             except Exception:
                 pass
+
+    # ── Soft range ─────────────────────────────────────────────────────────
+    # Runs after the cross-checks so a hard error is never masked by a soft
+    # warning (errors take precedence over recommendations).
+    if spec.soft_min is not None and isinstance(value, (int, float)) and value < spec.soft_min:
+        return Verdict("warn", f"{key} = {value} below recommended {spec.soft_min}", spec.soft_min)
+    if spec.soft_max is not None and isinstance(value, (int, float)) and value > spec.soft_max:
+        return Verdict("warn", f"{key} = {value} above recommended {spec.soft_max}", spec.soft_max)
 
     return Verdict("ok", "")
 

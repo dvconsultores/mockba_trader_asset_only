@@ -1,7 +1,60 @@
 # MockbaV4 — Current State Analysis
 
 > Generated: 2026-07-26 | Phase 1, Section 1.1
-> Updated: 2026-08-09 | Feature 005 — Market Conditions Check & Auto-Gate
+> Updated: 2026-08-12 | Feature 006 — Spot Exit Hardening
+
+---
+
+## 0. Spot Exit Hardening — gap/crash protection (feature 006, 2026-08-12)
+
+Two setting-driven protections hard-cap the worst-case loss of a spot position
+when price gaps or crashes through the stop (motivated by a real −44.35% spot
+slippage loss on PUMP, 2026-08-07). Normal TP/SL/time-stop behavior is
+untouched; these additions only keep crash-prone names out of the universe and
+add an emergency exit floor.
+
+### Volatility cap — `universe_max_atr_pct` (spot only)
+
+- New setting `universe_max_atr_pct` (float, default **1.5**, hard 0.1–20,
+  soft 0.5–5, group `universe`; defaults in `get_setting_float` fallbacks — no
+  migration).
+- Applied in `trade/universe.py` `scan_venue` **after the Stage-4 replay and
+  before `select_ranked`**, under a `venue == "binance"` branch (the Orderly/
+  futures universe is untouched — DEX uses exchange-side bracket stops).
+- The ATR measure is the replay **`atr_pct_median`** (the Stage-1 24hr ticker
+  exposes only `quoteVolume`, so no usable high–low range exists pre-replay).
+- **Strictly additive**: only genuinely high-ATR names are dropped (a candidate
+  with a missing/None ATR is left to the existing `select_ranked` exclusion);
+  the Stage-2 volume/spread/rank/fundability filters are untouched.
+- Calibration (live DB 2026-08-12): with cap 1.5 only BICO-class names
+  (atr_pct_median ≈ 1.86) are removed; MMT (0.87), PUMP (0.60), GIGGLE, RE, CRV,
+  ZAMA remain (Constitution VIII).
+- Observability: `scan_venue` summary gains `dropped_by_max_atr` (binance only),
+  surfaced in the `_scan_summary_message` Telegram notification.
+
+### Catastrophic-move guard — `max_loss_per_position_pct`
+
+- New setting `max_loss_per_position_pct` (float, default **3.0**, hard 0.1–20,
+  soft 0.5–5, group `exit`, `depends_on=("sl_min_pct_spot",)`).
+- In `trading_bot/spot_scalper.py` `manage_open_positions`, the crash guard is
+  the **first, fill-aware** per-position check: when
+  `live < entry × (1 − max_loss_per_position_pct/100)` the bot verifies the
+  TP/SL fill status first — an already-filled order records its real fill with
+  its real reason (`tp`/`sl`) and is never market-sold — otherwise it cancels
+  the open TP/SL orders and `market_sell`s, closing via `_close` with
+  `exit_reason='crash_guard'` and the real fill price/fee (Constitution V).
+- The live price is now fetched for every managed asset (the floor applies to
+  all positions, including `sl_price=None` ones). `live is None` → no action,
+  position kept (Constitution IV).
+- Re-entry cooldown: a `crash_guard` exit stamps `_last_sl` exactly like an
+  `sl` exit, blocking the `(asset, side)` for `cooldown_sec × SL_COOLDOWN_MULT`
+  (~10 min); longer-horizon exclusion comes from `universe_max_atr_pct` on the
+  next scan.
+- Validation: `max_loss_per_position_pct` strictly inside `sl_min_pct_spot`
+  (`<`) is a **hard error** (the guard would pre-empt and cancel the spot stop,
+  Constitution III); equality (`==`) is allowed. An `universe_max_atr_pct`
+  below the lowest stored binance ATR warns "universe will be empty".
+- Dashboard: `REASON_LABELS["crash_guard"] = "Crash guard"` (`dashboard/main.py`).
 
 ---
 

@@ -2,6 +2,24 @@
 
 Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
+## 2026-08-12
+
+- `feat:` Spot exit hardening — universe max-ATR cap + crash-guard floor (feature 006).
+  - New `universe_max_atr_pct` (default 1.5) — spot-only, strictly-additive cap in
+    `trade/universe.py` `scan_venue` (post-replay, pre-rank, pinned to `atr_pct_median`);
+    removes only BICO-class names (≈1.86) from the stored binance universe; the scan
+    summary gains `dropped_by_max_atr`, surfaced in the scan notification.
+  - New `max_loss_per_position_pct` (default 3.0) — catastrophic-move guard in
+    `trading_bot/spot_scalper.py` `manage_open_positions` (guard-first, fill-aware): below
+    `entry × (1 − pct/100)` it cancels TP/SL and market-sells, closing with
+    `exit_reason='crash_guard'` and the real fill; `None` price → no action; stamps the SL
+    re-entry cooldown.
+  - Validator: hard error when `max_loss_per_position_pct < sl_min_pct_spot` (equality
+    allowed); empty-universe warn for the ATR cap. Cross-checks now run before soft-range
+    warnings so hard errors are never masked.
+  - Dashboard `REASON_LABELS["crash_guard"] = "Crash guard"`.
+  - New `tests/test_spot_exit_hardening.py` (15 tests, AC1–AC12).
+
 ## 2026-08-09
 
 - `chore:` DB + code cleanup (unused schema and dead code removed).

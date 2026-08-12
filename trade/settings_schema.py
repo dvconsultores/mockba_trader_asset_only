@@ -65,6 +65,8 @@ ALL: list[SettingSpec] = [
                 "Time stop: close spot position after N minutes"),
     SettingSpec("max_hold_minutes_futures", int, "exit", "min", 5, 1440, 60, 720,
                 "Time stop: close futures position after N minutes"),
+    SettingSpec("max_loss_per_position_pct", float, "exit", "%", 0.1, 20.0, 0.5, 5.0,
+                "Crash-guard floor — market-sell a spot position when live price falls below entry × (1 − pct/100)", ("sl_min_pct_spot",)),
 
     # ── Risk ───────────────────────────────────────────────────────────────
     SettingSpec("daily_loss_limit", float, "risk", "$", 0, None, None, None,
@@ -186,6 +188,8 @@ ALL: list[SettingSpec] = [
                 "Skip entries when live spread exceeds scan-time spread by this multiple"),
     SettingSpec("universe_rotate_inactive_hours", float, "universe", "hours", 0, 168, 6, 24,
                 "Rotate universe members with no actionable signal within N hours out of the next scan (0=off)"),
+    SettingSpec("universe_max_atr_pct", float, "universe", "%", 0.1, 20.0, 0.5, 5.0,
+                "Max replay median ATR% for a spot universe candidate — crash-prone names above the cap never enter the universe"),
 
     # ── Market gate (feature 005) ─────────────────────────────────────────
     # Opt-in venue-level gate: suspends NEW entries only after bad_streak

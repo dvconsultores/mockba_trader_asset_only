@@ -669,6 +669,19 @@ def scan_venue(venue: str, equity: float | None = None,
         except Exception:
             metrics[c["asset"]] = None
 
+    # ── Spot-only max-ATR cap (006) — crash-prone names never stored ──
+    # Only genuinely high-ATR names are dropped; candidates whose replay
+    # failed (m is None) or produced no ATR stay for the existing
+    # select_ranked exclusion — the cap never loosens a Stage-2 filter.
+    if venue == "binance":
+        max_atr = get_setting_float("universe_max_atr_pct", 1.5)
+        _before = len(checked)
+        checked = [c for c in checked
+                   if (m := metrics.get(c["asset"])) is None
+                   or m.get("atr_pct_median") is None
+                   or m["atr_pct_median"] <= max_atr]
+        summary["dropped_by_max_atr"] = _before - len(checked)
+
     # ── Stage 5 — rank & store ──────────────────────────────────────────
     min_signals = get_setting_int("universe_min_signals", 20)
     min_rec = min_recovery_rate(venue)
@@ -781,7 +794,10 @@ def run_scans_if_due(venues=("binance", "orderly"),
 
 def _scan_summary_message(res: dict) -> str:
     if res.get("ok"):
-        return (f"🛰️ Universe scan {res['venue']}: {res.get('stored_count', 0)} assets "
-                f"stored (candidates={res.get('candidates', 0)}, "
-                f"after_depth={res.get('survivors_after_depth', 0)})")
+        msg = (f"🛰️ Universe scan {res['venue']}: {res.get('stored_count', 0)} assets "
+               f"stored (candidates={res.get('candidates', 0)}, "
+               f"after_depth={res.get('survivors_after_depth', 0)})")
+        if res.get("dropped_by_max_atr"):
+            msg += f" — dropped_by_max_atr={res['dropped_by_max_atr']}"
+        return msg
     return f"⚠️ Universe scan {res['venue']} failed: {res.get('reason', 'unknown')}"

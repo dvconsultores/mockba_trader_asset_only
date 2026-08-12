@@ -76,14 +76,57 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
     positions=load_all_positions(asset=asset, venue="binance")
     if not positions: return
     sym=f"{asset}USDT"; mh=get_setting_int("max_hold_minutes_spot",120)*60; now=time.time()
-    # Live price for price-based SL check — at/below sl_price: cancel TP limit + market sell
-    live = exchange.get_price(asset) if any(pd.get("sl_price") for pd in positions) else None
+    # Live price for the price-based SL check AND the crash-guard floor (006).
+    # Fetched unconditionally — the floor applies to all positions, including
+    # ones stored with sl_price=None. At/below sl_price: cancel TP limit + sell.
+    live = exchange.get_price(asset)
+    mlp = get_setting_float("max_loss_per_position_pct", 3.0)
     for pd in positions:
         pid=pd["id"]; tpid=pd.get("tp_order_id"); slid=pd.get("sl_order_id")
         ep=float(pd["entry_price"]); sp=float(pd["signal_price"]); q=float(pd["qty"])
         op=float(pd["opened_at"]); si=pd.get("signal_id")
         fee_ep = float(pd.get("fee_entry") or 0.0)
         slp = float(pd["sl_price"]) if pd.get("sl_price") else 0.0
+        # ── Crash guard (006) — gap/crash floor, FIRST check, fill-aware ──
+        # Hard floor: live < entry × (1 − max_loss_per_position_pct/100). Fires
+        # regardless of the configured SL distance; TP/SL fill status is verified
+        # first so an already-filled order records its real reason and is never
+        # market-sold. None price → no action (Constitution IV).
+        if live is not None and live < ep * (1 - mlp / 100):
+            if tpid and exchange.get_order_status(sym, tpid) == "FILLED":
+                xp, fee_xp = _real_fill(exchange, sym, tpid, float(pd["tp_price"]))
+                _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "tp", fee_ep, fee_xp)
+                continue
+            if slid and exchange.get_order_status(sym, slid) == "FILLED":
+                _close(asset, "binance", "long", ep, float(pd.get("sl_price", ep)), sp, q, pid, si,
+                       "sl", fee_ep, 0.0)
+                continue
+            tp_cancel_ok = (not tpid) or exchange.cancel_order(sym, tpid)
+            if slid:
+                exchange.cancel_order(sym, slid)
+            if not tp_cancel_ok:
+                logger.error(f"[EXIT] {asset} crash_guard: TP cancel failed — keeping position to retry")
+                continue
+            sell = exchange.market_sell(asset, q)
+            if sell is None:
+                bal = exchange.get_asset_balance(asset)
+                if bal is not None and bal < q:
+                    if tpid:
+                        fill_info = exchange.get_order_fills(sym, tpid)
+                        if fill_info:
+                            xp, fee_xp = fill_info
+                            logger.warning(f"[EXIT] {asset} crash_guard: no balance ({bal}) — closing as TP via real fill {xp}")
+                            _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "tp", fee_ep, fee_xp)
+                            continue
+                    xp = live if live else ep
+                    logger.warning(f"[EXIT] {asset} crash_guard: no balance ({bal}) — closing orphan position at {xp}")
+                    _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "orphan", fee_ep, 0.0)
+                else:
+                    logger.error(f"[EXIT] {asset} crash_guard: market sell failed — keeping position to retry")
+                continue
+            xp = sell.fill_price if sell.fill_price > 0 else ep
+            _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "crash_guard", fee_ep, sell.fee_amount)
+            continue
         # Exchange-side fills first: if TP/SL already filled the coins are gone, so
         # close the position instead of attempting a phantom market sell below.
         if tpid and exchange.get_order_status(sym,tpid)=="FILLED":
@@ -162,7 +205,7 @@ def _real_fill(exchange, sym, order_id, default_price):
     return float(default_price), 0.0
 
 def _close(a,v,s,ep,xp,sp,q,pid,si,rsn,fee_ep=0.0,fee_xp=0.0):
-    if rsn == "sl":
+    if rsn in ("sl", "crash_guard"):
         _last_sl[f"{v}:{a}:{s}"]=time.time()
     if fee_ep <= 0: fee_ep = ep*q*0.001
     if fee_xp <= 0: fee_xp = xp*q*0.001
