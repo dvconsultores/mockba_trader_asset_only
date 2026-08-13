@@ -170,11 +170,13 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, l
     info=exchange.get_symbol_info(asset)
     if info is None: return None
     slot=compute_slot_size(venue,equity,info.min_notional)
-    qty=slot/live_price; qty=qty-(qty%info.base_tick) if info.base_tick>0 else qty
+    # Simple sizing: notional = slot × leverage (e.g. 40% of $50 = $20, ×3x = $60).
+    leverage=min(get_setting_int("leverage",3),get_setting_int("max_leverage",3))
+    notional=slot*leverage
+    qty=notional/live_price; qty=qty-(qty%info.base_tick) if info.base_tick>0 else qty
     if qty<info.min_qty or (qty*live_price)<info.min_notional:
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","qty too small",tp=tp_price,sl=sl_price); return None
 
-    leverage=min(get_setting_int("leverage",3),get_setting_int("max_leverage",3))
     pid=str(uuid.uuid4())
     fill=exchange.place_entry(asset,direction,qty,live_price,te,se,leverage,pid)
     if fill is None: return None
