@@ -19,7 +19,7 @@ from trading_bot.types import Fill
 from trade.pnl import record_closed_trade, is_entry_blocked, compute_slot_size
 from trade.regime import get_atr_pct
 from trade.toxicity import evaluate as tox_eval, record_observation
-from trade.universe import compute_thresholds  # shared with universe replay (Amendment 003)
+from trade.universe import compute_thresholds, venue_fee_pct  # shared with universe replay (Amendment 003)
 from db.db_ops import (
     get_setting_float, get_setting_int, get_setting_bool,
     save_position, load_all_positions, update_position, delete_position,
@@ -139,7 +139,13 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, l
 
     dn, pn, te, se = compute_thresholds(atr, dk, dm, pk, pm, tk, tm, sk, sm)
 
-    if te<=se: _log(asset,venue,regime,None,live_price,0,dn,atr or 0,obi,0,None,{},"skipped","tp_eff<=sl_eff"); return None
+    # Entry viability: target must clear round-trip cost + required net edge.
+    # Same rule as spot_scalper (see the note there) — the old `te<=se` test
+    # blocked every wide-stop configuration, and the DEX fee is lower, so the
+    # venue's own fee rate is used via venue_fee_pct.
+    cost=venue_fee_pct(venue)+get_setting_float("assumed_slippage_pct",0.03)
+    if te<=cost+get_setting_float("min_net_edge_pct",0.30):
+        _log(asset,venue,regime,None,live_price,0,dn,atr or 0,obi,0,None,{},"skipped","tp_eff below cost+edge"); return None
 
     cs=get_setting_float("cooldown_sec",60); sp=get_setting_float("min_entry_spacing_pct",0.3)
     dip=_is_dip(asset,live_price,dn); pump=_is_pump(asset,live_price,pn)
