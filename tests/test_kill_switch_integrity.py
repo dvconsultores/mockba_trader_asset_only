@@ -189,3 +189,31 @@ def test_dry_run_falls_back_to_declared_pool(db):
         res = sc.scalp_cycle("AAA", ex, "RANGE", 1.0, 90.0)
     assert res is not None and ex.entries, \
         "paper trading must work without exchange credentials"
+
+
+# ── Validator fix (2026-08-16): max_active_pairs is a PER-VENUE cap ──────────
+
+def _seed_universe(db, venue, n):
+    with db.get_db_connection() as c:
+        for i in range(n):
+            c.execute(
+                "INSERT INTO asset_universe (venue, asset, symbol, rank, scanned_at, blacklisted) "
+                "VALUES (?,?,?,?,?,0)", (venue, f"A{i}", f"A{i}USDT", i + 1, time.time()))
+        c.commit()
+
+
+def test_max_active_pairs_no_false_alarm_across_venues(db):
+    """12 binance + 6 orderly with cap 12: nothing is dropped -> no warning.
+    The old validator summed venues (18 > 12) and warned falsely."""
+    from trade.settings_rules import validate
+    _seed_universe(db, "binance", 12)
+    _seed_universe(db, "orderly", 6)
+    assert validate("max_active_pairs", 12).level == "ok"
+
+
+def test_max_active_pairs_warns_when_one_venue_exceeds(db):
+    """14 binance with cap 12: two assets are genuinely never traded -> warn."""
+    from trade.settings_rules import validate
+    _seed_universe(db, "binance", 14)
+    v = validate("max_active_pairs", 12)
+    assert v.level == "warn" and "binance=14" in v.message

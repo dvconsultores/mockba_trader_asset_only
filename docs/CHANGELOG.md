@@ -4,6 +4,14 @@ Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
 ## 2026-08-16
 
+- `fix:` Startup validator: the `max_active_pairs` cross-check summed the
+    universe across BOTH venues against what is a PER-VENUE cap (bot.py
+    truncates each venue's list separately), producing false "N universe assets
+    exceed max_active_pairs" warnings when nothing was being dropped (e.g.
+    08-13: binance=12 + orderly=6 vs cap 12 — zero assets actually cut). Now
+    compares per venue and names the offending venue(s); two regression tests
+    added.
+
 - `fix:` Kill-switch integrity (feature 015) — Constitution IV repair on the
     live venue. `get_equity` (both executors) now returns `None` on failure
     instead of `0.0`, which had silently disabled the percentage daily-loss

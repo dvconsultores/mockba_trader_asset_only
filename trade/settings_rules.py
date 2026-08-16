@@ -143,18 +143,26 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
             sug = round(max(0.0, tp - slip - min_edge - 0.05), 3)
             return Verdict("error", f"Net edge {net:.2f}% below minimum {min_edge}% for {key} (tp={tp}, fee={value}, slip={slip})", sug)
 
-    # max_active_pairs vs actual universe size (Amendment 003)
+    # max_active_pairs vs actual universe size (Amendment 003).
+    # PER VENUE: bot.py truncates each venue's list to max_active_pairs
+    # separately, so only a single venue exceeding the cap drops assets.
+    # (The old check summed both venues against the per-venue cap and warned
+    # even when nothing was being dropped — 2026-08-16 fix.)
     if key == "max_active_pairs":
         if isinstance(value, int):
             try:
                 from db.db_ops import get_db_connection
                 with get_db_connection() as conn:
-                    row = conn.execute(
-                        "SELECT COUNT(*) AS c FROM asset_universe WHERE blacklisted = 0"
-                    ).fetchone()
-                actual = int(row["c"]) if row else 0
-                if actual > value:
-                    return Verdict("warn", f"{actual} universe assets exceed max_active_pairs ({value})", actual)
+                    rows = conn.execute(
+                        "SELECT venue, COUNT(*) AS c FROM asset_universe "
+                        "WHERE blacklisted = 0 GROUP BY venue"
+                    ).fetchall()
+                over = [f"{r['venue']}={r['c']}" for r in rows if int(r["c"]) > value]
+                if over:
+                    worst = max(int(r["c"]) for r in rows)
+                    return Verdict("warn",
+                        f"universe exceeds max_active_pairs ({value}) on {', '.join(over)} — excess assets are never traded",
+                        worst)
             except Exception:
                 pass
 
