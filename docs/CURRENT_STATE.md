@@ -5,6 +5,25 @@
 
 ---
 
+## 0. BNB Fee Discount (feature 017, 2026-08-16)
+
+Binance fees are paid in BNB (25% discount): round trip 0.20% → **0.15%**, i.e.
++0.05% expectancy on every CEX trade and a marginally looser Constitution II
+cost gate (frequency can only rise). Fill accounting handles
+`commissionAsset: "BNB"` correctly — valued at the live BNB price, sellable
+qty untouched (only base-asset commissions reduce it). The BNB balance is a
+**fee reserve, not equity** (excluded from `get_equity` by design). Detectors:
+startup warns when the reserve is < $2; every fill warns if `cex_fee_bnb=true`
+but the commission arrives in another asset (= reserve exhausted, Binance
+reverted to full rate). **Operator prerequisites before restart**: enable
+"Use BNB to pay fees" on the Binance account and hold ~$5 BNB. Settings:
+`cex_fee_bnb=true`, `cex_round_trip_fee_pct=0.15` (validator cross-checks the
+pair). Note: this is an acknowledged mid-test config change — the real cost of
+trading changed, and the gate tracks reality (spec 017 clarify Q5); the 5-day
+test log is annotated at the deploy boundary.
+
+---
+
 ## 0. Bracket Coherence Guard (feature 016, 2026-08-16)
 
 Spot entries are skipped (`sl_exceeds_crash_floor`) when the adaptive stop

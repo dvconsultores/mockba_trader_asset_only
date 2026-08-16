@@ -24,7 +24,7 @@ load_dotenv()
 from dataclasses import replace
 
 from trading_bot.types import Fill, SymbolFilters
-from db.db_ops import get_setting_bool, load_all_positions
+from db.db_ops import get_setting_bool, get_setting_float, load_all_positions
 from logs.log_config import apolo_trader_logger as logger
 
 
@@ -193,6 +193,28 @@ class BinanceSpot:
         except Exception:
             return None
 
+    def _fee_to_usdt(self, fee_amount: float, fee_asset: str,
+                     ref_price: float, notional: float) -> float:
+        """Commission expressed in USDT (Constitution V: recorded fees are dollars).
+
+        BNB commissions (fee discount, feature 017) are valued at the live BNB
+        price; base-asset commissions at the trade's own fill price. If the
+        BNB ticker is unreachable, the configured per-leg rate estimates the
+        fee — an estimate beats recording 0 for a fee that was really paid.
+        """
+        if get_setting_bool("cex_fee_bnb", False) and fee_asset != "BNB" and fee_amount > 0:
+            logger.warning(
+                f"cex_fee_bnb=true but commission paid in {fee_asset} — "
+                f"BNB reserve may be exhausted; full fee rate applies")
+        if fee_amount <= 0 or fee_asset in ("USDT", "USDC"):
+            return fee_amount
+        if fee_asset == "BNB":
+            bnb_price = self.get_price("BNB")
+            if bnb_price:
+                return fee_amount * bnb_price
+            return notional * get_setting_float("cex_round_trip_fee_pct", 0.15) / 200.0
+        return fee_amount * ref_price if ref_price > 0 else fee_amount
+
     # ── Order placement ───────────────────────────────────────────────────
 
     def place_entry(
@@ -241,16 +263,14 @@ class BinanceSpot:
                 fee_amount += float(f.get("commission", 0))
                 fee_asset = f.get("commissionAsset", "USDT")
 
-            # sellable_qty = filled - base fee (fee_amount still in base units here)
+            # Only a base-asset commission reduces what we can sell — BNB-paid
+            # fees (feature 017) leave the full fill sellable.
             sellable = filled_qty
-            if fee_asset != "USDT":
+            if fee_asset not in ("USDT", "USDC", "BNB"):
                 sellable = filled_qty - fee_amount
 
-            # Convert a base-asset commission to quote (USDT) value so recorded
-            # fees are in dollars (constitution V: PnL from actual fills).
-            if fee_asset not in ("USDT", "USDC") and fill_price > 0:
-                fee_amount = fee_amount * fill_price
-                fee_asset = "USDT"
+            fee_amount = self._fee_to_usdt(fee_amount, fee_asset, fill_price, quote_qty)
+            fee_asset = "USDT"
 
             fill = Fill(
                 filled_qty=filled_qty, fill_price=fill_price if filled_qty > 0 else price,
@@ -354,10 +374,7 @@ class BinanceSpot:
         for f in data.get("fills", []):
             fee_amount += float(f.get("commission", 0))
             fee_asset = f.get("commissionAsset", "USDT")
-        # Convert a base-asset commission to quote (USDT) value
-        if fee_asset not in ("USDT", "USDC") and fill_price > 0:
-            fee_amount = fee_amount * fill_price
-            fee_asset = "USDT"
+        fee_amount = self._fee_to_usdt(fee_amount, fee_asset, fill_price, quote_qty)
         return Fill(
             filled_qty=filled_qty, fill_price=fill_price if filled_qty > 0 else 0.0,
             fee_amount=fee_amount, fee_asset="USDT", sellable_qty=filled_qty,
@@ -388,9 +405,7 @@ class BinanceSpot:
             if qty <= 0:
                 return None
             avg = notional / qty
-            # Convert a base-asset commission to quote (USDT) value
-            if comm_asset not in ("USDT", "USDC") and avg > 0:
-                comm = comm * avg
+            comm = self._fee_to_usdt(comm, comm_asset, avg, notional)
             return (avg, comm)
         except Exception:
             return None

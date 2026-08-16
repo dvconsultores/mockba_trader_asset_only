@@ -83,6 +83,9 @@ ALL: list[SettingSpec] = [
                 "Orderly DEX round-trip fee % for net-edge calculation"),
     SettingSpec("cex_round_trip_fee_pct", float, "risk", "%", 0, 5.0, 0.10, 1.0,
                 "Binance CEX round-trip fee % for net-edge calculation"),
+    SettingSpec("cex_fee_bnb", bool, "risk", None, None, None, None, None,
+                "Binance fees paid in BNB (25% discount) — keep cex_round_trip_fee_pct at 0.15 and hold a BNB reserve",
+                ("cex_round_trip_fee_pct",)),
     SettingSpec("assumed_slippage_pct", float, "risk", "%", 0, 5.0, 0.01, 1.0,
                 "Assumed slippage % for net-edge calculation"),
     SettingSpec("min_net_edge_pct", float, "risk", "%", 0.01, 5.0, 0.10, 1.0,
@@ -164,7 +167,9 @@ ALL: list[SettingSpec] = [
                 "Maximum concurrent open slots on Orderly perps"),
 
     # ── Universe scanner (Amendment 003) ───────────────────────────────────
-    SettingSpec("universe_scan_interval_hours", int, "universe", "hours", 1, 720, 6, 168,
+    # soft_min 4 (was 6): 4h scans are a deliberate HF choice after the BICO
+    # scan-vs-live ATR gap (016) — fresher universe, not a misconfiguration.
+    SettingSpec("universe_scan_interval_hours", int, "universe", "hours", 1, 720, 4, 168,
                 "How often the daily universe scan runs"),
     SettingSpec("universe_max_age_hours", int, "universe", "hours", 1, 720, 12, 168,
                 "Max age of a stored scan; older blocks new entries on that venue", ("universe_scan_interval_hours",)),

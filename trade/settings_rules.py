@@ -49,6 +49,26 @@ def _coerce(value: Any, spec: SettingSpec) -> Any:
         return None
 
 
+# Stop more than 2.5× the TP ⇒ breakeven WR > ~71% — beyond anything the
+# measured confirmed-arm WR (75%) leaves margin for.
+PAYOFF_WARN_RATIO = 2.5
+
+
+def _payoff_warn(tp: Any, sl: Any, tp_name: str, sl_name: str) -> Verdict | None:
+    """Constitution II v1.1.0: payoff < 1 is allowed; only extreme ratios warn."""
+    if not isinstance(tp, (int, float)) or not isinstance(sl, (int, float)):
+        return None
+    if tp <= 0 or sl <= 0:
+        return None
+    if sl / tp > PAYOFF_WARN_RATIO:
+        bwr = sl / (tp + sl) * 100
+        return Verdict("warn",
+            f"{sl_name} ({sl}) is more than {PAYOFF_WARN_RATIO}x {tp_name} ({tp}) — "
+            f"breakeven win rate {bwr:.0f}%; needs measured-WR evidence (Constitution II v1.1.0)",
+            round(tp * PAYOFF_WARN_RATIO, 2))
+    return None
+
+
 def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) -> Verdict:
     """
     Validate a single setting value. Returns Verdict with level, message, and suggested_value.
@@ -76,24 +96,29 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
     # ── Cross-setting checks ───────────────────────────────────────────────
     # Only run if ctx has the needed data and the key participates in cross-checks
 
-    # tp_min_pct <= sl_min_pct
+    # Payoff-ratio sanity (Constitution II v1.1.0). The pre-amendment rule
+    # required tp > sl; v1.1.0 prices reward against COST (net-edge checks
+    # below) and explicitly allows payoff < 1 with an asymmetric hit rate —
+    # the ratified wide-stop configuration (sl floor 1.5 vs tp floor 0.8) is
+    # valid. Only an extreme ratio still warns: stop > 2.5× the TP means a
+    # breakeven win rate above ~71%, which needs measured-WR evidence.
     if key == "tp_min_pct":
-        sl = get_setting_float("sl_min_pct", 0.5)
-        if isinstance(value, (int, float)) and value <= sl:
-            sug = round(sl * 1.5, 2)
-            return Verdict("error", f"tp_min_pct ({value}) must exceed sl_min_pct ({sl}). Breakeven WR would be {(sl+0.06)/(value+sl)*100:.0f}%", sug)
-    if key == "sl_min_pct":
+        for sl_key in ("sl_min_pct", "sl_min_pct_spot"):
+            sl = get_setting_float(sl_key, 0.0)
+            v = _payoff_warn(value, sl, "tp_min_pct", sl_key)
+            if v:
+                return v
+    if key in ("sl_min_pct", "sl_min_pct_spot"):
         tp = get_setting_float("tp_min_pct", 0.8)
-        if isinstance(value, (int, float)) and tp <= value:
-            sug = round(tp * 0.66, 2)
-            return Verdict("error", f"sl_min_pct ({value}) must be below tp_min_pct ({tp})", sug)
-
-    # tp_k <= sl_k
+        v = _payoff_warn(tp, value, "tp_min_pct", key)
+        if v:
+            return v
     if key == "tp_k":
-        slk = get_setting_float("sl_k", 0.6)
-        if isinstance(value, (int, float)) and value <= slk:
-            sug = round(slk * 1.5, 2)
-            return Verdict("warn", f"tp_k ({value}) <= sl_k ({slk}) — TP may not clear SL during volatile periods", sug)
+        for sl_key in ("sl_k", "sl_k_spot"):
+            slk = get_setting_float(sl_key, 0.0)
+            v = _payoff_warn(value, slk, "tp_k", sl_key)
+            if v:
+                return v
 
     # Crash-guard floor must not sit strictly inside the spot SL floor — an
     # inside floor would pre-empt and cancel the working spot stop (Constitution
@@ -107,17 +132,11 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
                 f"max_loss_per_position_pct ({value}) is strictly inside the spot SL floor ({sl_spot}) — "
                 f"the guard would pre-empt and cancel the spot stop", sug)
 
-    # Spot-only SL overrides must stay below the TP (mirror the shared checks)
-    if key == "sl_min_pct_spot":
-        tp = get_setting_float("tp_min_pct", 0.8)
-        if isinstance(value, (int, float)) and tp <= value:
-            sug = round(tp * 0.66, 2)
-            return Verdict("error", f"sl_min_pct_spot ({value}) must be below tp_min_pct ({tp})", sug)
-    if key == "sl_k_spot":
+    if key in ("sl_k", "sl_k_spot"):
         tkp = get_setting_float("tp_k", 1.0)
-        if isinstance(value, (int, float)) and tkp <= value:
-            sug = round(tkp * 0.8, 2)
-            return Verdict("warn", f"sl_k_spot ({value}) >= tp_k ({tkp}) — TP may not clear SL during volatile periods", sug)
+        v = _payoff_warn(tkp, value, "tp_k", key)
+        if v:
+            return v
 
     # Net edge: tp_min - fee - slippage < min_net_edge
     if key in ("tp_min_pct", "assumed_slippage_pct", "min_net_edge_pct"):
@@ -142,6 +161,22 @@ def validate(key: str, proposed_value: Any, ctx: SettingsContext | None = None) 
         if net < min_edge:
             sug = round(max(0.0, tp - slip - min_edge - 0.05), 3)
             return Verdict("error", f"Net edge {net:.2f}% below minimum {min_edge}% for {key} (tp={tp}, fee={value}, slip={slip})", sug)
+
+    # BNB fee-discount coherence (feature 017): the configured CEX round-trip
+    # rate must match how fees are actually paid — 0.15 with the discount,
+    # 0.20 without. A mismatch mis-prices the Constitution II cost gate.
+    if key in ("cex_fee_bnb", "cex_round_trip_fee_pct"):
+        bnb_on = value if key == "cex_fee_bnb" else get_setting_bool("cex_fee_bnb", False)
+        rate = value if key == "cex_round_trip_fee_pct" else get_setting_float("cex_round_trip_fee_pct", 0.20)
+        if isinstance(rate, (int, float)):
+            if bnb_on and rate > 0.16:
+                return Verdict("warn",
+                    f"cex_fee_bnb=true but cex_round_trip_fee_pct ({rate}) is the full rate — "
+                    f"cost gate over-prices entries; set 0.15", 0.15)
+            if not bnb_on and rate < 0.19:
+                return Verdict("warn",
+                    f"cex_fee_bnb=false but cex_round_trip_fee_pct ({rate}) assumes the BNB discount — "
+                    f"cost gate under-prices entries; set 0.20", 0.20)
 
     # max_active_pairs vs actual universe size (Amendment 003).
     # PER VENUE: bot.py truncates each venue's list to max_active_pairs

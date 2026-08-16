@@ -226,6 +226,16 @@ def run():
     # ── Startup reconciliation (Amendment 004, Constitution VI) ──────────
     _reconcile_startup(binance, orderly)
 
+    # ── BNB fee reserve (feature 017) — warn-only, never blocks ──────────
+    # If the reserve empties, Binance silently reverts to full-rate fees in
+    # base/quote assets; the executor's mismatch warning catches that per fill.
+    if get_setting_bool("cex_fee_bnb", False) and not dry:
+        bnb_bal = binance.get_balance("BNB")
+        bnb_px = binance.get_price("BNB")
+        if bnb_bal is not None and bnb_px is not None and bnb_bal * bnb_px < 2.0:
+            logger.warning(f"[STARTUP] cex_fee_bnb=true but BNB reserve ≈ "
+                           f"${bnb_bal * bnb_px:.2f} — top up or fees revert to full rate")
+
     # ── Universe scanner thread (Amendment 003) ─────────────────────────
     # Never runs inside the trading cycle. Scans each venue when the stored
     # scan is missing or older than universe_scan_interval_hours.

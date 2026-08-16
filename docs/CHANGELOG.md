@@ -4,6 +4,30 @@ Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
 ## 2026-08-16
 
+- `feat:` BNB fee discount (feature 017) — Binance fees paid in BNB (25% off:
+    round trip 0.20% → 0.15%) with corrected fill accounting. The old parsers
+    subtracted a non-USDT commission from the sellable base qty and valued it
+    at the traded asset's price — both wrong for BNB (Constitution V). Now:
+    `BinanceSpot._fee_to_usdt` values BNB commissions at the live BNB price
+    (per-leg estimate if the ticker is down, never 0) at all three fill sites
+    (entry, market sell, order-fills lookup); sellable qty only shrinks for
+    base-asset commissions. Detectors: startup warning when the BNB reserve is
+    < $2; per-fill warning when `cex_fee_bnb=true` but commission arrives in
+    another asset. New setting `cex_fee_bnb` + validator cross-check against
+    `cex_round_trip_fee_pct` (0.15 with discount, 0.20 without). DB:
+    `cex_fee_bnb=true`, `cex_round_trip_fee_pct=0.15`. Cost gate loosens by
+    0.05% ⇒ entry frequency can only rise (HF directive). 13 new tests; 133 green.
+
+- `fix:` Startup validator aligned with Constitution II v1.1.0 — the
+    pre-amendment "tp must exceed sl" errors (tp_min_pct/sl_min_pct/
+    sl_min_pct_spot, tp_k/sl_k/sl_k_spot) contradicted the ratified amendment
+    (payoff < 1 allowed when reward clears cost; the net-edge checks carry the
+    real gate). The ratified wide-stop config (sl floor 1.5 vs tp floor 0.8)
+    no longer warns at every startup; only extreme ratios (stop > 2.5× TP ⇒
+    breakeven WR > ~71%) still warn. Also `universe_scan_interval_hours`
+    soft_min 6 → 4: 4-hourly scans are the deliberate post-BICO freshness
+    choice, not a misconfiguration.
+
 - `fix:` Bracket coherence guard (feature 016) — spot entries whose adaptive
     stop exceeds `max_loss_per_position_pct` are skipped with reason
     `sl_exceeds_crash_floor` (equality passes). Closes the live-ATR gap behind
