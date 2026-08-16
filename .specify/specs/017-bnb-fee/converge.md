@@ -22,9 +22,20 @@
    trade costs 0.05% less. Day-boundary comparisons must treat 08-16 → 08-17
    as the discount boundary. The change direction is favorable and uniform, so
    the test's pass/fail gates (≥75% of backtest expectancy) remain meaningful.
-2. **AC5 has no automated test** — the startup check runs in `bot.py run()`
-   pre-loop, outside every harness. 5 lines, warn-only, null-safe on both API
-   calls. Accepted by inspection.
+2. **AC5 "accepted by inspection" failed in production within the hour.**
+   The inline check called `binance.get_balance("BNB")` — a method that does
+   not exist (`get_asset_balance` is the real name). The AttributeError killed
+   `run()` right after `[RECONCILE] complete` on every start, and docker's
+   restart policy turned it into a ~6-second crash loop (2026-08-16 18:04,
+   caught by the operator from the live logs; no capital was at risk — the bot
+   never reached the trading loop). Fix: check extracted to a testable
+   `_bnb_reserve_check()`, wrapped in try/except (a warn-only convenience
+   check must never take down the trading loop), and covered by 3 tests —
+   `patch.object` pins the real method names, and a no-attribute mock pins the
+   never-raise guarantee. **Lesson, superseding deviation 2's reasoning: "5
+   lines, null-safe, accepted by inspection" is exactly the confidence level
+   that ships an AttributeError. If a path only runs in production, extract it
+   until it runs in a test.** 136/136 green.
 3. **Shipped alongside (not part of 017)**: payoff-ratio validator aligned
    with Constitution II v1.1.0 (the "sl must be below tp" startup errors were
    pre-amendment law) and `universe_scan_interval_hours` soft_min 6 → 4. Both

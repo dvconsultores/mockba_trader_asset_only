@@ -202,6 +202,25 @@ def _reconcile_startup(binance, orderly):
 # Main loop
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _bnb_reserve_check(binance) -> None:
+    """Feature 017: warn when the BNB fee reserve is nearly empty.
+
+    Warn-only — if the reserve empties, Binance silently reverts to full-rate
+    fees and the executor's per-fill mismatch warning catches it, so a failure
+    here must never take down the trading loop.
+    """
+    try:
+        if not get_setting_bool("cex_fee_bnb", False) or get_setting_bool("dry_run", True):
+            return
+        bal = binance.get_asset_balance("BNB")
+        px = binance.get_price("BNB")
+        if bal is not None and px is not None and bal * px < 2.0:
+            logger.warning(f"[STARTUP] cex_fee_bnb=true but BNB reserve ≈ "
+                           f"${bal * px:.2f} — top up or fees revert to full rate")
+    except Exception as e:
+        logger.warning(f"[STARTUP] BNB reserve check failed: {e}")
+
+
 def run():
     """Main autotrade loop. Never returns unless killed."""
     # Module-level flags reassigned inside the loop must be declared global,
@@ -227,14 +246,7 @@ def run():
     _reconcile_startup(binance, orderly)
 
     # ── BNB fee reserve (feature 017) — warn-only, never blocks ──────────
-    # If the reserve empties, Binance silently reverts to full-rate fees in
-    # base/quote assets; the executor's mismatch warning catches that per fill.
-    if get_setting_bool("cex_fee_bnb", False) and not dry:
-        bnb_bal = binance.get_balance("BNB")
-        bnb_px = binance.get_price("BNB")
-        if bnb_bal is not None and bnb_px is not None and bnb_bal * bnb_px < 2.0:
-            logger.warning(f"[STARTUP] cex_fee_bnb=true but BNB reserve ≈ "
-                           f"${bnb_bal * bnb_px:.2f} — top up or fees revert to full rate")
+    _bnb_reserve_check(binance)
 
     # ── Universe scanner thread (Amendment 003) ─────────────────────────
     # Never runs inside the trading cycle. Scans each venue when the stored

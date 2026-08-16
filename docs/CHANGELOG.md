@@ -4,6 +4,13 @@ Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
 ## 2026-08-16
 
+- `fix:` 017 startup crash loop — the BNB reserve check called a nonexistent
+    method (`get_balance` vs `get_asset_balance`); the AttributeError killed
+    `run()` after reconciliation on every start (~6s docker restart loop, live
+    2026-08-16 18:04, no capital at risk). Extracted to `_bnb_reserve_check()`
+    with try/except (warn-only checks must never take down the trading loop)
+    + 3 regression tests pinning the real method names; 136 green.
+
 - `feat:` BNB fee discount (feature 017) — Binance fees paid in BNB (25% off:
     round trip 0.20% → 0.15%) with corrected fill accounting. The old parsers
     subtracted a non-USDT commission from the sellable base qty and valued it

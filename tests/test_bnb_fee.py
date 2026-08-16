@@ -129,6 +129,42 @@ def test_entry_base_commission_reduces_sellable(ex):
     assert fill.fee_amount == pytest.approx(0.1 * 0.1)
 
 
+# ── Startup reserve check (AC5) ──────────────────────────────────────────────
+# Regression for the 2026-08-16 crash loop: the original inline check called a
+# method that does not exist on BinanceSpot (get_balance vs get_asset_balance)
+# and the AttributeError killed run() before the main loop on every restart.
+# patch.object pins the real method names; the raise test pins the try/except.
+
+def test_startup_reserve_warning_when_low(db, ex, caplog):
+    import logging
+    from bot import _bnb_reserve_check
+    with caplog.at_level(logging.WARNING), \
+         mock.patch.object(ex, "get_asset_balance", return_value=0.001), \
+         mock.patch.object(ex, "get_price", return_value=600.0):
+        _bnb_reserve_check(ex)
+    assert any("BNB reserve" in r.message for r in caplog.records)
+
+
+def test_startup_reserve_quiet_when_funded(db, ex, caplog):
+    import logging
+    from bot import _bnb_reserve_check
+    with caplog.at_level(logging.WARNING), \
+         mock.patch.object(ex, "get_asset_balance", return_value=0.02), \
+         mock.patch.object(ex, "get_price", return_value=600.0):
+        _bnb_reserve_check(ex)
+    assert not any("BNB reserve" in r.message for r in caplog.records)
+
+
+def test_startup_reserve_check_never_raises(db, ex):
+    """API down, or any bug inside the check, must never kill the trading loop."""
+    from bot import _bnb_reserve_check
+    with mock.patch.object(ex, "_get", side_effect=Exception("api down")), \
+         mock.patch.object(ex, "get_price", return_value=None):
+        _bnb_reserve_check(ex)  # exercises the real get_asset_balance path
+    broken = mock.Mock(spec=[])  # no attributes at all -> AttributeError inside
+    _bnb_reserve_check(broken)
+
+
 # ── Validator coherence (AC6) ────────────────────────────────────────────────
 
 def test_validator_bnb_on_full_rate_warns(db):
