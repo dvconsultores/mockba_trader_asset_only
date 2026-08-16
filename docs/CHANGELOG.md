@@ -4,6 +4,17 @@ Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
 ## 2026-08-16
 
+- `fix:` Bracket coherence guard (feature 016) — spot entries whose adaptive
+    stop exceeds `max_loss_per_position_pct` are skipped with reason
+    `sl_exceeds_crash_floor` (equality passes). Closes the live-ATR gap behind
+    the BICO incident: scan-time ATR 1.13 passed the universe cap, live ATR
+    spiked to 2.85 during an alt dump, the stop computed 5.7% vs the 3% crash
+    floor, and three entries lost $1.57 (92% of the day). Skip, never clamp —
+    re-tightening stops on volatile names is what the wide-stop study ruled
+    out. Companion setting: `max_slots_cex` 2 → 1 (no doubling into a falling
+    asset while capital is $100). New tests/test_bracket_coherence.py; 120 green.
+
+
 - `fix:` Startup validator: the `max_active_pairs` cross-check summed the
     universe across BOTH venues against what is a PER-VENUE cap (bot.py
     truncates each venue's list separately), producing false "N universe assets

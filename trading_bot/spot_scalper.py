@@ -263,6 +263,15 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
     cost=venue_fee_pct(venue)+get_setting_float("assumed_slippage_pct",0.03)
     if te<=cost+get_setting_float("min_net_edge_pct",0.30):
         _log(asset,venue,regime,None,live_price,0,dn,atr or 0,obi,0,None,{},"skipped","tp_eff below cost+edge"); return None
+    # Bracket coherence (016): if the adaptive stop cannot fit under the crash
+    # floor, the crash guard would always fire first at a loss the entry never
+    # priced — the asset's LIVE volatility has outgrown the universe's scan-time
+    # ATR cap (the 2026-08-16 BICO incident: scan ATR 1.13, live 2.85, stop 5.7%
+    # vs 3% floor). Skip, never clamp: re-tightening the stop on exactly the
+    # most volatile names is what the wide-stop study ruled out.
+    mlp=get_setting_float("max_loss_per_position_pct",3.0)
+    if se>mlp:
+        _log(asset,venue,regime,None,live_price,0,dn,atr or 0,obi,0,None,{},"skipped","sl_exceeds_crash_floor"); return None
 
     cs=get_setting_float("cooldown_sec",60); sp=get_setting_float("min_entry_spacing_pct",0.3)
     dip=_is_dip(asset,live_price,dn); pump=_is_pump(asset,live_price,pn)

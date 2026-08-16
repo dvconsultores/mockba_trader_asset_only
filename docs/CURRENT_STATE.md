@@ -1,7 +1,20 @@
 # MockbaV4 — Current State Analysis
 
 > Generated: 2026-07-26 | Phase 1, Section 1.1
-> Updated: 2026-08-16 | Features 009–012, 015 & Constitution v1.1.0
+> Updated: 2026-08-16 | Features 009–012, 015, 016 & Constitution v1.1.0
+
+---
+
+## 0. Bracket Coherence Guard (feature 016, 2026-08-16)
+
+Spot entries are skipped (`sl_exceeds_crash_floor`) when the adaptive stop
+(`se = max(sl_k_spot × live ATR, sl_min_pct_spot)`) exceeds the crash floor
+(`max_loss_per_position_pct`) — an incoherent bracket where the crash guard
+would always fire first at an unpriced loss. Trigger condition at current
+settings: live ATR > 1.5%, exactly the band the universe scan-time cap already
+intends to exclude (the BICO incident: scan 1.13 → live 2.85 → −$1.57 in 11
+minutes). Skip, never clamp. Companion: `max_slots_cex=1`. Every skip recorded
+(Constitution VIII).
 
 ---
 
