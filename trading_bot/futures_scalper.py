@@ -23,6 +23,7 @@ from trade.toxicity import evaluate as tox_eval, record_observation
 from trade.universe import compute_thresholds, venue_fee_pct  # shared with universe replay (Amendment 003)
 from db.db_ops import (
     get_setting_float, get_setting_int, get_setting_bool, upsert_setting,
+    get_capital_pool,
     save_position, load_all_positions, update_position, delete_position,
     get_db_connection,
 )
@@ -189,6 +190,13 @@ def scalp_cycle(asset: str, exchange: OrderlyFutures, regime: str, obi: float, l
 
     if not signal_only:
         equity=exchange.get_equity()
+        if equity is None:
+            # Unknown equity = no trading (Constitution IV, feature 015);
+            # dry-run paper-trades on the declared pool (015 clarify Q1).
+            if get_setting_bool("dry_run",True):
+                equity=get_capital_pool(venue)
+            else:
+                _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped","equity_unavailable"); return None
         blocked,reason=is_entry_blocked(venue,equity)
         if blocked: _log(asset,venue,regime,None,live_price,0,0,0,obi,0,None,{},"skipped",reason); return None
         if len(load_all_positions(asset=asset,venue=venue))>=get_setting_int("max_slots_dex",9):

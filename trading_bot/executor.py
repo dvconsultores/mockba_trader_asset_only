@@ -24,7 +24,7 @@ load_dotenv()
 from dataclasses import replace
 
 from trading_bot.types import Fill, SymbolFilters
-from db.db_ops import get_setting_bool
+from db.db_ops import get_setting_bool, load_all_positions
 from logs.log_config import apolo_trader_logger as logger
 
 
@@ -140,15 +140,37 @@ class BinanceSpot:
 
     # ── Equity ────────────────────────────────────────────────────────────
 
-    def get_equity(self) -> float:
+    def get_equity(self) -> float | None:
+        """Total venue equity, or None when the exchange is unreachable.
+
+        Feature 015 (Constitution IV): unknown is NEVER zero — the old 0.0
+        return silently disabled the percentage daily-loss limit during API
+        outages (limit = equity × pct = 0 ⇒ check skipped).
+
+        Equity = free+locked USDT plus open positions valued at their entry
+        fill from the local DB (audit #12: coins were invisible, so equity
+        collapsed toward free cash while positions were open, shrinking every
+        percent-of-equity number). DB quantities/prices are real fills; the
+        valuation error is bounded by the TP/SL band. A DB read failure
+        degrades to USDT-only (direction-safe), never to None — only the
+        exchange being unreachable is unknown state.
+        """
         try:
             data = self._get("/api/v3/account", signed=True)
-            for bal in data.get("balances", []):
-                if bal["asset"] == "USDT":
-                    return float(bal["free"]) + float(bal["locked"])
         except Exception:
-            pass
-        return 0.0
+            return None
+        usdt = 0.0
+        for bal in data.get("balances", []):
+            if bal["asset"] == "USDT":
+                usdt = float(bal["free"]) + float(bal["locked"])
+                break
+        try:
+            positions = sum(float(p["qty"]) * float(p["entry_price"])
+                            for p in load_all_positions(venue="binance"))
+        except Exception:
+            logger.warning("get_equity: position valuation failed — reporting USDT only")
+            positions = 0.0
+        return usdt + positions
 
     def get_asset_balance(self, asset: str) -> float | None:
         """Free balance of the base asset; None if the account query failed."""
@@ -470,12 +492,15 @@ class OrderlyFutures:
 
     # ── Equity ────────────────────────────────────────────────────────────
 
-    def get_equity(self) -> float:
+    def get_equity(self) -> float | None:
+        """Total collateral, or None when unreachable (feature 015 —
+        Constitution IV: unknown is never zero). Orderly's holding already
+        reports total account value, so no position valuation is needed."""
         try:
             data = self._get("/v1/client/holding")
             return float(data.get("data", {}).get("holding", 0))
         except Exception:
-            return 0.0
+            return None
 
     # ── Order placement ───────────────────────────────────────────────────
 

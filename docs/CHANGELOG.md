@@ -4,6 +4,22 @@ Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
 ## 2026-08-16
 
+- `fix:` Kill-switch integrity (feature 015) — Constitution IV repair on the
+    live venue. `get_equity` (both executors) now returns `None` on failure
+    instead of `0.0`, which had silently disabled the percentage daily-loss
+    limit during API outages; the `venue_state` cache keeps last-known-good and
+    is never poisoned with a failure zero. The venue-failure escalation is now
+    genuinely **consecutive across cycles** (the old per-cycle counter could
+    permanently disable the venue on a single network blip) and finally sends
+    the Telegram notification Constitution IV mandates; per-asset cycle errors
+    no longer feed escalation. Binance equity now values open positions at
+    their entry fill from the local DB (audit #12 — coins were invisible, so
+    every percent-of-equity number shrank as positions opened; 012's 4×$20
+    plan is now fully realized, zero extra API calls). Entries on unknown
+    equity fail closed live (recorded `equity_unavailable`) and paper-trade on
+    the declared pool in dry-run. New `tests/test_kill_switch_integrity.py`
+    (8 tests); full suite 115 green.
+
 - `ops:` Frequency recovery (feature 012, settings only — no code).
     `max_concurrent_positions` 2 → 4, `cex_slot_pct` 40 → 20,
     `capital_cex_usdt` 50 → 100 (operator capital plan: $100 funded, 4 × $20

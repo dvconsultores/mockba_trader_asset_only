@@ -1,7 +1,27 @@
 # MockbaV4 — Current State Analysis
 
 > Generated: 2026-07-26 | Phase 1, Section 1.1
-> Updated: 2026-08-16 | Features 009–012 & Constitution v1.1.0
+> Updated: 2026-08-16 | Features 009–012, 015 & Constitution v1.1.0
+
+---
+
+## 0. Kill-Switch Integrity (feature 015, 2026-08-16)
+
+Constitution IV repair on the live venue — three defects in the systems that
+protect deployed capital, sharing one root: unknown equity was treated as zero
+and failures were mis-counted.
+
+| Defect | Was | Now |
+|---|---|---|
+| `get_equity` swallow (audit #4) | Any API failure → `0.0` → `limit = equity × pct = 0` → **the percentage daily-loss limit silently off during outages** | `float \| None`; `None` = unknown, handled explicitly everywhere; the `venue_state` cache keeps the last-known-good value, never a failure zero |
+| "Consecutive" counter (audit #3) | Per-cycle dict: 5 assets failing in ONE blip → permanent `auto_trade_binance=false`; Telegram notify never implemented | Cross-cycle per-venue streak; any success resets; at **5 consecutive** cycles: disable + Telegram alert (Constitution IV, both halves). Per-asset errors are log-only (clarify Q3) |
+| USDT-only equity (audit #12) | Coins invisible → equity collapsed toward free cash with positions open; slot sizing shrank toward the floor | Equity = USDT (free+locked) + open positions at entry fill from the local DB — zero extra API calls; **feature 012's 4 × $20 plan is now fully realized** |
+
+Entry path on unknown equity: live (`dry_run=false`) fails closed with a
+recorded `equity_unavailable` skip; dry-run paper-trades on the declared
+`capital_*` pool so testing works without credentials (clarify Q1). The
+escalation threshold 5 is a constitutional constant, deliberately not a
+setting (clarify Q4).
 
 ---
 

@@ -51,6 +51,10 @@ _global_loss_warned: bool = False
 # average 24h change is a downtrend. Cached result + one-time warn flag.
 _market_filter_cache: dict = {"ts": 0.0, "res": (False, "")}
 _market_filter_warned: bool = False
+# Venue -> CONSECUTIVE failed equity-query cycles (feature 015, Constitution IV).
+# Module-level so the streak survives across cycles — the old per-cycle dict
+# could disable a venue on a single network blip spanning 5 assets.
+_venue_fail_streak: dict[str, int] = {}
 
 
 # ── Market gate (feature 005) — in-memory only; logic in trade/market_check.py ──
@@ -351,8 +355,6 @@ def run():
             elif not mkt_blocked:
                 _market_filter_warned = False
 
-            _venue_failures: dict[str, int] = {}
-
             # ── Read per-venue mode (False / Signal / Automatic) ──
             dex_mode = _normalize_venue_mode(get_setting("auto_trade_orderly"))
             cex_mode = _normalize_venue_mode(get_setting("auto_trade_binance"))
@@ -384,13 +386,18 @@ def run():
                     logger.warning(f"[UNIVERSE] {venue} scan is stale — new entries blocked until rescan (positions still managed)")
 
                 # ── Equity query (once per venue) ──────────────
+                # None = unknown (Constitution IV): count toward the CONSECUTIVE
+                # failure streak, keep the last-known-good venue_state cache
+                # (never poison it with a failure zero), skip the venue.
                 try:
                     equity = ex.get_equity()
-                    set_venue_equity(venue, equity)
                 except Exception:
-                    _venue_failures[venue] = _venue_failures.get(venue, 0) + 1
-                    logger.error(f"[ERROR] {venue} equity query failed")
+                    equity = None
+                if equity is None:
+                    _equity_failure(venue)
                     continue
+                _venue_fail_streak[venue] = 0
+                set_venue_equity(venue, equity)
 
                 signal_only = (venue_mode == "Signal")
 
@@ -488,8 +495,10 @@ def run():
 
                     except Exception as e:
                         logger.error(f"[ERROR] {venue}:{asset} cycle failed: {e}")
-                        _venue_failures[venue] = _venue_failures.get(venue, 0) + 1
-                        # Continue to next asset — do not abort
+                        # Continue to next asset — do not abort. Per-asset errors
+                        # are heterogeneous (one delisted symbol, one bad fetch)
+                        # and do NOT feed venue escalation (015 clarify Q3) —
+                        # only the venue-level equity query does.
 
                 # ── Persistent spread degradation → force a rescan ──
                 # If a large share of the venue universe is blocked by the
@@ -529,11 +538,9 @@ def run():
                     logger.warning(f"[UNIVERSE] {venue}: {key[1]} blocked by spread degradation for {streak} consecutive cycles — forcing rescan and excluding for {ttl:.0f}h")
                     _asset_degraded_streak[key] = 0
 
-            # ── Venue-level failure escalation (Constitution IV) ────
-            for venue, fails in _venue_failures.items():
-                if fails >= 5:
-                    logger.warning(f"[KILL] {venue} disabled after {fails} consecutive failures")
-                    upsert_setting(f"auto_trade_{venue}", "false")
+            # Venue-level failure escalation moved to _equity_failure (feature
+            # 015): the streak is consecutive ACROSS cycles and notifies via
+            # Telegram, as Constitution IV requires.
 
             time.sleep(30)
 
@@ -671,6 +678,29 @@ def _cached_gate_equity(venue: str) -> float:
     """Cached venue equity from the DB (bot.py writes it each cycle) — zero API."""
     st = get_venue_equity(venue)
     return float(st["equity"]) if st else 0.0
+
+
+def _equity_failure(venue: str):
+    """One failed venue equity query (feature 015).
+
+    Constitution IV (NON-NEGOTIABLE): "Consecutive state-query failures
+    escalate: after 5 consecutive failures, disable trading and notify via
+    Telegram." The old counter was recreated every cycle — 5 assets failing in
+    ONE network blip disabled the venue permanently while logging
+    "consecutive"; and the Telegram half was never implemented. The streak now
+    spans cycles, resets on any successful query, and notifies on trip. The
+    threshold 5 is the constitutional constant, deliberately not a setting.
+    """
+    streak = _venue_fail_streak.get(venue, 0) + 1
+    _venue_fail_streak[venue] = streak
+    logger.error(f"[ERROR] {venue} equity query failed (consecutive={streak})")
+    if streak >= 5:
+        from trading_bot.send_bot_message import send_message
+        logger.warning(f"[KILL] {venue} disabled after {streak} consecutive equity failures")
+        send_message(f"🚨 {venue}: {streak} consecutive equity-query failures — trading disabled "
+                     f"(Constitution IV). Re-enable auto_trade_{venue} once the API recovers.")
+        upsert_setting(f"auto_trade_{venue}", "false")
+        _venue_fail_streak[venue] = 0
 
 
 def _gate_apply(venue: str, report: dict) -> dict:
