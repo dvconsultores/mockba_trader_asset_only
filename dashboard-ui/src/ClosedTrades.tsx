@@ -197,7 +197,7 @@ export default function ClosedTrades() {
   const venueEmpty = data !== null && !error && !monthEmpty && trades.length === 0
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="flex flex-col">
       {/* Header */}
       <div className="px-4 sm:px-6 py-2.5 bg-[#1a1528] border-b border-[#2a2240] shrink-0">
         <div className="flex items-baseline justify-between">
@@ -287,7 +287,7 @@ export default function ClosedTrades() {
       </label>
 
       {/* Body */}
-      <div className="flex-1 overflow-y-auto mt-3">
+      <div className="mt-3">
         {loading && (
           <div className="flex flex-col items-center justify-center py-16 text-[#7a7090]">
             <Loader2 size={28} className="animate-spin mb-3" />
