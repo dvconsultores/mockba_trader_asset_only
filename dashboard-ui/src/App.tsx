@@ -104,7 +104,8 @@ export default function App() {
   const moreTabs: { id: Tab; label: string; icon: LucideIcon }[] = [
     { id: 'status', label: 'Status', icon: Radio },
     { id: 'capital', label: 'Capital', icon: Banknote },
-    { id: 'settings', label: 'Settings', icon: Settings2 },
+    // Settings page kept but hidden from the menu for now (remove for now)
+    // { id: 'settings', label: 'Settings', icon: Settings2 },
   ]
 
   return (
