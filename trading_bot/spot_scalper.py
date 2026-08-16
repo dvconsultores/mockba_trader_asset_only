@@ -16,7 +16,7 @@ from trading_bot.executor import BinanceSpot
 from trading_bot.types import Fill
 from logs.log_config import apolo_trader_logger as logger
 from trade.pnl import record_closed_trade, is_entry_blocked, compute_slot_size
-from trade.regime import get_atr_pct
+from trade.regime import get_atr_pct, last_closed_return_up
 from trade.toxicity import evaluate as tox_eval, record_observation
 from trade.universe import compute_thresholds, venue_fee_pct  # shared with universe replay (Amendment 003)
 from db.db_ops import (
@@ -95,11 +95,13 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
         if live is not None and live < ep * (1 - mlp / 100):
             if tpid and exchange.get_order_status(sym, tpid) == "FILLED":
                 xp, fee_xp = _real_fill(exchange, sym, tpid, float(pd["tp_price"]))
-                _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "tp", fee_ep, fee_xp)
+                _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "tp", fee_ep, fee_xp, op)
                 continue
             if slid and exchange.get_order_status(sym, slid) == "FILLED":
-                _close(asset, "binance", "long", ep, float(pd.get("sl_price", ep)), sp, q, pid, si,
-                       "sl", fee_ep, 0.0)
+                # Real fill, not the trigger price — a STOP_LOSS leg can slip (011)
+                xp, fee_xp = _real_fill(exchange, sym, slid, float(pd.get("sl_price", ep)))
+                _close(asset, "binance", "long", ep, xp, sp, q, pid, si,
+                       "sl", fee_ep, fee_xp, op)
                 continue
             tp_cancel_ok = (not tpid) or exchange.cancel_order(sym, tpid)
             if slid:
@@ -116,24 +118,25 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
                         if fill_info:
                             xp, fee_xp = fill_info
                             logger.warning(f"[EXIT] {asset} crash_guard: no balance ({bal}) — closing as TP via real fill {xp}")
-                            _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "tp", fee_ep, fee_xp)
+                            _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "tp", fee_ep, fee_xp, op)
                             continue
                     xp = live if live else ep
                     logger.warning(f"[EXIT] {asset} crash_guard: no balance ({bal}) — closing orphan position at {xp}")
-                    _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "orphan", fee_ep, 0.0)
+                    _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "orphan", fee_ep, 0.0, op)
                 else:
                     logger.error(f"[EXIT] {asset} crash_guard: market sell failed — keeping position to retry")
                 continue
             xp = sell.fill_price if sell.fill_price > 0 else ep
-            _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "crash_guard", fee_ep, sell.fee_amount)
+            _close(asset, "binance", "long", ep, xp, sp, q, pid, si, "crash_guard", fee_ep, sell.fee_amount, op)
             continue
         # Exchange-side fills first: if TP/SL already filled the coins are gone, so
         # close the position instead of attempting a phantom market sell below.
         if tpid and exchange.get_order_status(sym,tpid)=="FILLED":
             xp, fee_xp = _real_fill(exchange, sym, tpid, float(pd["tp_price"]))
-            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp); continue
+            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp,op); continue
         if slid and exchange.get_order_status(sym,slid)=="FILLED":
-            _close(asset,"binance","long",ep,float(pd.get("sl_price",ep)),sp,q,pid,si,"sl",fee_ep,0.0); continue
+            xp, fee_xp = _real_fill(exchange, sym, slid, float(pd.get("sl_price", ep)))
+            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"sl",fee_ep,fee_xp,op); continue
         if slp > 0 and live is not None and live <= slp:
             # Free the coins held by the open TP/SL orders first; only sell once the
             # balance is actually free, otherwise the market sell gets -2010.
@@ -147,7 +150,7 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
                 # Coins likely already gone (TP filled between checks) — close as TP if so.
                 if tpid and exchange.get_order_status(sym,tpid)=="FILLED":
                     xp, fee_xp = _real_fill(exchange, sym, tpid, float(pd["tp_price"]))
-                    _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp)
+                    _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp,op)
                 else:
                     bal = exchange.get_asset_balance(asset)
                     if bal is not None and bal < q:
@@ -158,16 +161,16 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
                             if fill_info:
                                 xp, fee_xp = fill_info
                                 logger.warning(f"[EXIT] {asset} sl: no balance ({bal}) — closing as TP via real fill {xp}")
-                                _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp)
+                                _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp,op)
                                 continue
                         xp = live if live else ep
                         logger.warning(f"[EXIT] {asset} sl: no balance ({bal}) — closing orphan position at {xp}")
-                        _close(asset,"binance","long",ep,xp,sp,q,pid,si,"orphan",fee_ep,0.0)
+                        _close(asset,"binance","long",ep,xp,sp,q,pid,si,"orphan",fee_ep,0.0,op)
                     else:
                         logger.error(f"[EXIT] {asset} sl: market sell failed — keeping position to retry")
                 continue
             xp = sell.fill_price if sell.fill_price > 0 else slp
-            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"sl",fee_ep,sell.fee_amount)
+            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"sl",fee_ep,sell.fee_amount,op)
             continue
         if (now-op)>mh:
             if tpid: exchange.cancel_order(sym,tpid)
@@ -183,16 +186,16 @@ def manage_open_positions(asset: str, exchange: BinanceSpot):
                         if fill_info:
                             xp, fee_xp = fill_info
                             logger.warning(f"[EXIT] {asset} time_stop: no balance ({bal}) — closing as TP via real fill {xp}")
-                            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp)
+                            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"tp",fee_ep,fee_xp,op)
                             continue
                     xp = live if live else ep
                     logger.warning(f"[EXIT] {asset} time_stop: no balance ({bal}) — closing orphan position at {xp}")
-                    _close(asset,"binance","long",ep,xp,sp,q,pid,si,"orphan",fee_ep,0.0)
+                    _close(asset,"binance","long",ep,xp,sp,q,pid,si,"orphan",fee_ep,0.0,op)
                 else:
                     logger.error(f"[EXIT] {asset} time_stop: market sell failed — keeping position to retry")
                 continue
             xp = sell.fill_price if sell.fill_price > 0 else ep
-            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"time_stop",fee_ep,sell.fee_amount)
+            _close(asset,"binance","long",ep,xp,sp,q,pid,si,"time_stop",fee_ep,sell.fee_amount,op)
 
 def _real_fill(exchange, sym, order_id, default_price):
     """Real exit price + commission for a filled order, else (default_price, 0)."""
@@ -204,12 +207,14 @@ def _real_fill(exchange, sym, order_id, default_price):
         pass
     return float(default_price), 0.0
 
-def _close(a,v,s,ep,xp,sp,q,pid,si,rsn,fee_ep=0.0,fee_xp=0.0):
+def _close(a,v,s,ep,xp,sp,q,pid,si,rsn,fee_ep=0.0,fee_xp=0.0,opened_at=0.0):
     if rsn in ("sl", "crash_guard"):
         _last_sl[f"{v}:{a}:{s}"]=time.time()
-    if fee_ep <= 0: fee_ep = ep*q*0.001
-    if fee_xp <= 0: fee_xp = xp*q*0.001
-    record_closed_trade(asset=a,venue=v,side=s,entry_price=ep,exit_price=xp,signal_price=sp,qty=q,fee_entry=fee_ep,fee_exit=fee_xp,opened_at=0,closed_at=time.time(),exit_reason=rsn)
+    # Fee fallback from the venue setting, one leg (011) — never a hardcoded rate
+    leg=get_setting_float("cex_round_trip_fee_pct",0.20)/100/2
+    if fee_ep <= 0: fee_ep = ep*q*leg
+    if fee_xp <= 0: fee_xp = xp*q*leg
+    record_closed_trade(asset=a,venue=v,side=s,entry_price=ep,exit_price=xp,signal_price=sp,qty=q,fee_entry=fee_ep,fee_exit=fee_xp,opened_at=opened_at,closed_at=time.time(),exit_reason=rsn)
     delete_position(a,v,pid)
 
 def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live_price: float, signal_only: bool = False) -> Optional[str]:
@@ -266,13 +271,22 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","below_threshold"); return None
     if tbl:
         _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","toxicity",tp=tp_price,sl=sl_price); return None
+    # Entry confirmation (feature 009) — the dip rule measures displacement only,
+    # so it fires while price is still falling. `ec` is the direction-adjusted
+    # verdict, recorded on every signal row; it only blocks when the operator
+    # enables entry_confirm_candle (observe-only by default). None (unknown)
+    # never counts as confirmed — Constitution IV.
+    conf = last_closed_return_up(asset, venue)
+    ec = None if conf is None else int(conf if direction == "long" else not conf)
+    if get_setting_bool("entry_confirm_candle", False) and ec != 1:
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","entry_not_confirmed",tp=tp_price,sl=sl_price,ec=ec); return None
     if not _cooldown_ok(asset,direction,cs):
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","cooldown",tp=tp_price,sl=sl_price); return None
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","cooldown",tp=tp_price,sl=sl_price,ec=ec); return None
     if not _spacing_ok(asset,live_price,sp):
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","spacing",tp=tp_price,sl=sl_price); return None
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","spacing",tp=tp_price,sl=sl_price,ec=ec); return None
 
     if signal_only:
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%",tp=tp_price,sl=sl_price)
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"signaled",f"{direction} {abs(ext):.2f}%",tp=tp_price,sl=sl_price,ec=ec)
         _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
         return {"direction": "buy" if direction=="long" else "sell", "tp": tp_price, "sl": sl_price, "tp_pct": te, "sl_pct": se}
 
@@ -281,12 +295,12 @@ def scalp_cycle(asset: str, exchange: BinanceSpot, regime: str, obi: float, live
     slot=compute_slot_size(venue,equity,info.min_notional)
     qty=slot/live_price; qty=qty-(qty%info.base_tick) if info.base_tick>0 else qty
     if qty<info.min_qty or (qty*live_price)<info.min_notional:
-        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","qty too small",tp=tp_price,sl=sl_price); return None
+        _log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"skipped","qty too small",tp=tp_price,sl=sl_price,ec=ec); return None
 
     pid=str(uuid.uuid4())
     fill=exchange.place_entry(asset,direction,qty,live_price,te,pid,se)
     if fill is None: return None
-    si=_log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"entered",f"{direction} {abs(ext):.2f}%",tp=tp_price,sl=sl_price)
+    si=_log(asset,venue,regime,direction,live_price,ext,dn,atr or 0,obi,tox.get("velocity_pct",0),tox.get("depth_ratio"),tox,"entered",f"{direction} {abs(ext):.2f}%",tp=tp_price,sl=sl_price,ec=ec)
     _save_open(asset,venue,direction,fill,live_price,te,se,pid,si)
     _last_entry[f"{venue}:{asset}:{direction}"]=time.time()
     return {"direction": "buy" if direction=="long" else "sell", "tp": tp_price, "sl": sl_price, "tp_pct": te, "sl_pct": se}
@@ -296,12 +310,15 @@ def _save_open(a,v,s,fill,sp,tp,sl,pid,si):
     slp=fill.fill_price*(1-sl/100) if s=="long" else fill.fill_price*(1+sl/100)
     save_position({"id":pid,"asset":a,"venue":v,"side":s,"qty":fill.sellable_qty,"entry_price":fill.fill_price,"signal_price":sp,"tp_price":tpp,"sl_price":slp if sl>0 else None,"tp_order_id":fill.tp_order_id,"sl_order_id":fill.sl_order_id,"opened_at":time.time(),"signal_id":si,"fee_entry":fill.fee_amount})
 
-def _log(a,v,r,d,p,ex,th,at,ob,vl,dr,tx,act,rsn,tp=0.0,sl=0.0):
+def _log(a,v,r,d,p,ex,th,at,ob,vl,dr,tx,act,rsn,tp=0.0,sl=0.0,ec=None):
+    # ec = entry_confirmed (feature 009): 1 confirmed, 0 not, None not evaluated.
+    # Trailing default keeps bot.py's 14-positional callers (_record_gate_skip,
+    # _record_global_block) valid — those never evaluate confirmation, so NULL.
     try:
         with get_db_connection() as conn:
             cur=conn.cursor()
-            cur.execute("""INSERT INTO signals (ts,asset,venue,regime,direction,price,extreme_pct,threshold_pct,atr_pct,velocity_pct,obi,obi_z,spread_pct,spread_z,depth_top10,depth_ratio,tox_velocity,tox_spread,tox_depth,tox_obi,tox_any,tox_enforced,action,reason,tp_price,sl_price) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (time.time(),a,v,r,d,p,ex,th,at,vl,ob,tx.get("obi_z"),None,tx.get("spread_z"),None,dr,tx.get("tox_velocity"),tx.get("tox_spread"),tx.get("tox_depth"),tx.get("tox_obi"),tx.get("tox_any"),tx.get("tox_enforced",0),act,rsn,tp,sl))
+            cur.execute("""INSERT INTO signals (ts,asset,venue,regime,direction,price,extreme_pct,threshold_pct,atr_pct,velocity_pct,obi,obi_z,spread_pct,spread_z,depth_top10,depth_ratio,tox_velocity,tox_spread,tox_depth,tox_obi,tox_any,tox_enforced,action,reason,tp_price,sl_price,entry_confirmed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (time.time(),a,v,r,d,p,ex,th,at,vl,ob,tx.get("obi_z"),None,tx.get("spread_z"),None,dr,tx.get("tox_velocity"),tx.get("tox_spread"),tx.get("tox_depth"),tx.get("tox_obi"),tx.get("tox_any"),tx.get("tox_enforced",0),act,rsn,tp,sl,ec))
             conn.commit(); return cur.lastrowid
     except Exception:
         from logs.log_config import apolo_trader_logger

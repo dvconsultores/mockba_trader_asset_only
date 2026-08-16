@@ -2,6 +2,69 @@
 
 Convention: `type: short description` (per `how-to-work-with-specs.md`).
 
+## 2026-08-16
+
+- `ops:` Frequency recovery (feature 012, settings only — no code).
+    `max_concurrent_positions` 2 → 4, `cex_slot_pct` 40 → 20,
+    `capital_cex_usdt` 50 → 100 (operator capital plan: $100 funded, 4 × $20
+    slots = $80 deployed, $20 standing loss buffer). Doubles concurrent shots
+    (183 slot-bound skips in the prior 7 days) while spreading tail risk. Quality gates untouched — capacity, not looser filters (Constitution
+    VIII; operator directive: the bot is meant to be high-frequency).
+    **Finding recorded**: `BinanceSpot.get_equity` counts only USDT, not coin
+    holdings, so equity-based sizing/limits shrink as positions open — audit
+    item #12, slated for the kill-switch-integrity spec.
+
+- `fix:` Spot exit parity (feature 011) — Constitution V on the live venue.
+    Exchange-SL exits (main branch and the crash-guard pre-check) now record the
+    **real** fill price and commission via `_real_fill` instead of the
+    theoretical trigger price with `fee_exit=0`, so slippage past the stop is
+    captured and the daily-loss / consecutive-loss kill switches see true
+    losses. Every closed spot trade now carries the position's real `opened_at`
+    (was hardcoded 0 — 80+ rows lost their hold duration). `_close`'s fee
+    fallback reads `cex_round_trip_fee_pct / 2` instead of a hardcoded 0.001
+    (identical numerics at the current 0.20% setting — zero behaviour change
+    today). Exit decisions are untouched; only recorded values change.
+
+## 2026-08-15
+
+- `fix:` Futures exit integrity (feature 010) — Constitution III/V repair. The
+    time stop cancelled both brackets and deleted the DB row **without ever
+    closing the position**, leaving a live leveraged position with no stop and no
+    local record; it now cancels, sends a reduce-only `market_close`, verifies
+    via `get_open_positions`, and only then records the real fill. A failed or
+    unverified close keeps the position and re-places its stop; if that also
+    fails, a Telegram alert fires and `auto_trade_orderly` is disabled (entries
+    only — exits keep running). The regime exit now cancels and re-places the
+    breakeven TP on the exchange instead of writing to the DB alone. TP/SL exits
+    record `average_executed_price`/`total_fee` instead of intended prices at a
+    flat 0.0003, `opened_at` is real, and `cancel_order` no longer fires a junk
+    `POST /v1/order` with `side: "CANCEL"` before its `DELETE`. New
+    `OrderlyFutures` methods: `market_close`, `place_tp`, `place_stop`,
+    `get_order_fills` — all honour `dry_run`. DEX was off throughout, so nothing
+    was live; a manual `dry_run` checklist is in CURRENT_STATE.
+
+- `feat:` Entry confirmation candle (feature 009). Entries now evaluate whether
+    the last CLOSED 5m return is positive — a sign test on the completed bar, not
+    a candlestick pattern — because the dip rule measures displacement only and
+    fired while price was still falling. New setting `entry_confirm_candle`
+    (default **false** = observe-only: the verdict is recorded in the new
+    `signals.entry_confirmed` column but never blocks); when true an unconfirmed
+    entry is skipped with reason `entry_not_confirmed`. Indeterminate fails
+    closed. Futures is symmetric (long = up bar, short = down bar; the short arm
+    is evidence-free). Zero additional API calls in the live configuration — the
+    helper shares the ATR 5m cache. Migration 009 adds the column. Measured over
+    113 real entries: confirmed +0.387%/trade vs unconfirmed −0.194%/trade,
+    stop-out rate 20% → 12%.
+
+- `docs:` Constitution **v1.1.0** — Principle II amended from "Reward Must
+    Exceed Risk" (`tp_pct > sl_pct`) to "Reward Must Exceed Cost"
+    (`tp_effective > round_trip_fee + slippage + min_net_edge`, enforced per
+    entry; the stop is sized to asset volatility, and the payoff ratio may be
+    below 1 when the hit rate is asymmetric). Ratifies commit `662837d`, which
+    shipped the rule ahead of the amendment. Rationale, per-principle impact
+    assessment and the evidence caveat are in the constitution's Amendment
+    History.
+
 ## 2026-08-12
 
 - `fix:` Market gate is now liquidity-only by default (feature 008). Regime

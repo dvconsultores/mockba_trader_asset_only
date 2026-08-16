@@ -1,11 +1,187 @@
 # MockbaV4 — Current State Analysis
 
 > Generated: 2026-07-26 | Phase 1, Section 1.1
-> Updated: 2026-08-12 | Features 006, 007 & 008
+> Updated: 2026-08-16 | Features 009–012 & Constitution v1.1.0
 
 ---
 
-## 0. Market Gate: Liquidity-Only Suspension (feature 008, 2026-08-12)
+## 0. Frequency Recovery (feature 012, 2026-08-16 — settings only)
+
+`max_concurrent_positions` 2 → **4**, `cex_slot_pct` 40 → **20**,
+`capital_cex_usdt` 50 → **100** (operator capital plan, clarify Q1: $100
+funded, 4 × $20 slots = $80 deployed ceiling, $20 standing loss buffer —
+covers >8 consecutive max-loss rounds at the 3% crash floor). 183 slot-bound
+skips in the prior 7 days showed the 2-slot cap choking exactly the burst days
+that earn (08-06: 49 trades, +$3.90). No quality gate was touched — frequency is
+recovered through capacity (Constitution VIII; the bot is meant to be HF).
+`compute_slot_size` caches per UTC day, so the new slot size applies from the
+next restart/midnight.
+
+**Finding (audit #12)**: `BinanceSpot.get_equity` returns USDT (free+locked)
+only — coin holdings are invisible, so with positions open every
+percent-of-equity number (slot sizing, daily-loss limits) reads ~$10 on a ~$50
+account. Direction-safe but wrong in magnitude; slated for the
+kill-switch-integrity spec alongside the other `get_equity` defect.
+
+---
+
+## 0. Spot Exit Parity (feature 011, 2026-08-16)
+
+Brings the **live** venue to the recording standard feature 010 set for futures
+(Constitution V). Exit *decisions* are untouched — only recorded values change:
+
+- **Exchange-SL exits** (main branch + crash-guard pre-check) record the real
+  fill price and commission via `_real_fill`, not the theoretical trigger price
+  with `fee_exit=0`. Slippage past the stop is now captured, so
+  `closed_trades.pnl_net` — the input to the daily-loss and consecutive-loss
+  kill switches — reflects true losses.
+- **`opened_at` is real** on every closed spot trade (was hardcoded 0; hold-time
+  analytics were impossible and the 009 study had to rebuild entry times from
+  `signals`).
+- **Fee fallback from settings**: `cex_round_trip_fee_pct / 2` per leg replaces
+  the hardcoded `0.001` — numerically identical at the current 0.20% setting.
+
+No migration, no schema change, no new setting.
+
+---
+
+## 0. Futures Exit Integrity (feature 010, 2026-08-15)
+
+Three of the five paths in `futures_scalper.manage_open_positions` violated the
+constitution. DEX was off (`auto_trade_orderly=False`), so none of it was live —
+which is exactly why it was fixed before anything arms it.
+
+| Path | Was | Now |
+|---|---|---|
+| **Time stop** | Cancelled TP **and SL**, deleted the DB row, **never sent a closing order** — a live leveraged position with no stop and no local record. Booked the exit at the entry price. | Cancel brackets → reduce-only `market_close` → **verify** via `get_open_positions` → record the real fill and delete. |
+| **Regime exit** | Wrote the breakeven TP to the DB only; the exchange order was never amended, then the fabricated price was booked as the exit. | Cancel + re-place on the exchange; `update_position` runs **only** on success. |
+| **TP / SL exits** | Recorded the *intended* price at a flat `0.0003` fee. | Real `average_executed_price` / `total_fee`; fallbacks logged as estimates. |
+| `opened_at` | Hardcoded `0` — hold duration lost. | The position's real `opened_at`. |
+| `cancel_order` | Fired a junk `POST /v1/order` with `side: "CANCEL"` before the real `DELETE`. | One `DELETE`. |
+
+### The exit ladder (Constitution III has no exception)
+
+```
+time stop → cancel TP+SL → market_close(reduce_only)
+   ├ verified closed         → record real fill, delete row
+   ├ failed / still open     → KEEP row, re-place stop, ERROR
+   └ stop re-placement fails → Telegram alert + auto_trade_orderly=false
+```
+
+No branch ends a cycle with an unprotected position, and no branch deletes a row
+whose closure was not verified. Disabling on double failure blocks **entries
+only** — exits keep running, so the stranded position is still managed.
+
+### Verified Orderly contract
+
+The order fields were confirmed against `ccxt/woofipro.py` in the repo venv,
+which targets **`https://api-evm.orderly.org`** — the same host `OrderlyFutures`
+uses: `reduce_only: true` (bool) in the order body, `order_type: "MARKET"` with
+`order_quantity`, and `average_executed_price` / `total_fee` on a filled order
+(the two fields `place_entry` already read). **ccxt is documentation only — it is
+not imported by the bot.**
+
+New `OrderlyFutures` methods: `market_close`, `place_tp`, `place_stop`,
+`get_order_fills`. All honour `dry_run`.
+
+### Before arming DEX — manual checklist
+
+1. `dry_run=true`, `auto_trade_orderly=Automatic`, seed a futures position with a
+   past `opened_at`.
+2. Confirm the log shows `market_close` → verification → a `closed_trades` row
+   with a non-entry exit price and a real `opened_at`.
+3. Force an adverse regime; confirm cancel + re-place appear and `tp_price` moves
+   only after success.
+4. Only then consider `dry_run=false`.
+
+**Still open on the futures side** (deliberately out of scope): `_save_open` does
+not store `fee_entry`, so entry fees are settings estimates; `place_entry` leaves
+a dangling TP when its emergency close fires.
+
+---
+
+## 0. Entry Confirmation Candle (feature 009, 2026-08-15)
+
+The dip rule measures **displacement only** — `_is_dip` compares price to the
+rolling peak and never checks whether price is still falling — so the bot
+routinely entered mid-fall. Feature 009 adds a confirmation test: **the last
+CLOSED 5m return must be positive** (`close > open`; a flat bar does not
+confirm). Stated as a sign test on the last completed return, not a candlestick
+pattern — no multi-bar shapes, no pattern taxonomy (Constitution I).
+
+Futures is symmetric: a `long` is confirmed by an up bar, a `short` by a down
+bar. **The short arm is evidence-free** — the study covers spot longs only and
+DEX is currently off.
+
+### Two modes
+
+| `entry_confirm_candle` | Behaviour |
+|---|---|
+| `false` (**default**) | **Observe-only.** The verdict is recorded on every `signals` row via the new `entry_confirmed` column, but nothing is blocked. Zero behaviour change. |
+| `true` | **Enforce.** An unconfirmed entry is skipped and recorded with reason `entry_not_confirmed`; no order reaches the exchange. |
+
+`entry_confirmed`: `1` confirmed, `0` not confirmed, `NULL` indeterminate or
+never evaluated (market-gate and global-loss skips, pre-migration rows).
+Indeterminate never counts as confirmed — in enforce mode it fails closed
+(Constitution IV).
+
+### Cost
+
+`trade/regime.py::last_closed_return_up` reads the **same 5m cache** that
+`get_atr_pct` fills, delegating to it on a miss or stale entry so there is only
+ever one fetch/error path. With `adaptive_enabled=true` (the live setting)
+`get_atr_pct` has already run for that asset in the same cycle, so the helper is
+a dict hit — **zero additional requests**. With `adaptive_enabled=false` the
+delegation costs at most one 5m fetch per asset per `candle_cache_sec` (60s).
+The cached bar may be up to `candle_cache_sec` stale; observe-mode measures live
+behaviour including that staleness.
+
+### Evidence
+
+113 real `action='entered'` signals (binance, 2026-08-05 → 08-15), each replayed
+over its actual 5m path from its true entry timestamp at TP 1.2 / SL 2.0 /
+120-min hold, 0.2% round-trip fee:
+
+| Entry timing | n | net/trade | TP hit | stopped |
+|---|---|---|---|---|
+| No filter | 113 | +0.017% | 59% | **20%** |
+| Last 5m return **up** | 41 (36%) | **+0.387%** | 73% | **12%** |
+| Last 5m return **down** | 72 (64%) | −0.194% | 51% | 25% |
+
+64% of entries fired while price was still falling, and those were the losing
+half. "Up" beat "down" in all seven TP/SL configurations tested, so the effect
+is not an artefact of the current pair. Caveat: n=41 in the confirmed arm, one
+venue, one 10-day window, one regime — observe-mode exists to upgrade that.
+
+### Constitution VIII trade-off
+
+Enforcement keeps 36% of entries (~11/day → ~4/day). That is why the default is
+observe-only. Throughput is **not** slot-limited: 42-min average hold implies
+~34 trades/day/slot against 6.5 actual (19% of capacity), with zero
+`max_slots_cex` / `max_concurrent_positions` skips in the three days before the
+feature. Daily return on slot capital rises +0.19%/day → +1.59%/day on the study
+sample. Frequency recovery (`max_concurrent_positions`, `max_active_pairs`,
+`universe_size`) is deliberately a follow-up spec.
+
+Decide enforcement from the observe data:
+
+```sql
+SELECT entry_confirmed, COUNT(*) n FROM signals
+WHERE action IN ('entered','signaled') GROUP BY entry_confirmed;
+```
+
+### Constitution v1.1.0 (2026-08-15)
+
+Principle II changed from **"Reward Must Exceed Risk"** (`tp_pct > sl_pct`) to
+**"Reward Must Exceed Cost"** — `tp_effective > round_trip_fee(venue) +
+slippage + min_net_edge`, enforced per entry, with the stop sized to asset
+volatility rather than to the target. The payoff ratio may be below 1 when the
+hit rate is asymmetric. Rationale, per-principle impact and the evidence caveat
+are in `.specify/memory/constitution.md` → Amendment History.
+
+---
+
+## 0.1 Market Gate: Liquidity-Only Suspension (feature 008, 2026-08-12)
 
 The automatic market gate (feature 005) now suspends on **liquidity only** by
 default. Regime-based WARNs (`regime_trending`, `regime_unknown`) remain

@@ -58,6 +58,8 @@ ALL: list[SettingSpec] = [
                 "Minimum % distance from any open position's entry price"),
     SettingSpec("adaptive_enabled", bool, "entry", None, None, None, None, None,
                 "Scale dip/pump/TP/SL thresholds with ATR volatility"),
+    SettingSpec("entry_confirm_candle", bool, "entry", None, None, None, None, None,
+                "Require the last closed 5m return to confirm the reversal before entering (default false — observe-only: the verdict is recorded in signals.entry_confirmed but never blocks)"),
     # max_slots removed (Amendment 004) — replaced by max_concurrent_positions in risk group
 
     # ── Exit ───────────────────────────────────────────────────────────────

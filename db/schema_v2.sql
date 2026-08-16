@@ -173,7 +173,11 @@ CREATE TABLE IF NOT EXISTS signals (
     reason           TEXT    NOT NULL,
     position_id      TEXT,
     tp_price         REAL,
-    sl_price         REAL
+    sl_price         REAL,
+    -- Entry confirmation verdict (feature 009): 1 confirmed, 0 not confirmed,
+    -- NULL indeterminate / not evaluated. Added by migration 009 on existing
+    -- databases; listed here so fresh databases match.
+    entry_confirmed  INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_signals_ts        ON signals(ts);

@@ -605,11 +605,121 @@ class OrderlyFutures:
         except Exception:
             return "UNKNOWN"
 
+    def get_order_fills(self, order_id: str) -> tuple[float, float] | None:
+        """Real fill for a closed order: (average_price, total_fee).
+
+        Mirrors BinanceSpot.get_order_fills. Field names verified against the
+        Orderly EVM API (average_executed_price / total_fee) — the same fields
+        place_entry already reads. None when unavailable, so the caller can fall
+        back to a logged estimate rather than recording a fabricated number.
+        """
+        try:
+            data = self._get(f"/v1/order/{order_id}")
+            d = data.get("data", data) or {}
+            price = float(d.get("average_executed_price") or 0)
+            if price <= 0:
+                return None
+            return (price, float(d.get("total_fee") or 0))
+        except Exception:
+            return None
+
+    def market_close(self, asset: str, side: str, qty: float) -> Fill | None:
+        """Reduce-only market close for an open futures position.
+
+        `side` is the POSITION side ("long"/"short"); the order is sent in the
+        opposite direction. reduce_only guarantees the order can never flip the
+        position into the other direction if the size is stale.
+        """
+        dry = get_setting_bool("dry_run", True)
+        cid = _client_order_id(self.name, asset, "exit", "cl")
+        if dry:
+            return Fill(filled_qty=qty, fill_price=0.0, fee_amount=0.0, fee_asset="USDC",
+                        sellable_qty=qty, order_id="dry-close",
+                        client_order_id=cid, raw={"dry_run": True})
+        info = self.get_symbol_info(asset)
+        if info is None:
+            return None
+        body = {
+            "symbol": info.symbol,
+            "side": "SELL" if side == "long" else "BUY",
+            "order_type": "MARKET",
+            "order_quantity": _fmt(qty, info.base_tick),
+            "reduce_only": True,
+            "client_order_id": cid,
+        }
+        r = self._post("/v1/order", body)
+        if r.status_code != 200:
+            logger.warning(f"Orderly market close failed: {r.status_code} {r.text[:200]}")
+            return None
+        data = r.json().get("data", r.json())
+        return Fill(
+            filled_qty=float(data.get("executed_quantity", qty)),
+            fill_price=float(data.get("average_executed_price", 0) or 0),
+            fee_amount=float(data.get("total_fee", 0) or 0), fee_asset="USDC",
+            sellable_qty=float(data.get("executed_quantity", qty)),
+            order_id=str(data.get("order_id", "")), client_order_id=cid, raw=data,
+        )
+
+    def place_tp(self, asset: str, side: str, qty: float, tp_price: float,
+                 position_id: str) -> str | None:
+        """(Re-)place the take-profit limit. Returns the order id.
+
+        Used by the regime exit to move the TP to breakeven on the EXCHANGE —
+        updating only the DB would leave the real order where it was.
+        """
+        dry = get_setting_bool("dry_run", True)
+        if dry:
+            return "dry-tp"
+        info = self.get_symbol_info(asset)
+        if info is None:
+            return None
+        body = {
+            "symbol": info.symbol,
+            "side": "SELL" if side == "long" else "BUY",
+            "order_type": "LIMIT",
+            "order_quantity": _fmt(qty, info.base_tick),
+            "order_price": _fmt(tp_price, info.quote_tick),
+            "reduce_only": True,
+            "client_order_id": _client_order_id(self.name, asset, position_id, "tp"),
+        }
+        r = self._post("/v1/order", body)
+        if r.status_code != 200:
+            logger.error(f"Orderly TP re-placement failed: {r.status_code} {r.text[:200]}")
+            return None
+        data = r.json().get("data", r.json())
+        return str(data.get("order_id", "")) or None
+
+    def place_stop(self, asset: str, side: str, qty: float, stop_price: float,
+                   position_id: str) -> str | None:
+        """(Re-)place a STOP_MARKET protective stop. Returns the order id.
+
+        Used to restore protection when a close attempt fails — Constitution III
+        admits no cycle ending with an unprotected leveraged position.
+        """
+        dry = get_setting_bool("dry_run", True)
+        if dry:
+            return "dry-sl"
+        info = self.get_symbol_info(asset)
+        if info is None:
+            return None
+        body = {
+            "symbol": info.symbol,
+            "side": "SELL" if side == "long" else "BUY",
+            "order_type": "STOP_MARKET",
+            "order_quantity": _fmt(qty, info.base_tick),
+            "trigger_price": _fmt(stop_price, info.quote_tick),
+            "reduce_only": True,
+            "client_order_id": _client_order_id(self.name, asset, position_id, "sl"),
+        }
+        r = self._post("/v1/order", body)
+        if r.status_code != 200:
+            logger.error(f"Orderly stop re-placement failed: {r.status_code} {r.text[:200]}")
+            return None
+        data = r.json().get("data", r.json())
+        return str(data.get("order_id", "")) or None
+
     def cancel_order(self, symbol: str, order_id: str) -> bool:
         try:
-            r = self._post("/v1/order", {"symbol": symbol, "order_id": order_id, "side": "CANCEL"})
-            # Actually need to check the correct cancel endpoint
-            # Orderly cancel: DELETE /v1/order
             ts = str(int(time.time() * 1000))
             payload = f"{ts}DELETE/v1/order"
             hdrs = {**self._headers(), "orderly-timestamp": ts, "orderly-signature": self._sign(payload)}

@@ -4,6 +4,9 @@ MockbaV4 — Regime detection from 1h and 4h OHLCV candles.
 Pure price-and-volume: linear regression slope on close prices.
 Volume grades trend strength; it never decides whether a trend exists.
 Cached per asset for regime_cache_sec (default 300).
+
+Also owns the 5m candle cache used for ATR, which `last_closed_return_up`
+(feature 009 — entry confirmation) reads without issuing its own request.
 """
 
 from __future__ import annotations
@@ -261,3 +264,32 @@ def _compute_atr_pct(candles: list[dict], period: int = 14) -> float | None:
     if price <= 0:
         return None
     return (atr / price) * 100
+
+
+# ── Entry confirmation (feature 009) ─────────────────────────────────────────
+
+def last_closed_return_up(asset: str, venue: str) -> bool | None:
+    """True when the last CLOSED 5m bar's return is positive (close > open).
+
+    The dip rule measures displacement only, so it fires while price is still
+    falling; this answers "has the fall paused?". Stated as a sign test on the
+    last completed return — not candlestick pattern detection (Constitution I).
+
+    Shares the ATR 5m cache: on a miss or a stale entry it calls get_atr_pct,
+    which is the sole owner of the fetch / cache-write / stale-fallback path, so
+    there is no second error branch to diverge. When adaptive_enabled is true
+    (the live configuration) get_atr_pct already ran this cycle, making this a
+    dict hit with zero requests.
+
+    A flat bar is NOT confirmation. Returns None when the series is unavailable
+    or too short — indeterminate never counts as confirmed (Constitution IV).
+    """
+    key = _candle_cache_key(asset, venue, "5m")
+    cached = _candle_cache.get(key)
+    if cached is None or (time.time() - cached[0]) >= get_setting_int("candle_cache_sec", 60):
+        get_atr_pct(asset, venue)
+        cached = _candle_cache.get(key)
+    if cached is None or len(cached[1]) < 2:
+        return None
+    bar = cached[1][-2]  # [-1] is the in-progress bar
+    return bar["close"] > bar["open"]
