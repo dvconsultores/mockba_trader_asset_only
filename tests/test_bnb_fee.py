@@ -28,10 +28,6 @@ def db(tmp_path):
     ops.upsert_setting("dry_run", "false")
     ops.upsert_setting("cex_fee_bnb", "true")
     ops.upsert_setting("cex_round_trip_fee_pct", "0.15")
-    ops.upsert_setting("tp_min_pct", "0.8")
-    ops.upsert_setting("sl_min_pct_spot", "1.5")
-    ops.upsert_setting("tp_k", "1.2")
-    ops.upsert_setting("sl_k_spot", "2.0")
     yield ops
     ops.DB_PATH = old
 
@@ -127,75 +123,3 @@ def test_entry_base_commission_reduces_sellable(ex):
     assert fill is not None
     assert fill.sellable_qty == pytest.approx(99.9)
     assert fill.fee_amount == pytest.approx(0.1 * 0.1)
-
-
-# ── Startup reserve check (AC5) ──────────────────────────────────────────────
-# Regression for the 2026-08-16 crash loop: the original inline check called a
-# method that does not exist on BinanceSpot (get_balance vs get_asset_balance)
-# and the AttributeError killed run() before the main loop on every restart.
-# patch.object pins the real method names; the raise test pins the try/except.
-
-def test_startup_reserve_warning_when_low(db, ex, caplog):
-    import logging
-    from bot import _bnb_reserve_check
-    with caplog.at_level(logging.WARNING), \
-         mock.patch.object(ex, "get_asset_balance", return_value=0.001), \
-         mock.patch.object(ex, "get_price", return_value=600.0):
-        _bnb_reserve_check(ex)
-    assert any("BNB reserve" in r.message for r in caplog.records)
-
-
-def test_startup_reserve_quiet_when_funded(db, ex, caplog):
-    import logging
-    from bot import _bnb_reserve_check
-    with caplog.at_level(logging.WARNING), \
-         mock.patch.object(ex, "get_asset_balance", return_value=0.02), \
-         mock.patch.object(ex, "get_price", return_value=600.0):
-        _bnb_reserve_check(ex)
-    assert not any("BNB reserve" in r.message for r in caplog.records)
-
-
-def test_startup_reserve_check_never_raises(db, ex):
-    """API down, or any bug inside the check, must never kill the trading loop."""
-    from bot import _bnb_reserve_check
-    with mock.patch.object(ex, "_get", side_effect=Exception("api down")), \
-         mock.patch.object(ex, "get_price", return_value=None):
-        _bnb_reserve_check(ex)  # exercises the real get_asset_balance path
-    broken = mock.Mock(spec=[])  # no attributes at all -> AttributeError inside
-    _bnb_reserve_check(broken)
-
-
-# ── Validator coherence (AC6) ────────────────────────────────────────────────
-
-def test_validator_bnb_on_full_rate_warns(db):
-    from trade.settings_rules import validate
-    v = validate("cex_round_trip_fee_pct", 0.20)
-    assert v.level == "warn" and v.suggested_value == 0.15
-
-
-def test_validator_bnb_off_discount_rate_warns(db):
-    from trade.settings_rules import validate
-    db.upsert_setting("cex_fee_bnb", "false")
-    v = validate("cex_round_trip_fee_pct", 0.15)
-    assert v.level == "warn" and v.suggested_value == 0.20
-
-
-def test_validator_coherent_pair_ok(db):
-    from trade.settings_rules import validate
-    assert validate("cex_round_trip_fee_pct", 0.15).level == "ok"
-    assert validate("cex_fee_bnb", True).level == "ok"
-
-
-# ── Payoff-ratio validator hygiene (Constitution II v1.1.0) ──────────────────
-
-def test_ratified_wide_stop_config_is_silent(db):
-    """sl floor 1.5 vs tp floor 0.8 (ratio 1.9) — valid under v1.1.0, no warn."""
-    from trade.settings_rules import validate
-    assert validate("sl_min_pct_spot", 1.5).level == "ok"
-    assert validate("sl_k_spot", 2.0).level == "ok"
-
-
-def test_extreme_payoff_ratio_still_warns(db):
-    from trade.settings_rules import validate
-    v = validate("sl_min_pct_spot", 2.5)  # 3.1x the 0.8 tp floor
-    assert v.level == "warn" and "breakeven win rate" in v.message

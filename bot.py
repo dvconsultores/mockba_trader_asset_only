@@ -1,827 +1,234 @@
 """
-MockbaV4 — Main trading loop.
+MockbaV4 — reversal trading bot (spec 001, founding rewrite 2026-08-16).
 
-For each asset: refresh settings, detect regime, manage open positions, evaluate entries.
-Startup validation gate runs before first cycle and on setting changes.
-dry_run stays true throughout Phase 2.
+The 3MS method: deterministic structure engine (trade/structure.py) finds
+reversal candidates on 4h with 1d trend context; the DeepSeek judge
+(trading_bot/reversal_judge.py) verifies every criterion and prices the
+trade; every evaluation is recorded in `signals`. Phase 1 runs in observe
+mode — signals and Telegram only, no orders. Execution is Phase 2, behind
+`trade_mode = live` and its own authorization.
+
+Cycle: every `cycle_seconds` (default 1800 = 2/hour) over the operator's
+asset table (`asset_universe`, NEAR first). Candles are fetched per venue —
+Binance public REST for CEX, Orderly's native kline endpoint for DEX with
+Binance data as the fallback (operator directive).
 """
 
 from __future__ import annotations
-import sys
+import json
 import time
-import threading
-from collections import deque
-from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
-# Ensure project root is importable
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from db.db_ops import (
-    get_setting, get_setting_float, get_setting_int, get_setting_bool,
-    upsert_setting, initialize_database_tables,
-    get_tradeable_universe, set_venue_equity, get_venue_equity, load_all_positions,
+    initialize_database_tables, get_setting, upsert_setting,
+    get_setting_bool, get_setting_float, get_setting_int,
+    get_tradeable_universe, replace_universe, set_venue_equity, record_signal,
 )
 from logs.log_config import apolo_trader_logger as logger
-from trade.regime import detect_regime
-from trade.pnl import is_entry_blocked_per_pair, check_global_daily_loss
-from trade.universe import run_scans_if_due, is_universe_stale, force_rescan, add_degraded_exclusion
+from trade.structure import analyze, near_zone
 from trading_bot.executor import BinanceSpot, OrderlyFutures
-from trading_bot.spot_scalper import manage_open_positions as spot_manage, scalp_cycle as spot_cycle, _log as _spot_log
-from trading_bot.futures_scalper import manage_open_positions as futures_manage, scalp_cycle as futures_cycle, _log as _futures_log
-from trade.market_check import check_venue_observed, update_gate_state, _warn_is_strong
+from trading_bot.reversal_judge import judge
+
+VENUES = ("binance", "orderly")
+ASSETS_SEED = ["NEAR", "SOL", "ARB", "GRAM", "INJ"]   # operator list, NEAR first
+
+DEFAULT_SETTINGS = {
+    "trade_mode": "observe",            # observe | live (Phase 2)
+    "cycle_seconds": "1800",
+    "rr_min": "2.5",
+    "risk_pct": "1.0",                  # % equity risked per trade (Phase 2 sizing)
+    "max_concurrent_positions": "2",    # spec 001 Q9
+    "max_trades_per_month": "10",
+    "pivot_k": "2",
+    "zone_tolerance_pct": "0.75",
+    "retest_tolerance_pct": "1.0",
+    "judge_model": "deepseek-v4-pro",
+    "judge_effort": "high",
+    "auto_trade_binance": "false",
+    "auto_trade_orderly": "false",
+    "dry_run": "true",
+    "cex_fee_bnb": "true",
+    "cex_round_trip_fee_pct": "0.15",
+    "dex_round_trip_fee_pct": "0.06",
+    "daily_loss_limit_pct": "2.0",
+    "max_consecutive_losses": "6",
+    "telegram_signals": "true",
+}
+
+# in-memory cycle state: last reported ms_state and last judged 4h candle
+_last_state: dict[tuple[str, str], str] = {}
+_last_judged: dict[tuple[str, str], float] = {}
 
 
-# Consecutive cycles a venue's universe has been majority-blocked by the
-# spread-degradation guard — used to trigger an early rescan of stale spreads.
-_degraded_streak: dict[str, int] = {}
-# Per-asset consecutive blocked cycles, and last forced-rescan time per venue
-# (cooldown prevents hammering the scanner when a rescan doesn't help).
-_asset_degraded_streak: dict[tuple[str, str], int] = {}
-_last_forced_rescan: dict[str, float] = {}
-# Venue -> UTC date string last warned about the consecutive-losses kill switch
-# (logs once per venue per day, showing when entries will reset).
-_consec_loss_warned: dict[str, str] = {}
-# Whether the global daily loss [KILL] warning has been logged for the current
-# blocked episode (avoid 30s-cycle spam — reset when the block clears).
-_global_loss_warned: bool = False
-# Broad-market trend gate (2026-08-10): blocks entries while the majors'
-# average 24h change is a downtrend. Cached result + one-time warn flag.
-_market_filter_cache: dict = {"ts": 0.0, "res": (False, "")}
-_market_filter_warned: bool = False
-# Venue -> CONSECUTIVE failed equity-query cycles (feature 015, Constitution IV).
-# Module-level so the streak survives across cycles — the old per-cycle dict
-# could disable a venue on a single network blip spanning 5 assets.
-_venue_fail_streak: dict[str, int] = {}
+def ensure_seed():
+    """Seed default settings and the operator asset list (idempotent)."""
+    for k, v in DEFAULT_SETTINGS.items():
+        if get_setting(k) is None:
+            upsert_setting(k, v)
+    for venue in VENUES:
+        if not get_tradeable_universe(venue):
+            rows = [{
+                "asset": a,
+                "symbol": f"{a}USDT" if venue == "binance" else f"PERP_{a}_USDC",
+                "rank": i + 1, "scanned_at": time.time(),
+            } for i, a in enumerate(ASSETS_SEED)]
+            replace_universe(venue, rows)
+            logger.info(f"[SEED] {venue}: asset list seeded {ASSETS_SEED}")
 
 
-# ── Market gate (feature 005) — in-memory only; logic in trade/market_check.py ──
-_gate_state: dict[str, dict] = {}                    # venue -> {"suspended", "bad_streak", "good_streak"}
-_last_gate_eval: dict[str, float] = {}               # venue -> last evaluation time.time()
-_gate_observations: dict[str, dict[str, deque]] = {} # venue -> asset -> deque(maxlen=40)
-_gate_disabled_logged = False
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Startup validation gate — refuses to trade if config is invalid
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def validate_startup() -> bool:
-    """Run all startup checks via settings_rules. Logs issues, never blocks — trader is responsible."""
-    from trade.settings_rules import validate_all, SettingsContext
-    results = validate_all()
-    errors = [f"{k}: {v.message}" for k, v in results.items() if v.level == "error"]
-    warns = [f"{k}: {v.message}" for k, v in results.items() if v.level == "warn"]
-
-    for w in warns:
-        logger.warning(f"[STARTUP] {w}")
-    for e in errors:
-        logger.warning(f"[STARTUP] {e}")
-
-    # Universe presence (Amendment 003) — the scanner populates this on startup
-    if not get_tradeable_universe("binance") and not get_tradeable_universe("orderly"):
-        logger.info("[STARTUP] no universe scan stored yet — the scanner thread will populate it")
-
-    # Capital pools (Amendment 003) — declared vs live equity cache, slot caps
+def _notify(text: str):
+    if not get_setting_bool("telegram_signals", True):
+        return
     try:
-        from trade.settings_rules import validate_capital_pools
-        from db.db_ops import get_venue_equity
-        def _eq(venue: str) -> float:
-            st = get_venue_equity(venue)
-            return float(st["equity"]) if st else 0.0
-        pool_ctx = SettingsContext(dex_equity=_eq("orderly"), cex_equity=_eq("binance"))
-        for v in validate_capital_pools(pool_ctx):
-            if v.level in ("error", "warn"):
-                logger.warning(f"[STARTUP] {v.message}")
-    except Exception:
-        pass
-
-    tp = get_setting_float("tp_min_pct", 0.8); sl = get_setting_float("sl_min_pct", 0.5)
-    fee_key = "dex_round_trip_fee_pct"
-    fee = get_setting_float(fee_key, 0.06); slip = get_setting_float("assumed_slippage_pct", 0.03)
-    net = tp - fee - slip
-    status = "WARN" if errors else "OK"
-    universe_count = len(get_tradeable_universe("binance")) + len(get_tradeable_universe("orderly"))
-    logger.info(f"[STARTUP] validation {status} — tp={tp} sl={sl} net_edge={net:.2f}% universe_assets={universe_count}")
-    return True
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Startup reconciliation — Constitution VI: restart safety for all active pairs
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _reconcile_startup(binance, orderly):
-    """Reconcile exchange state with local DB for every asset that could hold a
-    position: current universe members unioned with assets that have a local
-    record (Amendment 003 — churn must not orphan restart reconciliation)."""
-    from db.db_ops import load_all_positions, save_position, delete_position, get_tradeable_universe
-    logger.info("[RECONCILE] starting universe reconciliation")
-
-    exchange_map = {"binance": binance, "orderly": orderly}
-    reconciled = 0
-
-    for venue, ex in exchange_map.items():
-        universe_assets = {u["asset"] for u in get_tradeable_universe(venue)}
-        local_assets = {p["asset"] for p in load_all_positions(venue=venue)}
-        assets = sorted(universe_assets | local_assets)
-        if not assets:
-            continue
-
-        for asset in assets:
-            try:
-                local_positions = load_all_positions(asset=asset, venue=venue)
-                local_ids = {p["id"] for p in local_positions}
-
-                # Query exchange for open positions (dry-run skips actual API calls)
-                exchange_positions = ex.get_open_positions(asset) if hasattr(ex, "get_open_positions") else []
-                if exchange_positions is None:
-                    exchange_positions = []
-
-                exchange_ids = set()
-                for ep in exchange_positions:
-                    pid = ep.get("id") or ep.get("orderId", "")
-                    if not pid:
-                        continue
-                    exchange_ids.add(str(pid))
-
-                    # Adopt exchange position with no local DB record
-                    if str(pid) not in local_ids:
-                        logger.warning(
-                            f"[RECONCILE] adopting orphan position {venue}:{asset}:{pid}"
-                        )
-                        # Minimal save — details will be filled on next manage cycle
-                        try:
-                            save_position({
-                                "id": str(pid),
-                                "asset": asset,
-                                "venue": venue,
-                                "side": ep.get("side", "long"),
-                                "qty": float(ep.get("qty", 0)),
-                                "entry_price": float(ep.get("entryPrice", 0)),
-                                "signal_price": float(ep.get("entryPrice", 0)),
-                                "tp_price": 0.0,
-                                "sl_price": 0.0,
-                                "tp_order_id": None,
-                                "sl_order_id": None,
-                                "opened_at": time.time(),
-                            })
-                        except Exception:
-                            logger.error(f"[RECONCILE] failed to save orphan {venue}:{asset}:{pid}")
-
-                # Binance spot has no positions endpoint — infer live positions
-                # from open orders whose clientOrderId embeds the position-UUID
-                # prefix (see _client_order_id in executor.py). Without this,
-                # every binance record is wrongly closed as stale on startup.
-                if venue == "binance" and not exchange_positions:
-                    open_orders = ex.get_open_orders(asset) if hasattr(ex, "get_open_orders") else []
-                    for pid in local_ids:
-                        short = pid.replace("-", "")[:10]
-                        if any(short in str(o.get("clientOrderId", "")) for o in open_orders):
-                            exchange_ids.add(pid)
-
-                # Close DB records with no matching exchange position
-                for pid in local_ids - exchange_ids:
-                    logger.warning(
-                        f"[RECONCILE] closing stale DB record {venue}:{asset}:{pid}"
-                    )
-                    delete_position(asset, venue, pid)
-                reconciled += 1
-
-            except Exception as e:
-                logger.error(f"[RECONCILE] {venue}:{asset} reconciliation failed: {e}")
-                # Continue to next asset — do not abort
-
-    if reconciled == 0:
-        logger.info("[RECONCILE] no assets to reconcile")
-    logger.info("[RECONCILE] complete")
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# Main loop
-# ═══════════════════════════════════════════════════════════════════════════════
-
-def _bnb_reserve_check(binance) -> None:
-    """Feature 017: warn when the BNB fee reserve is nearly empty.
-
-    Warn-only — if the reserve empties, Binance silently reverts to full-rate
-    fees and the executor's per-fill mismatch warning catches it, so a failure
-    here must never take down the trading loop.
-    """
-    try:
-        if not get_setting_bool("cex_fee_bnb", False) or get_setting_bool("dry_run", True):
-            return
-        bal = binance.get_asset_balance("BNB")
-        px = binance.get_price("BNB")
-        if bal is not None and px is not None and bal * px < 2.0:
-            logger.warning(f"[STARTUP] cex_fee_bnb=true but BNB reserve ≈ "
-                           f"${bal * px:.2f} — top up or fees revert to full rate")
+        from trading_bot.send_bot_message import send_message
+        send_message(text)
     except Exception as e:
-        logger.warning(f"[STARTUP] BNB reserve check failed: {e}")
+        logger.warning(f"[TELEGRAM] send failed: {e}")
+
+
+def _fetch(binance: BinanceSpot, orderly: OrderlyFutures, venue: str,
+           asset: str, interval: str, limit: int) -> list[dict] | None:
+    if venue == "orderly":
+        rows = orderly.get_klines(asset, interval, limit)
+        if rows:
+            return rows
+        # fallback per spec 001 Q4 — perps track spot within basis points
+    return binance.get_klines(asset, interval, limit)
+
+
+def evaluate_asset(binance: BinanceSpot, orderly: OrderlyFutures,
+                   venue: str, asset: str):
+    """One asset, one venue: engine -> (maybe) judge -> record."""
+    pivot_k = get_setting_int("pivot_k", 2)
+    zone_tol = get_setting_float("zone_tolerance_pct", 0.75)
+    retest_tol = get_setting_float("retest_tolerance_pct", 1.0)
+    rr_min = get_setting_float("rr_min", 2.5)
+
+    c1d = _fetch(binance, orderly, venue, asset, "1d", 200)
+    c4h = _fetch(binance, orderly, venue, asset, "4h", 200)
+    c1h = _fetch(binance, orderly, venue, asset, "1h", 120)
+    if not c1d or not c4h or not c1h:
+        logger.warning(f"[CYCLE] {venue}:{asset} candles unavailable")
+        return
+
+    trend_1d = analyze(c1d, pivot_k, zone_tol, retest_tol).trend
+    s = analyze(c4h, pivot_k, zone_tol, retest_tol)
+    key = (venue, asset)
+    price = s.last_close or c4h[-1]["close"]
+
+    base = dict(asset=asset, venue=venue, price=price, timeframe="4h",
+                tf_1d_trend=trend_1d, ms_state=s.ms_state, neckline=s.neckline)
+
+    # record state transitions (observability without drowning the table)
+    if s.ms_state != _last_state.get(key):
+        _last_state[key] = s.ms_state
+        if s.ms_state != "CONFIRMED":
+            record_signal(action="observe", reason=f"state:{s.ms_state}",
+                          direction=s.direction, **base)
+
+    if s.ms_state != "CONFIRMED" or not s.retest:
+        return
+
+    # judge at most once per 4h candle per asset+venue
+    candle_ts = c4h[-2]["ts"] if len(c4h) > 1 else c4h[-1]["ts"]
+    if _last_judged.get(key) == candle_ts:
+        return
+    _last_judged[key] = candle_ts
+
+    logger.info(f"[CANDIDATE] {venue}:{asset} {s.direction} neckline={s.neckline}")
+    verdict, reasoning, model = judge(asset, s.packet(), trend_1d, c4h, c1h, rr_min)
+
+    if verdict is None:
+        record_signal(action="skipped", reason="judge_unavailable",
+                      direction=s.direction, structure_json=s.packet(),
+                      judge_model=model, ai_reasoning=reasoning, **base)
+        return
+
+    common = dict(structure_json=s.packet(), judge_model=model,
+                  ai_valid=int(verdict["valid"]), ai_confidence=verdict["confidence"],
+                  ai_entry=verdict["entry"], ai_stop=verdict["stop"],
+                  ai_target=verdict["target"], ai_rr=verdict["rr"],
+                  ai_reasons=json.dumps(verdict["reasons"]), ai_reasoning=reasoning)
+
+    if not verdict["valid"]:
+        record_signal(action="skipped", reason="judge_rejected",
+                      direction=verdict["direction"], **common, **base)
+        return
+
+    if venue == "binance" and verdict["direction"] == "short":
+        record_signal(action="skipped", reason="short_not_possible_on_spot",
+                      direction="short", **common, **base)
+        return
+
+    record_signal(action="signal", reason="3ms_confirmed", direction=verdict["direction"],
+                  **common, **base)
+    logger.info(f"[SIGNAL] {venue}:{asset} {verdict['direction']} "
+                f"conf={verdict['confidence']:.0f} rr={verdict['rr']:.2f}")
+    _notify(
+        f"REVERSAL {verdict['direction'].upper()} {asset} ({venue})\n"
+        f"entry {verdict['entry']:.6g} | stop {verdict['stop']:.6g} | "
+        f"target {verdict['target']:.6g} | rr {verdict['rr']:.2f} | "
+        f"confidence {verdict['confidence']:.0f}%\n"
+        f"mode: {get_setting('trade_mode')} — no order placed"
+    )
+    # Phase 2 (trade_mode = live) plugs in here: retest entry, structural
+    # bracket, risk-% sizing, concurrency + monthly caps. Deliberately absent
+    # in Phase 1 — observe mode never places orders (spec 001 Q6).
+
+
+def refresh_universe_stats(binance: BinanceSpot):
+    """Hourly 24h-volume refresh so the dashboard's universe view stays live."""
+    import requests as rq
+    for venue in VENUES:
+        rows = get_tradeable_universe(venue)
+        out = []
+        for r in rows:
+            vol = None
+            try:
+                t = rq.get("https://api.binance.com/api/v3/ticker/24hr",
+                           params={"symbol": f"{r['asset']}USDT"}, timeout=5).json()
+                vol = float(t.get("quoteVolume", 0))
+            except Exception:
+                pass
+            out.append({**r, "quote_volume_24h": vol, "scanned_at": time.time()})
+        if out:
+            replace_universe(venue, out)
 
 
 def run():
-    """Main autotrade loop. Never returns unless killed."""
-    # Module-level flags reassigned inside the loop must be declared global,
-    # otherwise Python treats them as locals → UnboundLocalError on first read.
-    global _gate_disabled_logged, _global_loss_warned, _market_filter_warned
+    """Main loop. Never returns unless killed."""
     initialize_database_tables()
-
-    dry = get_setting_bool("dry_run", True)
-    logger.info(f"[STARTUP] dry_run={dry}")
-
-    # Run validation for logging only — never blocks (trader is responsible)
-    validate_startup()
-
-    # Ensure trading is enabled (recover from previous kill-switch state)
-    if not get_setting_bool("trading_enabled", True):
-        logger.info("[STARTUP] re-enabling trading")
-        upsert_setting("trading_enabled", "1")
+    ensure_seed()
+    mode = get_setting("trade_mode")
+    logger.info(f"[STARTUP] reversal bot (spec 001) — trade_mode={mode}")
 
     binance = BinanceSpot()
     orderly = OrderlyFutures()
-
-    # ── Startup reconciliation (Amendment 004, Constitution VI) ──────────
-    _reconcile_startup(binance, orderly)
-
-    # ── BNB fee reserve (feature 017) — warn-only, never blocks ──────────
-    _bnb_reserve_check(binance)
-
-    # ── Universe scanner thread (Amendment 003) ─────────────────────────
-    # Never runs inside the trading cycle. Scans each venue when the stored
-    # scan is missing or older than universe_scan_interval_hours.
-    def _universe_scanner_loop():
-        while True:
-            try:
-                def _equity_for(v: str) -> float | None:
-                    try:
-                        return (binance if v == "binance" else orderly).get_equity()
-                    except Exception:
-                        return None
-                results = run_scans_if_due(equity_fn=_equity_for)
-                for r in results:
-                    if r.get("ok"):
-                        logger.info(f"[UNIVERSE] {r['venue']} scan stored {r.get('stored_count', 0)} assets")
-                    else:
-                        logger.warning(f"[UNIVERSE] {r['venue']} scan not stored: {r.get('reason', 'unknown')}")
-            except Exception as e:
-                logger.error(f"[UNIVERSE] scanner loop error: {e}")
-            time.sleep(600)  # re-check due-ness every 10 minutes
-
-    threading.Thread(target=_universe_scanner_loop, daemon=True, name="universe-scanner").start()
-
-    _last_settings: dict[str, str] = {}
-    _last_validation = time.time()
-    VALIDATION_INTERVAL = 300  # re-validate every 5 minutes
+    last_stats = 0.0
 
     logger.info("[LOOP] entering main loop")
-    _last_mode_log = 0.0
-
     while True:
+        cycle_start = time.time()
         try:
-            # ── Periodic mode log (every 5 min) ─────────────────
-            if time.time() - _last_mode_log > 300:
-                dex_m = _normalize_venue_mode(get_setting("auto_trade_orderly"))
-                cex_m = _normalize_venue_mode(get_setting("auto_trade_binance"))
-                logger.info(f"[MODE] DEX={dex_m} CEX={cex_m} "
-                            f"universe_dex={len(get_tradeable_universe('orderly'))} "
-                            f"universe_cex={len(get_tradeable_universe('binance'))}")
-                _last_mode_log = time.time()
+            for venue, ex in (("binance", binance), ("orderly", orderly)):
+                eq = ex.get_equity()
+                if eq is not None:
+                    set_venue_equity(venue, eq)
 
-            # ── Periodic market-gate evaluation (feature 005, observed mode) ──
-            # Mirrors the mode-log pattern (same loop, no thread); settings read
-            # fresh each cycle. Disabled ⇒ skip the whole block (single log).
-            if not get_setting_bool("market_gate_enabled", False):
-                if not _gate_disabled_logged:
-                    logger.info("[GATE] disabled — set market_gate_enabled=true to activate (default: inactive, zero behavior change)")
-                    _gate_disabled_logged = True
-            else:
-                _gate_interval = get_setting_int("market_gate_interval_min", 5) * 60
-                for gv, gm in (("binance", _normalize_venue_mode(get_setting("auto_trade_binance"))),
-                               ("orderly", _normalize_venue_mode(get_setting("auto_trade_orderly")))):
-                    if gm == "False":
-                        continue  # venue not trading — gate inactive
-                    if time.time() - _last_gate_eval.get(gv, 0.0) < _gate_interval:
-                        continue
-                    # Cold start: no observations recorded yet (venue just became
-                    # active, or bot restarted). With an empty window every asset
-                    # counts as UNKNOWN → misleading regime_unknown=1.00 WARN,
-                    # and a partial first round produced FAIL→PASS flips. Skip
-                    # until a full observation round (live spread per asset)
-                    # exists for most of the universe.
-                    if not _gate_observations_warm(gv, get_tradeable_universe(gv)):
-                        _last_gate_eval[gv] = time.time()  # re-check after interval
-                        continue
-                    _gate_apply(gv, check_venue_observed(
-                        gv, _gate_observations.get(gv, {}), equity=_cached_gate_equity(gv)))
-                    _last_gate_eval[gv] = time.time()
+            if time.time() - last_stats > 3600:
+                refresh_universe_stats(binance)
+                last_stats = time.time()
 
-            # Refresh settings
-            current = {k: get_setting(k) or "" for k in [
-                "tp_min_pct", "sl_min_pct", "dip_min_pct", "pump_min_pct",
-                "dip_k", "pump_k", "tp_k", "sl_k", "adaptive_enabled",
-                "cooldown_sec", "min_entry_spacing_pct",
-                "daily_loss_limit", "daily_loss_limit_pct", "max_consecutive_losses",
-                "global_daily_loss_limit", "global_daily_loss_limit_pct",
-                "max_active_pairs", "max_concurrent_positions",
-                "trading_enabled", "dry_run", "leverage", "max_leverage",
-            ]}
-
-            # Log setting changes
-            for k, v in current.items():
-                old = _last_settings.get(k)
-                if old is not None and old != v:
-                    logger.info(f"[CONFIG] {k}: {old} → {v}")
-            _last_settings = current
-
-            # Periodic re-validation (log only — never blocks)
-            if time.time() - _last_validation > VALIDATION_INTERVAL:
-                validate_startup()
-                _last_validation = time.time()
-
-            trading_enabled = get_setting_bool("trading_enabled", True)
-            if not trading_enabled:
-                time.sleep(30)
-                continue
-
-            # ── Universe-driven iteration (Amendment 003) ────────────────
-            # Assets come from the daily scan (asset_universe), not from a
-            # static list. Exits run for universe members AND assets that
-            # dropped out — churn never forces an exit.
-            max_pairs = get_setting_int("max_active_pairs", 6)
-            max_positions = get_setting_int("max_concurrent_positions", 9)
-            all_open = load_all_positions()
-            if len(all_open) >= max_positions:
-                logger.info(f"[LIMIT] max_concurrent_positions={max_positions} reached ({len(all_open)} open) — no new entries this cycle")
-
-            # ── Global daily loss (sums ALL venues) — soft entry block ─────
-            # Breached ⇒ every venue stops new entries for the rest of the UTC
-            # day; resets automatically at midnight (never a hard disable).
-            g_blocked, g_reason = check_global_daily_loss()
-            g_block_onset = g_blocked and not _global_loss_warned
-            if g_block_onset:
-                logger.warning(f"[KILL] {g_reason} — all entries blocked until UTC midnight")
-                _global_loss_warned = True
-            elif not g_blocked:
-                _global_loss_warned = False
-
-            # ── Broad-market trend gate (2026-08-10) ──────────────────────
-            # A global red day drags every altcoin down — block new entries
-            # while the majors' average 24h change is a downtrend.
-            mkt_blocked, mkt_reason = _broad_market_downtrend()
-            mkt_onset = mkt_blocked and not _market_filter_warned
-            if mkt_onset:
-                logger.warning(f"[MARKET] {mkt_reason} — new entries blocked until majors recover")
-                _market_filter_warned = True
-            elif not mkt_blocked:
-                _market_filter_warned = False
-
-            # ── Read per-venue mode (False / Signal / Automatic) ──
-            dex_mode = _normalize_venue_mode(get_setting("auto_trade_orderly"))
-            cex_mode = _normalize_venue_mode(get_setting("auto_trade_binance"))
-
-            for venue, ex, venue_mode, label in (
-                ("binance", binance, cex_mode, "CEX"),
-                ("orderly", orderly, dex_mode, "DEX"),
-            ):
-                if venue_mode == "False":
-                    continue
-
-                universe = get_tradeable_universe(venue)
-                if len(universe) > max_pairs:
-                    logger.warning(f"[LIMIT] {venue}: {len(universe)} assets exceeds max_active_pairs={max_pairs} — capping")
-                    universe = universe[:max_pairs]
-                universe_by_asset = {u["asset"]: u for u in universe}
-
-                # Exit management covers universe members AND dropped-out assets
-                open_assets = {p["asset"] for p in load_all_positions(venue=venue)}
-                assets = sorted(set(universe_by_asset) | open_assets)
-                if not assets:
-                    if time.time() % 300 < 30:
-                        logger.debug(f"[LOOP] {venue}: no universe assets or open positions")
-                    continue
-
-                # ── Stale universe: no new entries, exits still managed ──
-                stale = is_universe_stale(venue)
-                if stale:
-                    logger.warning(f"[UNIVERSE] {venue} scan is stale — new entries blocked until rescan (positions still managed)")
-
-                # ── Equity query (once per venue) ──────────────
-                # None = unknown (Constitution IV): count toward the CONSECUTIVE
-                # failure streak, keep the last-known-good venue_state cache
-                # (never poison it with a failure zero), skip the venue.
-                try:
-                    equity = ex.get_equity()
-                except Exception:
-                    equity = None
-                if equity is None:
-                    _equity_failure(venue)
-                    continue
-                _venue_fail_streak[venue] = 0
-                set_venue_equity(venue, equity)
-
-                signal_only = (venue_mode == "Signal")
-
-                deg_blocked = 0  # assets blocked by the spread-degradation guard this cycle
-
-                for asset in assets:
+            for venue in VENUES:
+                for row in get_tradeable_universe(venue):
                     try:
-                        regime = detect_regime(asset, venue)
-                        _gate_observations.setdefault(venue, {}).setdefault(asset, deque(maxlen=40)).append({"ts": time.time(), "regime": regime})
-
-                        # ── Manage exits FIRST (always) ──────────
-                        if venue == "binance":
-                            spot_manage(asset, binance)
-                        else:
-                            futures_manage(asset, orderly, regime)
-
-                        # Dropped out of the universe → exits only
-                        if asset not in universe_by_asset:
-                            if not signal_only and time.time() % 600 < 30:
-                                logger.debug(f"[UNIVERSE] {asset} {venue} dropped out — entries stopped, position managed to exit")
-                            continue
-
-                        # Stale universe → no new entries (fail closed)
-                        if stale:
-                            continue
-
-                        blocked = False
-                        reason = ""
-                        if not signal_only:
-                            if mkt_blocked:
-                                blocked = True
-                                reason = mkt_reason
-                            elif g_blocked:
-                                blocked = True
-                                reason = g_reason
-                            else:
-                                blocked, reason = is_entry_blocked_per_pair(asset, venue, equity)
-                            if len(all_open) >= max_positions:
-                                blocked = True
-                                reason = f"max_concurrent_positions={max_positions} reached"
-                        if blocked:
-                            if mkt_blocked and mkt_onset:
-                                _record_global_block(venue, asset, regime, "broad_market_downtrend")
-                            elif g_blocked and g_block_onset:
-                                _record_global_block(venue, asset, regime, reason)
-                            elif "max_consecutive_losses" in reason:
-                                today = time.strftime("%Y-%m-%d", time.gmtime())
-                                if _consec_loss_warned.get(venue) != today:
-                                    reset_dt = datetime.now(timezone.utc).replace(
-                                        hour=0, minute=0, second=0, microsecond=0
-                                    ) + timedelta(days=1)
-                                    logger.warning(f"[KILL] {venue}: consecutive losses reached ({reason}) — entries will start over on {reset_dt:%Y-%m-%d %H:%M} UTC")
-                                    _consec_loss_warned[venue] = today
-                            logger.debug(f"[SKIP] {venue}:{asset} {reason}")
-                            continue
-                        if regime == "UNKNOWN":
-                            continue
-
-                        obi, spread = _get_obi_and_spread(asset, venue)
-                        _gate_observations.setdefault(venue, {}).setdefault(asset, deque(maxlen=40)).append({"ts": time.time(), "spread": spread, "obi": obi})
-                        price = _get_live_price_orderly(asset) if venue == "orderly" else _get_live_price_binance(asset)
-
-                        # ── Live spread degradation guard (Amendment 003) ──
-                        # Compare against scan-time spread already stored; no
-                        # extra API call (spread comes from the OBI snapshot).
-                        row = universe_by_asset.get(asset)
-                        scan_spread = float(row["spread_pct"]) if row and row.get("spread_pct") else None
-                        if scan_spread and spread is not None:
-                            mult = get_setting_float("universe_spread_degradation_multiple", 3.0)
-                            if spread > scan_spread * mult:
-                                deg_blocked += 1
-                                _asset_degraded_streak[(venue, asset)] = _asset_degraded_streak.get((venue, asset), 0) + 1
-                                logger.warning(f"[UNIVERSE] {asset} {venue} live spread {spread:.3f}% exceeds scan spread {scan_spread:.3f}% × {mult} — skipping entries this cycle")
-                                continue
-                            _asset_degraded_streak.pop((venue, asset), None)
-                        else:
-                            _asset_degraded_streak.pop((venue, asset), None)
-
-                        # Market gate: entries only — exits ran above; obs keep flowing
-                        if _gate_state.get(venue, {}).get("suspended"):
-                            logger.debug(f"[SKIP] {venue}:{asset} market gate suspended")
-                            _record_gate_skip(venue, asset, regime, obi, price)
-                            continue
-
-                        if obi is not None and price is not None:
-                            if venue == "binance":
-                                result = spot_cycle(asset, binance, regime, obi, price, signal_only=signal_only)
-                            else:
-                                result = futures_cycle(asset, orderly, regime, obi, price, signal_only=signal_only)
-                            if result:
-                                _notify_entry(asset, label, regime, result, price, signal_only)
-                                all_open = load_all_positions()
-                        else:
-                            logger.warning(f"[DATA] {asset} {label}: obi={obi} price={price} — skipping cycle")
-
+                        evaluate_asset(binance, orderly, venue, row["asset"])
                     except Exception as e:
-                        logger.error(f"[ERROR] {venue}:{asset} cycle failed: {e}")
-                        # Continue to next asset — do not abort. Per-asset errors
-                        # are heterogeneous (one delisted symbol, one bad fetch)
-                        # and do NOT feed venue escalation (015 clarify Q3) —
-                        # only the venue-level equity query does.
-
-                # ── Persistent spread degradation → force a rescan ──
-                # If a large share of the venue universe is blocked by the
-                # spread-degradation guard for several consecutive cycles, the
-                # stored scan spreads are stale — request an immediate rescan
-                # instead of waiting for universe_scan_interval_hours.
-                uv_size = len(universe_by_asset)
-                if uv_size > 0:
-                    share_thr = get_setting_float("universe_degradation_rescan_share", 0.5)
-                    cycles_thr = get_setting_int("universe_degradation_rescan_cycles", 10)
-                    if deg_blocked >= max(1, int(uv_size * share_thr)):
-                        streak = _degraded_streak.get(venue, 0) + 1
-                        _degraded_streak[venue] = streak
-                        if streak >= cycles_thr:
-                            force_rescan(venue)
-                            logger.warning(f"[UNIVERSE] {venue}: {deg_blocked}/{uv_size} assets blocked by spread degradation for {streak} cycles — forcing rescan")
-                            _degraded_streak[venue] = 0
-                    else:
-                        _degraded_streak[venue] = 0
-
-                # Per-asset persistent blocking → force a rescan AND rotate the
-                # stale-spread asset out of the next scan (covers a single asset
-                # whose stored scan spread is stale, e.g. SKHYB).
-                cycles_thr = get_setting_int("universe_degradation_rescan_cycles", 10)
-                cooldown = get_setting_float("universe_rescan_cooldown_min", 60) * 60
-                for key, streak in list(_asset_degraded_streak.items()):
-                    if key[0] != venue:
-                        continue
-                    if streak < cycles_thr:
-                        continue
-                    if time.time() - _last_forced_rescan.get(venue, 0.0) < cooldown:
-                        continue
-                    force_rescan(venue)
-                    ttl = get_setting_float("universe_degradation_exclude_hours", 6)
-                    add_degraded_exclusion(venue, key[1], ttl)
-                    _last_forced_rescan[venue] = time.time()
-                    logger.warning(f"[UNIVERSE] {venue}: {key[1]} blocked by spread degradation for {streak} consecutive cycles — forcing rescan and excluding for {ttl:.0f}h")
-                    _asset_degraded_streak[key] = 0
-
-            # Venue-level failure escalation moved to _equity_failure (feature
-            # 015): the streak is consecutive ACROSS cycles and notifies via
-            # Telegram, as Constitution IV requires.
-
-            time.sleep(30)
-
+                        logger.error(f"[CYCLE] {venue}:{row['asset']} failed: {e}")
         except Exception as e:
-            logger.error(f"[ERROR] main loop: {e}")
-            time.sleep(60)
+            logger.error(f"[LOOP] cycle error: {e}")
 
-
-# ── Price & OBI helpers (thin wrappers — executor provides them) ──────────────
-
-def _get_obi_and_spread(asset: str, venue: str) -> tuple[float | None, float | None]:
-    """Return (obi, spread_pct) for an asset from a single order-book snapshot.
-
-    Orderly public orderbook is restricted — Binance is used as proxy
-    (same asset, correlated books), consistent with the existing pattern.
-    The spread here feeds the per-cycle degradation guard (Amendment 003)
-    with no additional API call.
-    """
-    try:
-        import requests
-        r = requests.get("https://api.binance.com/api/v3/depth",
-                         params={"symbol": f"{asset}USDT", "limit": 10}, timeout=5)
-        data = r.json()
-        bids = data.get("bids", [])
-        asks = data.get("asks", [])
-        bid_qty = sum(float(b[1]) for b in bids)
-        ask_qty = sum(float(a[1]) for a in asks)
-        obi = (bid_qty / ask_qty) if ask_qty > 0 else 2.0
-        best_bid = float(bids[0][0]) if bids else 0.0
-        best_ask = float(asks[0][0]) if asks else 0.0
-        spread = ((best_ask - best_bid) / best_bid * 100) if best_bid > 0 else None
-        return obi, spread
-    except Exception:
-        return None, None
-
-
-def _get_live_price_binance(asset: str) -> float | None:
-    try:
-        import requests
-        r = requests.get("https://api.binance.com/api/v3/ticker/price",
-                         params={"symbol": f"{asset}USDT"}, timeout=5)
-        return float(r.json()["price"])
-    except Exception:
-        return None
-
-
-def _get_live_price_orderly(asset: str) -> float | None:
-    """Orderly public ticker is restricted — use Binance as proxy."""
-    return _get_live_price_binance(asset)
-
-
-def _normalize_venue_mode(raw: str | None) -> str:
-    """Normalize legacy values (true/false) to canonical mode names."""
-    if not raw:
-        return "False"
-    v = raw.strip().lower()
-    if v in ("true", "automatic"):
-        return "Automatic"
-    if v in ("signal",):
-        return "Signal"
-    return "False"
-def _price_decimals(price: float) -> int:
-    """Return enough decimal places to show meaningful price differences."""
-    if price <= 0:
-        return 4
-    import math
-    magnitude = int(math.log10(price))
-    if magnitude >= 2:    # $100+
-        return max(2, 6 - magnitude)
-    if magnitude >= 0:    # $1–$99
-        return 4
-    if magnitude >= -2:   # $0.01–$0.99
-        return 5
-    if magnitude >= -4:   # $0.0001–$0.0099
-        return 7
-    return 8              # sub-penny tokens
-
-
-def _gate_observations_warm(venue: str, universe_rows) -> bool:
-    """True once a full observation round exists: a confirmed live spread for
-    at least market_gate_warm_share of the venue's universe assets. Prevents
-    evaluating the gate on a partial first cycle (cold-start FAIL→PASS flips)
-    or on a venue that has not completed one full asset pass."""
-    if not universe_rows:
-        return False
-    obs = _gate_observations.get(venue, {})
-    if not obs:
-        return False
-    share = get_setting_float("market_gate_warm_share", 0.8)
-    need = max(1, int(len(universe_rows) * share))
-    have = 0
-    for u in universe_rows:
-        q = obs.get(u["asset"])
-        if q and any(o.get("spread") is not None for o in q):
-            have += 1
-    return have >= need
-
-
-def _broad_market_downtrend() -> tuple[bool, str]:
-    """(blocked, reason) — a global red day (BTC/ETH/SOL all down) drags every
-    altcoin down, so dip-buying loses. Blocks ALL new entries while the average
-    24h change of the configured majors is below market_filter_max_downtrend_pct.
-    Fails closed on API errors. Cached (market_filter_cache_min)."""
-    if not get_setting_bool("market_filter_enabled", False):
-        return False, ""
-    cache_min = get_setting_int("market_filter_cache_min", 5) * 60
-    if time.time() - _market_filter_cache["ts"] < cache_min:
-        return _market_filter_cache["res"]
-    assets = [a.strip().upper() for a in
-              (get_setting("market_filter_assets") or "BTC,ETH,SOL,BNB").split(",")
-              if a.strip()]
-    changes = []
-    for a in assets:
-        try:
-            import requests
-            r = requests.get("https://api.binance.com/api/v3/ticker/24hr",
-                             params={"symbol": f"{a}USDT"}, timeout=5)
-            changes.append(float(r.json().get("priceChangePercent", 0.0)))
-        except Exception:
-            changes = []
-            break  # API failure → fail closed, don't trade blind
-    if not changes:
-        res = (True, "broad market data unavailable")
-    else:
-        avg = sum(changes) / len(changes)
-        thr = get_setting_float("market_filter_max_downtrend_pct", -1.0)
-        res = ((True, f"broad market {avg:+.2f}% (< {thr:+.2f}%)")
-               if avg < thr else (False, ""))
-    _market_filter_cache["ts"] = time.time()
-    _market_filter_cache["res"] = res
-    return res
-
-
-def _cached_gate_equity(venue: str) -> float:
-    """Cached venue equity from the DB (bot.py writes it each cycle) — zero API."""
-    st = get_venue_equity(venue)
-    return float(st["equity"]) if st else 0.0
-
-
-def _equity_failure(venue: str):
-    """One failed venue equity query (feature 015).
-
-    Constitution IV (NON-NEGOTIABLE): "Consecutive state-query failures
-    escalate: after 5 consecutive failures, disable trading and notify via
-    Telegram." The old counter was recreated every cycle — 5 assets failing in
-    ONE network blip disabled the venue permanently while logging
-    "consecutive"; and the Telegram half was never implemented. The streak now
-    spans cycles, resets on any successful query, and notifies on trip. The
-    threshold 5 is the constitutional constant, deliberately not a setting.
-    """
-    streak = _venue_fail_streak.get(venue, 0) + 1
-    _venue_fail_streak[venue] = streak
-    logger.error(f"[ERROR] {venue} equity query failed (consecutive={streak})")
-    if streak >= 5:
-        from trading_bot.send_bot_message import send_message
-        logger.warning(f"[KILL] {venue} disabled after {streak} consecutive equity failures")
-        send_message(f"🚨 {venue}: {streak} consecutive equity-query failures — trading disabled "
-                     f"(Constitution IV). Re-enable auto_trade_{venue} once the API recovers.")
-        upsert_setting(f"auto_trade_{venue}", "false")
-        _venue_fail_streak[venue] = 0
-
-
-def _gate_apply(venue: str, report: dict) -> dict:
-    """Apply one gate evaluation: update the per-venue debounce state and send
-    exactly ONE debounced Telegram notification on a suspend/resume transition
-    (AC8) — no per-evaluation messages. WARN also notifies once when it starts
-    and once when it clears, always with the reason (005 follow-up). Logs a
-    structured [GATE] line."""
-    settings = {
-        "market_gate_bad_streak": get_setting_int("market_gate_bad_streak", 2),
-        "market_gate_good_streak": get_setting_int("market_gate_good_streak", 2),
-        "market_gate_warn_liquidity_share": get_setting_float("market_gate_warn_liquidity_share", 0.25),
-        "market_gate_regime_escalates": get_setting_bool("market_gate_regime_escalates", False),
-    }
-    state = _gate_state.get(venue, {"suspended": False, "bad_streak": 0, "good_streak": 0})
-    new_state, transition = update_gate_state(state, report["verdict"], settings,
-                                              report.get("reasons"))
-    label = "DEX (orderly)" if venue == "orderly" else "CEX (binance)"
-    reason = ",".join(report["reasons"]) if report["reasons"] else "none"
-    from trading_bot.send_bot_message import send_message
-    if transition == {"type": "suspend"}:
-        send_message(f"🛑 [GATE] {label} suspended — {reason}")
-        logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=suspend")
-    elif transition == {"type": "resume"}:
-        send_message(f"✅ [GATE] {label} recovered — {reason}")
-        logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=resume")
-    else:
-        logger.info(f"[GATE] venue={venue} verdict={report['verdict']} reason={reason} action=hold")
-    # WARN lifecycle — one notification when an ESCALATING WARN starts, one
-    # when it clears. Mild regime WARNs (feature 008) are log-only. FAIL
-    # silently clears the flag (its own suspend/hold message covers it).
-    strong_warn = report["verdict"] == "WARN" and _warn_is_strong(report.get("reasons"), settings)
-    if strong_warn and not state.get("warn_active"):
-        new_state["warn_active"] = True
-        send_message(f"⚠️ [GATE] {label} WARNING — {reason}")
-        logger.info(f"[GATE] venue={venue} verdict=WARN reason={reason} action=warn_start")
-    elif report["verdict"] != "WARN" and state.get("warn_active"):
-        new_state["warn_active"] = False
-        if report["verdict"] == "PASS":
-            send_message(f"✅ [GATE] {label} warning cleared — {reason}")
-            logger.info(f"[GATE] venue={venue} verdict=PASS reason={reason} action=warn_clear")
-    _gate_state[venue] = new_state
-    return new_state
-
-
-def _record_gate_skip(venue: str, asset: str, regime: str, obi, price):
-    """Record a market-gate-suspended entry skip in `signals` (Constitution VIII:
-    every skipped entry is recorded with its reason so filter strictness is
-    measurable). Reuses the scalpers' `_log` INSERT — the same mechanism that
-    records regime/cooldown/toxicity skips inside the scalper entry paths."""
-    log = _spot_log if venue == "binance" else _futures_log
-    log(asset, venue, regime, None, price, 0, 0, 0, obi, 0, None, {},
-        "skipped", "market_gate_suspended")
-
-
-def _record_global_block(venue: str, asset: str, regime: str, reason: str):
-    """Record a global (daily-loss / broad-market) entry skip in `signals`
-    (Constitution VIII) — same mechanism as _record_gate_skip. Runs before the
-    per-asset price snapshot, so it fetches the price itself (signals.price is
-    NOT NULL); 0.0 guards the rare case where the snapshot fails."""
-    log = _spot_log if venue == "binance" else _futures_log
-    price = _get_live_price_binance(asset)
-    if price is None:
-        price = 0.0
-    log(asset, venue, regime, None, price, 0, 0, 0, None, 0, None, {},
-        "skipped", reason)
-
-
-def _notify_entry(asset: str, exchange_label: str, regime: str, result: dict, price: float,
-                  signal_only: bool = False):
-    """Send a Telegram notification when a signal fires or a trade is entered."""
-    try:
-        from trading_bot.send_bot_message import send_message
-        direction = result["direction"]
-        tp = result["tp"]
-        sl = result["sl"]
-        tp_pct = result.get("tp_pct", 0)
-        sl_pct = result.get("sl_pct", 0)
-        mode = "🔍 SIGNAL" if signal_only else "💰 TRADE"
-        emoji = "🟢" if direction == "buy" else "🔴"
-        d = _price_decimals(price)
-
-        action = "BUY" if exchange_label == "CEX" else "LONG"
-        if direction == "sell":
-            action = "SELL" if exchange_label == "CEX" else "SHORT"
-        close_label = "SELL" if exchange_label == "CEX" and direction == "buy" else \
-                      ("BUY" if exchange_label == "CEX" else "Close")
-        tp_sign = "+" if direction == "buy" else "-"
-        sl_sign = "-" if direction == "buy" else "+"
-        msg = (
-            f"{emoji} {asset} ({exchange_label}) —  [{mode}]\n"
-            f"{action} at {price:.{d}f}\n"
-            f"{close_label} at {tp:.{d}f}  ({tp_sign}{tp_pct:.2f}%)  |  SL at {sl:.{d}f}  ({sl_sign}{sl_pct:.2f}%)\n"
-            f"Regime: {regime}"
-        )
-        send_message(msg)
-        logger.info(f"[SIGNAL] {asset} {exchange_label} {direction} @ {price:.{d}f} tp={tp_pct:.2f}% sl={sl_pct:.2f}% regime={regime} mode={'signal' if signal_only else 'trade'}")
-    except Exception as e:
-        logger.warning(f"[SIGNAL] failed to send notification: {e}")
+        elapsed = time.time() - cycle_start
+        time.sleep(max(30.0, get_setting_int("cycle_seconds", 1800) - elapsed))
 
 
 if __name__ == "__main__":

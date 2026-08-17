@@ -1,11 +1,9 @@
 """
-MockbaV4 — Database operations (schema v2).
+MockbaV4 — Database operations (schema v3, reversal bot — spec 001).
 
-Four tables: settings (legacy, preserved), open_positions, closed_trades, signals.
-All writes are parameterized. Settings read fresh each cycle.
-
-Backward-compatible with telegram.py imports: get_setting, upsert_setting,
-get_all_settings, initialize_database_tables.
+Six tables, names/shapes pinned by the dashboard: settings, asset_universe
+(operator-curated asset list), venue_state, open_positions, closed_trades,
+signals. All writes are parameterized. Settings read fresh each cycle.
 """
 
 import os
@@ -29,47 +27,12 @@ def get_db_connection():
         conn.close()
 
 
-# ── Migration ─────────────────────────────────────────────────────────────────
-
-def _run_schema_v2(cur):
-    """Create v2 tables idempotently. Does NOT drop legacy tables."""
-    schema_path = os.path.join(PROJECT_ROOT, "db", "schema_v2.sql")
-    with open(schema_path) as f:
-        cur.executescript(f.read())
-
-
-def _run_migrations(cur):
-    """Apply any pending migrations idempotently."""
-    migrations_dir = os.path.join(PROJECT_ROOT, "db", "migrations")
-    if not os.path.isdir(migrations_dir):
-        return
-    for fname in sorted(os.listdir(migrations_dir)):
-        if not fname.endswith(".sql"):
-            continue
-        try:
-            with open(os.path.join(migrations_dir, fname)) as f:
-                cur.executescript(f.read())
-        except Exception:
-            pass  # column already exists, etc.
-
-
 def initialize_database_tables():
-    """Idempotent: creates legacy + v2 tables. Called by telegram.py on startup."""
+    """Idempotent: creates the v3 tables."""
+    schema_path = os.path.join(PROJECT_ROOT, "db", "schema_v3.sql")
     with get_db_connection() as conn:
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS settings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                key TEXT UNIQUE NOT NULL,
-                value TEXT NOT NULL,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        _run_schema_v2(cur)
-        conn.commit()
-    # Run migrations (separate connection to avoid schema change issues)
-    with get_db_connection() as conn:
-        _run_migrations(conn.cursor())
+        with open(schema_path) as f:
+            conn.cursor().executescript(f.read())
         conn.commit()
 
 
@@ -376,3 +339,31 @@ def get_consecutive_losses(venue: str) -> int:
     return count
 
 
+
+
+# ── Signals (spec 001) ────────────────────────────────────────────────────────
+
+_SIGNAL_COLS = (
+    "ts", "asset", "venue", "direction", "price", "action", "reason",
+    "timeframe", "tf_1d_trend", "ms_state", "neckline", "structure_json",
+    "ai_valid", "ai_confidence", "ai_entry", "ai_stop", "ai_target", "ai_rr",
+    "ai_reasons", "ai_reasoning", "judge_model", "position_id",
+)
+
+
+def record_signal(**fields) -> int:
+    """Insert one signal row (Constitution VIII: every evaluation recorded).
+
+    Unknown keys are rejected loudly rather than silently dropped."""
+    unknown = set(fields) - set(_SIGNAL_COLS)
+    if unknown:
+        raise ValueError(f"record_signal: unknown columns {unknown}")
+    fields.setdefault("ts", time.time())
+    cols = [c for c in _SIGNAL_COLS if c in fields]
+    with get_db_connection() as conn:
+        cur = conn.execute(
+            f"INSERT INTO signals ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
+            [fields[c] for c in cols],
+        )
+        conn.commit()
+        return cur.lastrowid

@@ -193,6 +193,22 @@ class BinanceSpot:
         except Exception:
             return None
 
+    def get_klines(self, asset: str, interval: str, limit: int = 120) -> list[dict] | None:
+        """Closed+forming candles, oldest first (public endpoint, no auth).
+        interval: Binance-native ('1h', '4h', '1d')."""
+        try:
+            r = requests.get(f"{self.base_url}/api/v3/klines",
+                             params={"symbol": f"{asset}USDT",
+                                     "interval": interval, "limit": limit},
+                             timeout=10)
+            r.raise_for_status()
+            return [{"ts": k[0] / 1000, "open": float(k[1]), "high": float(k[2]),
+                     "low": float(k[3]), "close": float(k[4]), "volume": float(k[5])}
+                    for k in r.json()]
+        except Exception as e:
+            logger.warning(f"Binance klines failed for {asset} {interval}: {e}")
+            return None
+
     def _fee_to_usdt(self, fee_amount: float, fee_asset: str,
                      ref_price: float, notional: float) -> float:
         """Commission expressed in USDT (Constitution V: recorded fees are dollars).
@@ -506,6 +522,24 @@ class OrderlyFutures:
             return None
 
     # ── Equity ────────────────────────────────────────────────────────────
+
+    def get_klines(self, asset: str, interval: str, limit: int = 120) -> list[dict] | None:
+        """Orderly-native candles, oldest first (spec 001 Q4: DEX analysis
+        uses DEX data; callers fall back to Binance data on None).
+        interval maps 1:1 to Orderly kline `type` ('1h', '4h', '1d')."""
+        try:
+            data = self._get("/v1/kline", {"symbol": f"PERP_{asset}_USDC",
+                                           "type": interval, "limit": limit})
+            rows = (data.get("data") or {}).get("rows") or []
+            out = [{"ts": r["start_timestamp"] / 1000, "open": float(r["open"]),
+                    "high": float(r["high"]), "low": float(r["low"]),
+                    "close": float(r["close"]), "volume": float(r.get("volume", 0))}
+                   for r in rows]
+            out.sort(key=lambda c: c["ts"])
+            return out or None
+        except Exception as e:
+            logger.warning(f"Orderly klines failed for {asset} {interval}: {e}")
+            return None
 
     def get_equity(self) -> float | None:
         """Total collateral, or None when unreachable (feature 015 —
