@@ -135,6 +135,9 @@ def evaluate_asset(binance: BinanceSpot, orderly: OrderlyFutures,
     s = analyze(c4h, pivot_k, zone_tol, retest_tol)
     key = (venue, asset)
     price = s.last_close or c4h[-1]["close"]
+    # file/dashboard only (DEBUG stays off docker stdout)
+    logger.debug(f"[SCAN] {venue}:{asset} price={price:.6g} 1d={trend_1d} "
+                 f"state={s.ms_state} retest={s.retest}")
 
     base = dict(asset=asset, venue=venue, price=price, timeframe="4h",
                 tf_1d_trend=trend_1d, ms_state=s.ms_state, neckline=s.neckline)
@@ -265,12 +268,18 @@ def run():
                 refresh_universe_stats(binance)
                 last_stats = time.time()
 
+            scanned = 0
             for venue in VENUES:
                 for row in get_tradeable_universe(venue):
                     try:
                         evaluate_asset(binance, orderly, venue, row["asset"])
+                        scanned += 1
                     except Exception as e:
                         logger.error(f"[CYCLE] {venue}:{row['asset']} failed: {e}")
+            states = ", ".join(f"{v}:{a}={st}" for (v, a), st
+                               in sorted(_last_state.items())) or "no states yet"
+            logger.info(f"[CYCLE] {scanned} scans in "
+                        f"{time.time() - cycle_start:.0f}s — {states}")
         except Exception as e:
             logger.error(f"[LOOP] cycle error: {e}")
 
