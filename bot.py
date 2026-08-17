@@ -60,6 +60,15 @@ DEFAULT_SETTINGS = {
 _last_state: dict[tuple[str, str], str] = {}
 _last_judged: dict[tuple[str, str], float] = {}
 
+# Orderly kline circuit breaker: each timed-out call costs ~10s, and an
+# unreachable endpoint would burn that on every asset × timeframe. After
+# ORDERLY_BREAK_AFTER consecutive failures, go straight to the Binance
+# fallback (spec 001 Q4) until the cooldown expires, then probe again.
+ORDERLY_BREAK_AFTER = 3
+ORDERLY_COOLDOWN_S = 600.0
+_orderly_fail_streak = 0
+_orderly_skip_until = 0.0
+
 
 def ensure_seed():
     """Seed default settings and the operator asset list (idempotent)."""
@@ -89,10 +98,20 @@ def _notify(text: str):
 
 def _fetch(binance: BinanceSpot, orderly: OrderlyFutures, venue: str,
            asset: str, interval: str, limit: int) -> list[dict] | None:
-    if venue == "orderly":
+    global _orderly_fail_streak, _orderly_skip_until
+    if venue == "orderly" and time.time() >= _orderly_skip_until:
         rows = orderly.get_klines(asset, interval, limit)
         if rows:
+            _orderly_fail_streak = 0
             return rows
+        _orderly_fail_streak += 1
+        if _orderly_fail_streak >= ORDERLY_BREAK_AFTER:
+            _orderly_skip_until = time.time() + ORDERLY_COOLDOWN_S
+            _orderly_fail_streak = 0
+            logger.warning(
+                f"[ORDERLY] kline endpoint unhealthy ({ORDERLY_BREAK_AFTER} "
+                f"consecutive failures) — Binance fallback for the next "
+                f"{ORDERLY_COOLDOWN_S / 60:.0f} min")
         # fallback per spec 001 Q4 — perps track spot within basis points
     return binance.get_klines(asset, interval, limit)
 

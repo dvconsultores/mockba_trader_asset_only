@@ -5,6 +5,12 @@ Scalper-era history: `docs/archive/CHANGELOG-scalper-era.md`.
 
 ## 2026-08-17
 
+- `fix:` **Orderly kline circuit breaker.** Live logs showed connect
+    timeouts to api.orderly.org (10s each × 4 assets × 3 timeframes per
+    cycle). After 3 consecutive kline failures the bot now skips
+    Orderly-native fetches and uses the Binance fallback (spec 001 Q4)
+    directly for 10 minutes, then probes again; one warning per trip
+    instead of one per call. Analysis never stops. 4 new tests (53 green).
 - `fix:` **Orderly listing sync at startup.** First live cycle showed GRAM
     500s from Orderly's kline endpoint — `PERP_GRAM_USDC` doesn't exist
     (verified via `/v1/public/info`: NEAR/SOL/ARB/INJ listed, GRAM/TON not).
