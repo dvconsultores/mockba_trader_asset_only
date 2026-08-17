@@ -14,7 +14,7 @@
 
 ## Phase 2 — execution (separate authorization)
 
-- [ ] Spot entry on retest + exchange OCO from judge prices; capital-based sizing per spec Q10 — position_size_pct of venue capital, × dex_leverage on Orderly (M3)
+- [ ] Spot entry on retest + exchange OCO from judge prices; capital-based sizing per spec Q10 — position_size_pct (45%) of venue capital, × dex_leverage on Orderly; min-notional + spread guards before placing (M3)
 - [ ] Orderly perps long/short after manual dry-run checklist (010-era procedure re-validated)
 - [ ] Kill switches re-armed for live mode; monthly trade cap enforcement
 - [ ] Judge A/B hook (v4-flash secondary) if operator enables

@@ -44,11 +44,14 @@ dashboard/                  untouched
   `{valid, direction, confidence, entry_zone, stop, target, rr, reasons[]}`;
   parse-validate with one retry; `reasoning_content` logged; fail-closed.
 - **M3 sizing (Phase 2)** (amended per spec Q10, operator directive): capital
-  = venue equity × `position_size_pct` (default 50%; 2 slots deploy 100%);
-  spot qty = capital ÷ entry; Orderly notional = capital × `dex_leverage`
-  (default 3x). Committed capital is 100% at risk; the structural stop bounds
-  the loss, it does not shrink the position. Trade rejected if judge
-  `rr < rr_min` or monthly trade count ≥ cap.
+  = venue equity × `position_size_pct` (default 45%; 2 slots deploy 90%,
+  ~10% loss buffer); spot qty = capital ÷ entry; Orderly notional = capital
+  × `dex_leverage` (default 3x). Committed capital is 100% at risk; the
+  structural stop bounds the loss, it does not shrink the position.
+  Pre-order guards: venue min-notional (Binance NOTIONAL filter, Orderly
+  per-symbol minimum) and a sanity spread check — order book is otherwise
+  unused by design (structure method, not microstructure). Trade rejected if
+  judge `rr < rr_min` or monthly trade count ≥ cap.
 - **M4 fresh schema v3**: six UI-compatible tables; signals adds `timeframe,
   tf_1d_trend, structure_json, ai_valid, ai_confidence, ai_entry, ai_stop,
   ai_target, ai_rr, ai_reasons, ai_reasoning, judge_model`.

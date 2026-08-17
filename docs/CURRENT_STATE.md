@@ -23,7 +23,7 @@ and full reasoning → Telegram on valid signals.
 | trade_mode | observe | Phase 2 flips to live |
 | cycle_seconds | 1800 | 2 scans/hour |
 | rr_min | 2.5 | breakeven WR 28.6% |
-| position_size_pct | 50 | % of venue capital per position (live phase; 2 slots = 100% deployed) |
+| position_size_pct | 45 | % of venue capital per position (live phase; 2 slots = 90%, 10% buffer) |
 | dex_leverage | 3 | Orderly notional = margin × leverage |
 | max_concurrent_positions | 2 | one per asset (spec Q9) |
 | max_trades_per_month | 10 | book discipline |

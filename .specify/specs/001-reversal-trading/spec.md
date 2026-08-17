@@ -67,13 +67,18 @@ operator directive); **≤10 trades/month**; patience over FOMO.
 - **Q10 Sizing** (operator directive 2026-08-16): **capital-based, not
   risk-%**. The operator's venue capital (spot USDT, DEX margin) is 100%
   working capital — position size = `position_size_pct` of available venue
-  capital (default 50%, so 2 slots deploy 100%); on Orderly perps, notional
-  = committed margin × `dex_leverage` (default 3x — e.g. $20 margin → $60
-  notional). The committed capital is what's at risk; the structural stop
-  bounds the realized loss (stop distance × notional), it does not shrink
-  the position. This replaces the book's risk$-÷-stop-distance formula and
-  restores the scalper-era slot model the operator ran live. `rr_min`,
-  `max_trades_per_month`, and the kill switches remain the loss governors.
+  capital (default **45%**, so 2 slots deploy 90% and keep a ~10% buffer for
+  losses/fees — operator amendment); on Orderly perps, notional = committed
+  margin × `dex_leverage` (default 3x — e.g. $20 margin → $60 notional).
+  The committed capital is what's at risk; the structural stop bounds the
+  realized loss (stop distance × notional), it does not shrink the position.
+  This replaces the book's risk$-÷-stop-distance formula and restores the
+  scalper-era slot model the operator ran live. **Min-notional guard
+  (Phase 2)**: before placing, verify the order meets the venue minimum
+  (Binance spot NOTIONAL filter; Orderly per-symbol `base_min` — especially
+  relevant on small DEX capital); below it, skip and record the reason —
+  never round up beyond the slot. `rr_min`, `max_trades_per_month`, and the
+  kill switches remain the loss governors.
 - **Q5 Fresh DB**: all old tables dropped (exchange history is the archive).
   New schema keeps the six UI table names/shapes (`settings`,
   `asset_universe`, `venue_state`, `open_positions`, `closed_trades`,

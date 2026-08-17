@@ -35,7 +35,7 @@ DEFAULT_SETTINGS = {
     "trade_mode": "observe",            # observe | live (Phase 2)
     "cycle_seconds": "1800",
     "rr_min": "2.5",
-    "position_size_pct": "50",          # % of venue capital committed per position (Phase 2 sizing; 2 slots × 50% = 100% deployable)
+    "position_size_pct": "45",          # % of venue capital committed per position (Phase 2 sizing; 2 slots × 45% = 90%, 10% loss buffer)
     "dex_leverage": "3",                # Orderly perps: notional = committed margin × leverage
     "max_concurrent_positions": "2",    # spec 001 Q9
     "max_trades_per_month": "10",
@@ -164,8 +164,9 @@ def evaluate_asset(binance: BinanceSpot, orderly: OrderlyFutures,
                   **common, **base)
     logger.info(f"[SIGNAL] {venue}:{asset} {verdict['direction']} "
                 f"conf={verdict['confidence']:.0f} rr={verdict['rr']:.2f}")
+    venue_tag = "binance · CEX spot" if venue == "binance" else "orderly · DEX perp"
     _notify(
-        f"REVERSAL {verdict['direction'].upper()} {asset} ({venue})\n"
+        f"REVERSAL {verdict['direction'].upper()} {asset} ({venue_tag})\n"
         f"entry {verdict['entry']:.6g} | stop {verdict['stop']:.6g} | "
         f"target {verdict['target']:.6g} | rr {verdict['rr']:.2f} | "
         f"confidence {verdict['confidence']:.0f}%\n"
