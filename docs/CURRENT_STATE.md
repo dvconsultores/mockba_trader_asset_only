@@ -32,7 +32,9 @@ and full reasoning → Telegram on valid signals.
 
 Assets (`asset_universe`, operator-owned, rank order): NEAR, SOL, ARB, GRAM,
 INJ — both venues; Orderly analysis uses native klines, falls back to
-Binance data when a symbol isn't listed there.
+Binance data on transient failures. Assets with no Orderly perp at all
+(GRAM — verified 2026-08-17) are auto-blacklisted on the orderly venue at
+startup (`sync_orderly_listings`); their Binance analysis continues.
 
 ## Pending / queue
 

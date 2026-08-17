@@ -3,6 +3,18 @@
 Convention: `type: short description` (per `how-to-work-with-specs.md`).
 Scalper-era history: `docs/archive/CHANGELOG-scalper-era.md`.
 
+## 2026-08-17
+
+- `fix:` **Orderly listing sync at startup.** First live cycle showed GRAM
+    500s from Orderly's kline endpoint — `PERP_GRAM_USDC` doesn't exist
+    (verified via `/v1/public/info`: NEAR/SOL/ARB/INJ listed, GRAM/TON not).
+    New `sync_orderly_listings()` runs at startup: assets with no Orderly
+    perp are blacklisted on the orderly venue only (Binance analysis
+    unaffected), killing the per-cycle warning spam and preventing
+    untradeable DEX signals. One-way: never auto-clears operator-set
+    blacklist flags; endpoint failure keeps current state. 3 new tests
+    (49 green).
+
 ## 2026-08-16
 
 - `feat:` **Capital-based sizing (spec 001 Q10, operator directive).** The

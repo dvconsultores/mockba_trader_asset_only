@@ -22,6 +22,7 @@ from db.db_ops import (
     initialize_database_tables, get_setting, upsert_setting,
     get_setting_bool, get_setting_float, get_setting_int,
     get_tradeable_universe, replace_universe, set_venue_equity, record_signal,
+    get_universe, set_blacklist,
 )
 from logs.log_config import apolo_trader_logger as logger
 from trade.structure import analyze, near_zone
@@ -178,6 +179,29 @@ def evaluate_asset(binance: BinanceSpot, orderly: OrderlyFutures,
     # in Phase 1 — observe mode never places orders (spec 001 Q6).
 
 
+def sync_orderly_listings():
+    """Blacklist orderly universe rows whose perp symbol Orderly doesn't list.
+
+    An asset with no PERP_{asset}_USDC market (e.g. GRAM) can never trade on
+    the DEX; evaluating it there only yields untradeable signals plus a 500
+    warning per timeframe per cycle. Public endpoint, no auth. One-way on
+    purpose: never auto-clears a blacklist flag, so operator-set flags stick.
+    On endpoint failure, current state is kept."""
+    import requests as rq
+    try:
+        r = rq.get("https://api.orderly.org/v1/public/info", timeout=10)
+        r.raise_for_status()
+        listed = {row["symbol"] for row in r.json()["data"]["rows"]}
+    except Exception as e:
+        logger.warning(f"[UNIVERSE] orderly symbol list unavailable: {e}")
+        return
+    for row in get_universe("orderly", include_blacklisted=True):
+        if f"PERP_{row['asset']}_USDC" not in listed and not row["blacklisted"]:
+            set_blacklist("orderly", row["asset"], True)
+            logger.warning(f"[UNIVERSE] {row['asset']} has no Orderly perp — "
+                           "DEX analysis disabled (Binance side unaffected)")
+
+
 def refresh_universe_stats(binance: BinanceSpot):
     """Hourly 24h-volume refresh so the dashboard's universe view stays live."""
     import requests as rq
@@ -201,6 +225,7 @@ def run():
     """Main loop. Never returns unless killed."""
     initialize_database_tables()
     ensure_seed()
+    sync_orderly_listings()
     mode = get_setting("trade_mode")
     logger.info(f"[STARTUP] reversal bot (spec 001) — trade_mode={mode}")
 
