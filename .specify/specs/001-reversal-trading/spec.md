@@ -32,9 +32,10 @@ A reversal is valid only when ALL of:
 
 **Trade construction**: enter on the **retest** of the broken neckline (never
 chase the break); stop beyond the structural point (T2/K); TP at the next key
-level; only take trades with **R:R ≥ 1:2.5** (breakeven WR 28.6%); risk
-**1–1.5% of equity** per trade (position size = risk$ ÷ stop distance —
-replaces slot-percentage sizing); **≤10 trades/month**; patience over FOMO.
+level; only take trades with **R:R ≥ 1:2.5** (breakeven WR 28.6%);
+**capital-based sizing** — the committed capital per position is 100% at
+risk (see Q10; the book's 1–1.5%-of-equity rule is deliberately not used —
+operator directive); **≤10 trades/month**; patience over FOMO.
 
 ## Clarifications (operator-ratified 2026-08-16)
 
@@ -58,11 +59,21 @@ replaces slot-percentage sizing); **≤10 trades/month**; patience over FOMO.
   kline endpoint for DEX (Binance data as fallback if unavailable) —
   operator directive 2026-08-16.
 - **Q9 Concurrency** (operator question, recommended answer): at most **one
-  position per asset** and `max_concurrent_positions = 2` by default (1–1.5%
-  risk each ⇒ ~2–3% total open risk). When several assets confirm in the same
-  cycle, take the highest judge confidence × R:R first; the rest are recorded
-  as signals. Observe mode records everything, so the policy can be re-tuned
-  on evidence before live trading.
+  position per asset** and `max_concurrent_positions = 2` by default. When
+  several assets confirm in the same cycle, take the highest judge
+  confidence × R:R first; the rest are recorded as signals. Observe mode
+  records everything, so the policy can be re-tuned on evidence before live
+  trading.
+- **Q10 Sizing** (operator directive 2026-08-16): **capital-based, not
+  risk-%**. The operator's venue capital (spot USDT, DEX margin) is 100%
+  working capital — position size = `position_size_pct` of available venue
+  capital (default 50%, so 2 slots deploy 100%); on Orderly perps, notional
+  = committed margin × `dex_leverage` (default 3x — e.g. $20 margin → $60
+  notional). The committed capital is what's at risk; the structural stop
+  bounds the realized loss (stop distance × notional), it does not shrink
+  the position. This replaces the book's risk$-÷-stop-distance formula and
+  restores the scalper-era slot model the operator ran live. `rr_min`,
+  `max_trades_per_month`, and the kill switches remain the loss governors.
 - **Q5 Fresh DB**: all old tables dropped (exchange history is the archive).
   New schema keeps the six UI table names/shapes (`settings`,
   `asset_universe`, `venue_state`, `open_positions`, `closed_trades`,
@@ -93,6 +104,6 @@ replaces slot-percentage sizing); **≤10 trades/month**; patience over FOMO.
 
 ## Out of scope (Phase 1)
 
-Order execution (Phase 2, incl. exchange-native brackets and structure-based
-sizing), DEX dry-run checklist, judge A/B (flash vs pro — config hook exists),
+Order execution (Phase 2, incl. exchange-native brackets and capital-based
+sizing per Q10), DEX dry-run checklist, judge A/B (flash vs pro — config hook exists),
 backtesting harness (candidate for spec 002).

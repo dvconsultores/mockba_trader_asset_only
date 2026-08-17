@@ -35,7 +35,8 @@ DEFAULT_SETTINGS = {
     "trade_mode": "observe",            # observe | live (Phase 2)
     "cycle_seconds": "1800",
     "rr_min": "2.5",
-    "risk_pct": "1.0",                  # % equity risked per trade (Phase 2 sizing)
+    "position_size_pct": "50",          # % of venue capital committed per position (Phase 2 sizing; 2 slots × 50% = 100% deployable)
+    "dex_leverage": "3",                # Orderly perps: notional = committed margin × leverage
     "max_concurrent_positions": "2",    # spec 001 Q9
     "max_trades_per_month": "10",
     "pivot_k": "2",
@@ -171,7 +172,8 @@ def evaluate_asset(binance: BinanceSpot, orderly: OrderlyFutures,
         f"mode: {get_setting('trade_mode')} — no order placed"
     )
     # Phase 2 (trade_mode = live) plugs in here: retest entry, structural
-    # bracket, risk-% sizing, concurrency + monthly caps. Deliberately absent
+    # bracket, capital-based sizing (position_size_pct of venue capital,
+    # × dex_leverage on Orderly), concurrency + monthly caps. Deliberately absent
     # in Phase 1 — observe mode never places orders (spec 001 Q6).
 
 

@@ -45,7 +45,9 @@ structural point, target at the next key zone.
 - `trade_mode = observe` (current): signals + Telegram only, **no orders**.
   Signal hit-rate is measured before any capital is risked.
 - `trade_mode = live` (Phase 2, separately authorized): retest entries with
-  exchange-native brackets, risk-% sizing, one position per asset,
+  exchange-native brackets, capital-based sizing (`position_size_pct` of
+  venue capital per position, × `dex_leverage` on Orderly — the committed
+  capital is 100% at risk), one position per asset,
   `max_concurrent_positions` (default 2), ≤10 trades/month, daily-loss and
   consecutive-loss kill switches. Shorts on Orderly perps only.
 
@@ -65,7 +67,8 @@ tests/                        engine fixtures from the book, judge, executor
 ## Configuration
 
 Settings live in the `settings` table (seeded on first run): `trade_mode`,
-`cycle_seconds`, `rr_min`, `risk_pct`, `judge_model` (`deepseek-v4-pro`),
+`cycle_seconds`, `rr_min`, `position_size_pct`, `dex_leverage`,
+`judge_model` (`deepseek-v4-pro`),
 `judge_effort`, `max_concurrent_positions`, `max_trades_per_month`, engine
 tolerances, venue toggles, fee settings. The asset list is the
 `asset_universe` table — edit rows to change the watchlist.
