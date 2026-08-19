@@ -228,7 +228,8 @@ def refresh_universe_stats(binance: BinanceSpot):
     """Hourly 24h-volume refresh so the dashboard's universe view stays live."""
     import requests as rq
     for venue in VENUES:
-        rows = get_tradeable_universe(venue)
+        # include blacklisted rows so replace_universe doesn't drop them
+        rows = get_universe(venue, include_blacklisted=True)
         out = []
         for r in rows:
             vol = None
